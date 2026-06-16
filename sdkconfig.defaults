@@ -1,0 +1,40 @@
+# Embewi Agent — sdkconfig.defaults
+# Sélectionne le strict nécessaire à la machine d'état OTA sécurisée.
+# Les vrais secrets (signing key, token) ne vont JAMAIS ici.
+
+# --- Partition table -------------------------------------------------------
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_4mb.csv"
+# Pour 8 MB : remplacer par "partitions_8mb.csv" + CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# --- OTA rollback : LE point critique du projet ----------------------------
+# Sans ça, une image en PENDING_VERIFY n'est jamais revert automatiquement.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# Anti-rollback : bloque le downgrade vers une version de sécurité antérieure.
+# À activer quand le schéma secure_version est en place (efuse, IRRÉVERSIBLE).
+# CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK=y
+# CONFIG_BOOTLOADER_APP_SEC_VER_SIZE_EFUSE_FIELD_...
+
+# --- Secure Boot v2 : OBLIGATOIRE MVP (racine de confiance) -----------------
+# Décommenter pour build sécurisé. NB : opérations efuse IRRÉVERSIBLES sur device.
+# Garder désactivé tant qu'on prototype sur un device sacrifiable.
+# CONFIG_SECURE_BOOT=y
+# CONFIG_SECURE_BOOT_V2_ENABLED=y
+# CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+# Si la table ne tient plus à 0x8000 avec le bootloader signé :
+# CONFIG_PARTITION_TABLE_OFFSET=0x10000
+
+# --- Flash encryption : cible si vol physique plausible ---------------------
+# CONFIG_SECURE_FLASH_ENC_ENABLED=y
+
+# --- Task Watchdog : backstop du self-check borné ---------------------------
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# --- HTTPS server (token MVP ; mTLS cible) ----------------------------------
+CONFIG_ESP_HTTPS_SERVER_ENABLE=y
+
+# --- Divers -----------------------------------------------------------------
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_FREERTOS_HZ=1000

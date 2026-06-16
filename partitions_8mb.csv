@@ -1,0 +1,14 @@
+# Embewi Agent — partition table 8 MB (A/B, sans factory) — RECOMMANDÉE
+# ----------------------------------------------------------------------------
+# Headroom confortable une fois Secure Boot v2 + flash encryption + un vrai
+# log forwarder/TLS embarqués. 2.5 MB par slot app, 3 MB littlefs.
+# ----------------------------------------------------------------------------
+# Name,     Type, SubType, Offset,    Size,      Flags
+nvs,        data, nvs,     0x9000,    0x4000,
+otadata,    data, ota,     0xd000,    0x2000,
+phy_init,   data, phy,     0xf000,    0x1000,
+ota_0,      app,  ota_0,   0x10000,   0x280000,
+ota_1,      app,  ota_1,   0x290000,  0x280000,
+littlefs,   data, spiffs,  0x510000,  0x2f0000,
+# fin : 0x510000 + 0x2f0000 = 0x800000 = 8 MB exact
+# app  = 0x280000 = 2.5 MB / slot    |   littlefs = 0x2f0000 = 2.94 MB

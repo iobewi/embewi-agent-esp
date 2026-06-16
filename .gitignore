@@ -1,0 +1,43 @@
+# Build output
+build/
+.cache/
+
+# ESP-IDF generated
+sdkconfig.old
+dependencies.lock
+managed_components/
+
+# Secrets / per-node config (ne jamais committer)
+nvs_*.csv
+*.pem
+*.key
+*.crt
+*.der
+
+# Temporary / local
+tmp/
+work/
+_old/
+artifacts/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+settings.local.json
+
+# Documentation build
+site/
+docs/_build/
+docs/_templates/
+.venv-docs/
+
+# Python (idf.py env)
+__pycache__/
+*.pyc
+.python-version
