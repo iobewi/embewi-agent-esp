@@ -1,80 +1,105 @@
-# Embewi Agent — squelette ESP-IDF
+# Embewi Agent — ESP-IDF firmware
 
-Implémentation du côté **device** du contrat `embewi-contract-v2.md`. Le device
-reste bête : il reçoit des octets, les flashe en A/B, s'auto-valide ou rollback,
-et émet heartbeat/logs. Toute la logique OCI/ORAS/K8s vit côté Core.
+Implémentation **device** du contrat `embewi-contract-v2.md`.
+
+L'agent tourne sur la famille **ESP32** (testé sur C3, compatible C6, S3, H6…).
+Il expose une API HTTPS, s'auto-valide après OTA, émet heartbeat et logs vers le
+[embewi-core](https://github.com/iobewi/embewi-core) (contrôleur Kubernetes).
+
+## Fonctionnalités
+
+- **Provisioning** : portail captif Wi-Fi (AP `embewi-XXXX`), configuration IP statique ou DHCP, token affiché une seule fois à la validation
+- **API HTTPS:443** : `/info`, `/health`, `/ota/prepare`, `/ota/write`, `/ota/activate`, `/app/port`, `/tls/cert`
+- **OTA A/B** : écriture par chunks avec digest SHA-256 incrémental, reprise après coupure (staged NVS)
+- **Self-check** : validation bornée (15 s) → `mark_valid` ou rollback automatique ; état `FAILED` si rollback impossible
+- **Heartbeat** : POST toutes les 5 s vers le core (état, RSSI, heap, uptime, `ota_validated`)
+- **Logs sortants** : POST `/v1alpha1/logs` vers le core à chaque événement
+- **Port applicatif** : second port configurable (défaut 8080) pour l'app embarquée
+- **TLS** : certificat et clé privée provisionnés en NVS (`embewi_tls`)
+- **Authentification** : Bearer token par nœud, stocké en NVS (`embewi_prov`)
 
 ## Build
 
 ```bash
-idf.py set-target esp32
-idf.py build flash monitor
-# pour 8 MB : éditer sdkconfig.defaults (partitions_8mb.csv + FLASHSIZE_8MB)
-idf.py size            # vérifier que l'app tient dans le slot
+# Adapter le target au chip utilisé : esp32c3, esp32c6, esp32s3…
+idf.py set-target esp32c3
+idf.py build
+idf.py -p /dev/ttyUSB0 flash monitor
 ```
+
+Flash complète (NVS effacée, reprovisionnement) :
+
+```bash
+idf.py -p /dev/ttyUSB0 erase-flash flash monitor
+```
+
+Vérifier la taille du binaire (doit tenir dans le slot OTA) :
+
+```bash
+idf.py size
+```
+
+## Partitions
+
+| Fichier                | Flash   | Slot app | Usage recommandé         |
+| ---------------------- | ------- | -------- | ------------------------ |
+| `partitions_4mb.csv`   | 4 MB    | ~1.28 MB | Développement, tight     |
+| `partitions_8mb.csv`   | 8 MB    | ~3 MB    | Terrain, recommandé      |
+
+Sélection dans `sdkconfig.defaults` ou via `idf.py menuconfig`.
 
 ## Arborescence
 
 ```text
-embewi-agent/
+embewi/
 ├── CMakeLists.txt
-├── sdkconfig.defaults        # rollback + secure boot (commenté) + WDT
-├── partitions_4mb.csv        # A/B sans factory, app ≤ 1.28 MB (tight)
-├── partitions_8mb.csv        # A/B confortable (RECOMMANDÉE)
+├── sdkconfig.defaults          # rollback, WDT, Secure Boot commenté
+├── partitions_4mb.csv
+├── partitions_8mb.csv
+├── docs/
+│   ├── embewi-api.md           # documentation complète de l'API
+│   └── embewi-contract-v2.md  # contrat device ↔ core
 └── main/
-    ├── embewi_agent.h        # états, staged, runtime, prototypes
-    ├── embewi_main.c         # app_main : détecte PENDING_VERIFY au boot
-    ├── embewi_selfcheck.c    # validation bornée → mark_valid / rollback
-    ├── embewi_ota.c          # prepare/write(SHA incrémental)/activate + NVS
-    ├── embewi_http.c         # /info /health /ota/* + token auth
-    └── embewi_heartbeat.c    # heartbeat + logs sortants
+    ├── embewi_agent.h          # états, runtime, prototypes
+    ├── embewi_main.c           # app_main : boot, provisioning, démarrage tasks
+    ├── embewi_provision.c      # portail captif, NVS WiFi + IP + token
+    ├── embewi_selfcheck.c      # validation OTA, rollback, état FAILED
+    ├── embewi_ota.c            # prepare / write (SHA incrémental) / activate
+    ├── embewi_http.c           # serveur HTTPS, tous les endpoints inbound
+    ├── embewi_heartbeat.c      # heartbeat + logs sortants vers le core
+    ├── embewi_tls.c            # chargement cert/clé depuis NVS
+    ├── embewi_app.h            # interface app embarquée
+    ├── embewi_app_button.c     # exemple app : bouton
+    └── embewi_app_rainbow.c    # exemple app : LED rainbow
 ```
 
-## Mapping contrat → code
+## NVS
 
-| Contrat v2                              | Où                              |
-| --------------------------------------- | ------------------------------- |
-| §2 états                                | `embewi_agent.h` enum + `_str`  |
-| §3 PENDING_VERIFY + deadline + watchdog | `embewi_main.c` + `_selfcheck.c`|
-| §3 mark_valid / rollback                | `embewi_selfcheck.c`            |
-| §4 /info avec staged                    | `embewi_http.c` h_info          |
-| §4 /ota/write digest incrémental        | `embewi_ota.c` write_chunk/finish|
-| §5 heartbeat + ota_validated            | `embewi_heartbeat.c`            |
-| §6 staged NVS (reprise)                 | `embewi_ota.c` staged_*         |
-| §1 token auth inbound                   | `embewi_http.c` authorized()    |
+| Namespace      | Clés                                      | Contenu                        |
+| -------------- | ----------------------------------------- | ------------------------------ |
+| `embewi_prov`  | `ssid`, `pass`, `ctrl_url`, `token`       | WiFi + URL core + token auth   |
+| `embewi_prov`  | `ip`, `mask`, `gw`, `dns`                 | IP statique (vide = DHCP)      |
+| `embewi_tls`   | `cert`, `key`                             | Certificat TLS + clé privée    |
+| `embewi`       | `fw_size`, `app_port`                     | Taille OTA en cours, port app  |
 
-## La séquence qui peut tuer le projet (à tester en priorité)
+## Mapping contrat v2 → code
 
-```text
-flash ota_1 → reboot → boot PENDING_VERIFY
-  → embewi_main détecte l'état → embewi_selfcheck_start()
-  → deadline esp_timer armée (15 s)
-  → run_checks()
-      OK  → esp_ota_mark_app_valid_cancel_rollback() → RUNNING, ota_validated=true
-      KO  → esp_ota_mark_app_invalid_rollback_and_reboot()
-      HANG→ deadline_cb → esp_restart() → bootloader rollback (PENDING non confirmé)
-```
+| Section contrat                         | Fichier                              |
+| --------------------------------------- | ------------------------------------ |
+| §2 états                                | `embewi_agent.h` enum                |
+| §3 PENDING_VERIFY + deadline + watchdog | `embewi_main.c` + `embewi_selfcheck.c` |
+| §3 mark_valid / rollback / FAILED       | `embewi_selfcheck.c`                 |
+| §4 /info (flash_size, ram_size…)        | `embewi_http.c` `h_info()`           |
+| §4 /ota/write digest incrémental        | `embewi_ota.c` `write_chunk()`       |
+| §5 heartbeat + ota_validated            | `embewi_heartbeat.c`                 |
+| §6 staged NVS (reprise OTA)             | `embewi_ota.c` `staged_*()`          |
+| §1 token auth                           | `embewi_http.c` `authorized()`       |
 
-Test de non-régression à écrire d'abord : flasher une image dont `run_checks()`
-renvoie `false`, vérifier que le device revient SEUL sur l'ancienne image.
+## Secure Boot V2
 
-## TODO avant que ce soit un vrai agent
+Commenté dans `sdkconfig.defaults` — nécessite un burn eFuse **irréversible**.
+À activer uniquement en production sur matériel validé.
 
-```text
-[ ] wifi_connect() dans app_main (mode push : device joignable)
-[ ] parser JSON des bodies /ota/prepare et /ota/activate (cJSON)
-[ ] token par node provisionné en NVS/efuse (pas en dur dans le code)
-[ ] passer httpd → esp_https_server + cert serveur
-[ ] run_checks() réels : capteurs I2C/SPI, montage littlefs, control loop
-[ ] socket réel vers collector dans emit_payload()
-[ ] reprise activate après reboot process : recharger s_target depuis staged NVS
-[ ] anti-rollback efuse (secure_version) quand le schéma de version est figé
-[ ] hardware watchdog (TWDT) explicite autour du self-check en plus du timer
-```
+## Licence
 
-## Décision 4 MB vs 8 MB
-
-4 MB **tient** pour l'agent seul (app ~1.28 MB/slot, littlefs 1.44 MB), mais
-devient serré dès que Secure Boot v2 + flash encryption + TLS embarqué grossissent
-le binaire. Recommandation : **prototyper sur 4 MB, cibler 8 MB pour le terrain.**
-C'est un choix de BOM — à trancher avant de souder.
+MIT — voir [LICENSE](LICENSE).
