@@ -5,7 +5,6 @@
 #include "esp_err.h"
 
 #define EMBEWI_API_PREFIX        "/v1alpha1"
-#define EMBEWI_NODE_ID           "esp32-motor-left"   // TODO: depuis NVS/efuse
 #define EMBEWI_FW_NAME           "wheel-controller"
 #define EMBEWI_FW_VERSION        "1.0.0"
 
@@ -53,6 +52,7 @@ typedef struct {
     char   fw_version[16];
     char   fw_digest[72];
     char   deployment_id[64];         // déploiement courant validé
+    char   node_id[64];               // identifiant du nœud (NVS prov, défaut embewi-AABBCC)
     char   ctrl_url[129];             // URL contrôleur Kubernetes (depuis NVS prov)
     char   token[65];                 // token Bearer par node (NVS prov, généré si absent)
     uint16_t app_http_port;           // port du service applicatif (NVS, défaut 8080)
@@ -94,9 +94,10 @@ esp_err_t embewi_ota_activate(const char *deployment_id);
 // Démarre la task de validation. À appeler au boot SI on est en PENDING_VERIFY.
 void embewi_selfcheck_start(void);
 
-// --- Token par node (embewi_provision.c) -------------------------------------
-// Charge le token depuis NVS. Si absent, génère 16 octets aléatoires,
-// les encode en hex (32 chars), sauvegarde et affiche sur serial.
+// --- Node ID + Token par node (embewi_provision.c) ---------------------------
+// node_id : chargé depuis NVS ; si absent, ID temporaire depuis la MAC base.
+void embewi_node_id_load(char *out, size_t len);
+// token : chargé depuis NVS ; absent = tous les appels inbound refusés (401).
 void embewi_token_load(char *out, size_t len);
 esp_err_t embewi_token_save(const char *token);
 

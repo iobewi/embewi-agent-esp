@@ -77,7 +77,7 @@ static void heartbeat_task(void *arg) {
             "\"deployment_id\":\"%s\",\"firmware_digest\":\"%s\","
             "\"ota_validated\":%s,\"uptime_ms\":%lld,"
             "\"heap_free\":%u,\"rssi\":%d}",
-            EMBEWI_NODE_ID,
+            rt->node_id,
             (long long)(esp_timer_get_time() / 1000000),
             embewi_state_str(rt->state),
             rt->deployment_id, rt->fw_digest,
@@ -101,6 +101,6 @@ void embewi_log_emit(const char *level, const char *msg) {
         "{\"ts\":%lld,\"node\":\"%s\",\"workload\":\"%s\","
         "\"level\":\"%s\",\"msg\":\"%s\"}",
         (long long)(esp_timer_get_time() / 1000000),
-        EMBEWI_NODE_ID, EMBEWI_FW_NAME, level, msg);
+        embewi_rt()->node_id, EMBEWI_FW_NAME, level, msg);
     emit_to("/v1alpha1/logs", body);
 }

@@ -31,8 +31,9 @@ static const char *TAG = "embewi.prov";
 #define PROV_KEY_SSID  "ssid"
 #define PROV_KEY_PASS  "pass"
 #define PROV_KEY_URL   "ctrl_url"
-#define PROV_KEY_TOKEN "token"
-#define PROV_KEY_IP    "ip"
+#define PROV_KEY_NODE_ID "node_id"
+#define PROV_KEY_TOKEN   "token"
+#define PROV_KEY_IP      "ip"
 #define PROV_KEY_MASK  "mask"
 #define PROV_KEY_GW    "gw"
 #define PROV_KEY_DNS   "dns"
@@ -47,6 +48,7 @@ static int s_retry = 0;
 // ── NVS helpers ──────────────────────────────────────────────────────────────
 
 typedef struct {
+    char node_id[64];
     char ssid[33];
     char pass[65];
     char ctrl_url[129];
@@ -62,13 +64,14 @@ static bool prov_load(prov_cfg_t *cfg) {
     if (nvs_open(PROV_NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
 
     size_t l;
-    l = sizeof(cfg->ssid);     nvs_get_str(h, PROV_KEY_SSID, cfg->ssid,     &l);
-    l = sizeof(cfg->pass);     nvs_get_str(h, PROV_KEY_PASS, cfg->pass,     &l);
-    l = sizeof(cfg->ctrl_url); nvs_get_str(h, PROV_KEY_URL,  cfg->ctrl_url, &l);
-    l = sizeof(cfg->ip);       nvs_get_str(h, PROV_KEY_IP,   cfg->ip,       &l);
-    l = sizeof(cfg->mask);     nvs_get_str(h, PROV_KEY_MASK, cfg->mask,     &l);
-    l = sizeof(cfg->gw);       nvs_get_str(h, PROV_KEY_GW,   cfg->gw,       &l);
-    l = sizeof(cfg->dns);      nvs_get_str(h, PROV_KEY_DNS,  cfg->dns,      &l);
+    l = sizeof(cfg->node_id);  nvs_get_str(h, PROV_KEY_NODE_ID, cfg->node_id, &l);
+    l = sizeof(cfg->ssid);     nvs_get_str(h, PROV_KEY_SSID,    cfg->ssid,    &l);
+    l = sizeof(cfg->pass);     nvs_get_str(h, PROV_KEY_PASS,    cfg->pass,    &l);
+    l = sizeof(cfg->ctrl_url); nvs_get_str(h, PROV_KEY_URL,     cfg->ctrl_url,&l);
+    l = sizeof(cfg->ip);       nvs_get_str(h, PROV_KEY_IP,      cfg->ip,      &l);
+    l = sizeof(cfg->mask);     nvs_get_str(h, PROV_KEY_MASK,    cfg->mask,    &l);
+    l = sizeof(cfg->gw);       nvs_get_str(h, PROV_KEY_GW,      cfg->gw,      &l);
+    l = sizeof(cfg->dns);      nvs_get_str(h, PROV_KEY_DNS,     cfg->dns,     &l);
     nvs_close(h);
 
     if (cfg->ssid[0] == '\0') return false;
@@ -81,7 +84,8 @@ static esp_err_t prov_save(const prov_cfg_t *cfg) {
     nvs_handle_t h;
     esp_err_t err = nvs_open(PROV_NVS_NS, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    err = nvs_set_str(h, PROV_KEY_SSID, cfg->ssid);
+    err = nvs_set_str(h, PROV_KEY_NODE_ID, cfg->node_id);
+    if (err == ESP_OK) err = nvs_set_str(h, PROV_KEY_SSID, cfg->ssid);
     if (err == ESP_OK) err = nvs_set_str(h, PROV_KEY_PASS, cfg->pass);
     if (err == ESP_OK) err = nvs_set_str(h, PROV_KEY_URL,  cfg->ctrl_url);
     // IP statique — sauvés seulement si renseignés
@@ -140,7 +144,8 @@ static bool form_field(const char *body, const char *key,
 
 // ── Page HTML de provisioning ─────────────────────────────────────────────────
 
-static const char SETUP_HTML[] =
+// HTML coupé en deux pour injecter le node_id par défaut sans snprintf sur %
+static const char SETUP_HTML_A[] =
     "<!DOCTYPE html><html><head><meta charset='utf-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<title>Embewi Setup</title>"
@@ -157,7 +162,13 @@ static const char SETUP_HTML[] =
     "</style></head><body>"
     "<h2>Embewi &#8212; Configuration</h2>"
     "<form method='POST' action='/setup' onsubmit='prep()'>"
-
+    "<label>Identifiant du n&#339;ud</label>"
+    "<input name='node_id' maxlength='63' required value='";
+// ← node_id par défaut injecté ici par h_get via send_chunk →
+static const char SETUP_HTML_B[] =
+    "' autocomplete='off'>"
+    "<small style='color:#666'>Unique par device &mdash; format libre (ex&nbsp;: embewi-moteur-gauche)</small>"
+    "<hr>"
     "<label>WiFi SSID</label>"
     "<input name='ssid' maxlength='32' required autocomplete='off'>"
     "<label>WiFi Mot de passe</label>"
@@ -240,8 +251,16 @@ static const char SETUP_HTML[] =
 // ── Handlers HTTP du portail ──────────────────────────────────────────────────
 
 static esp_err_t h_get(httpd_req_t *req) {
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_BASE);
+    char def_id[24];
+    snprintf(def_id, sizeof(def_id), "embewi-%02x%02x%02x", mac[3], mac[4], mac[5]);
+
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_sendstr(req, SETUP_HTML);
+    httpd_resp_send_chunk(req, SETUP_HTML_A, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, def_id, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, SETUP_HTML_B, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
 
@@ -259,9 +278,10 @@ static esp_err_t h_post(httpd_req_t *req) {
     prov_cfg_t cfg = {0};
     char token[65] = {0};
     if (!form_field(buf, "ssid",     cfg.ssid,     sizeof(cfg.ssid))     || cfg.ssid[0] == '\0' ||
-        !form_field(buf, "ctrl_url", cfg.ctrl_url, sizeof(cfg.ctrl_url)) || cfg.ctrl_url[0] == '\0') {
+        !form_field(buf, "ctrl_url", cfg.ctrl_url, sizeof(cfg.ctrl_url)) || cfg.ctrl_url[0] == '\0' ||
+        !form_field(buf, "node_id",  cfg.node_id,  sizeof(cfg.node_id))  || cfg.node_id[0] == '\0') {
         httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "ssid et ctrl_url sont obligatoires");
+        httpd_resp_sendstr(req, "ssid, ctrl_url et node_id sont obligatoires");
         return ESP_OK;
     }
     form_field(buf, "pass",  cfg.pass,  sizeof(cfg.pass));
@@ -426,7 +446,25 @@ static void connect_sta(const prov_cfg_t *cfg) {
     }
 }
 
-// ── Token par node ────────────────────────────────────────────────────────────
+// ── Node ID + Token par node ──────────────────────────────────────────────────
+
+void embewi_node_id_load(char *out, size_t len) {
+    out[0] = '\0';
+    nvs_handle_t h;
+    if (nvs_open(PROV_NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        size_t sz = len;
+        nvs_get_str(h, PROV_KEY_NODE_ID, out, &sz);
+        nvs_close(h);
+    }
+    if (out[0] != '\0') {
+        ESP_LOGI(TAG, "node_id: %s", out);
+    } else {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_BASE);
+        snprintf(out, len, "embewi-%02x%02x%02x", mac[3], mac[4], mac[5]);
+        ESP_LOGW(TAG, "node_id absent NVS → ID temporaire %s (reprovisionner)", out);
+    }
+}
 
 void embewi_token_load(char *out, size_t len) {
     out[0] = '\0';

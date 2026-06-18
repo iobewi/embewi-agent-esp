@@ -98,6 +98,7 @@ void app_main(void) {
     char ctrl_url[129] = {0};
     embewi_wifi_start(ctrl_url, sizeof(ctrl_url));
     strlcpy(s_rt.ctrl_url, ctrl_url, sizeof(s_rt.ctrl_url));
+    embewi_node_id_load(s_rt.node_id, sizeof(s_rt.node_id));
     embewi_token_load(s_rt.token, sizeof(s_rt.token));
 
     uint16_t app_port = 8080;

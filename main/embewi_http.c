@@ -109,7 +109,7 @@ static esp_err_t h_info(httpd_req_t *req) {
         "\"staged\":{\"state\":\"%s\",\"slot\":\"%s\",\"digest\":\"%s\","
         "\"deployment_id\":\"%s\"},"
         "\"state\":\"%s\",\"app_port\":%u}",
-        EMBEWI_NODE_ID, (unsigned)flash_size, (unsigned)ram_size, rt->active_slot,
+        rt->node_id, (unsigned)flash_size, (unsigned)ram_size, rt->active_slot,
         EMBEWI_FW_NAME, rt->fw_version,
         rt->fw_digest, stage_str, st.slot, st.digest, st.deployment_id,
         embewi_state_str(rt->state), (unsigned)rt->app_http_port);
