@@ -1,6 +1,6 @@
 # Embewi — Référence API Agent
 
-> Documentation technique de l'agent ESP32-C3. Décrit exactement ce qui est
+> Documentation technique de l'agent ESP32 (famille : C3, C6, S3, H6…). Décrit exactement ce qui est
 > implémenté dans `embewi_http.c` (inbound) et `embewi_heartbeat.c` (outbound).
 > Le contrat de référence reste `embewi-contract-v2.md`.
 
@@ -42,18 +42,20 @@ la configuration est sauvegardée en NVS (`embewi_prov`) et le device redémarre
 
 | Champ | Obligatoire | Clé NVS | Description |
 |-------|-------------|---------|-------------|
+| `node_id` | Oui | `node_id` | Identifiant unique du nœud — pré-rempli `embewi-AABBCC` (3 derniers octets MAC)¹ |
 | `ssid` | Oui | `ssid` | SSID du réseau WiFi cible |
 | `pass` | Non | `pass` | Mot de passe WiFi |
 | `ctrl_url` | Oui | `ctrl_url` | URL du Runtime Core (`http://IP:port`) |
-| `ip` | Non¹ | `ip` | IP statique du device (vide = DHCP) |
-| `mask` | Non¹ | `mask` | Masque réseau (ex: `255.255.255.0`) |
-| `gw` | Non¹ | `gw` | Passerelle — pré-remplie avec l'IP du contrôleur² |
-| `dns` | Non | `dns` | DNS — pré-rempli avec la passerelle² |
-| `token` | Non | `token` | Token Bearer — généré aléatoirement si vide³ |
+| `ip` | Non² | `ip` | IP statique du device (vide = DHCP) |
+| `mask` | Non² | `mask` | Masque réseau (ex: `255.255.255.0`) |
+| `gw` | Non² | `gw` | Passerelle — pré-remplie avec l'IP du contrôleur³ |
+| `dns` | Non | `dns` | DNS — pré-rempli avec la passerelle³ |
+| `token` | Non | `token` | Token Bearer — généré aléatoirement si vide⁴ |
 
-> ¹ `ip`, `mask` et `gw` sont tous obligatoires ensemble si IP statique.  
-> ² Valeurs déduites automatiquement dans le formulaire (éditables).  
-> ³ Le token généré est affiché **une seule fois** dans la page de confirmation —
+> ¹ `node_id` est modifiable librement (format libre, ex: `embewi-moteur-gauche`). Si absent de NVS au boot (flash directe sans portail), un ID temporaire MAC-based est utilisé en RAM.  
+> ² `ip`, `mask` et `gw` sont tous obligatoires ensemble si IP statique.  
+> ³ Valeurs déduites automatiquement dans le formulaire (éditables).  
+> ⁴ Le token généré est affiché **une seule fois** dans la page de confirmation —
 >   le noter immédiatement.
 
 **Logique réseau :**
@@ -97,7 +99,7 @@ Identité matérielle, firmware courant et slot stagé (clé de l'idempotence OT
 
 ```json
 {
-  "node_id": "esp32-motor-left",
+  "node_id": "embewi-a1b2c3",
   "chip": "esp32c3",
   "idf_version": "v6.0.0",
   "flash_size": 4194304,
@@ -122,7 +124,7 @@ Identité matérielle, firmware courant et slot stagé (clé de l'idempotence OT
 
 | Champ | Type | Description |
 |-------|------|-------------|
-| `node_id` | string | Identifiant node (compilé, `EMBEWI_NODE_ID`) |
+| `node_id` | string | Identifiant du nœud (NVS `embewi_prov`/`node_id`, défaut `embewi-AABBCC` depuis la MAC) |
 | `chip` | string | Cible IDF (`CONFIG_IDF_TARGET`) |
 | `idf_version` | string | Version ESP-IDF (`IDF_VER`) |
 | `flash_size` | uint | Taille flash SPI en octets |
@@ -345,7 +347,7 @@ Si `ctrl_url` est vide ou le Core injoignable, l'agent continue de fonctionner
 
 ```json
 {
-  "node_id":         "esp32-motor-left",
+  "node_id":         "embewi-a1b2c3",
   "ts":              1710000000,
   "state":           "running",
   "deployment_id":   "wheel-controller-1.1.0",
@@ -377,7 +379,7 @@ Si `ctrl_url` est vide ou le Core injoignable, l'agent continue de fonctionner
 ```json
 {
   "ts":       1710000000,
-  "node":     "esp32-motor-left",
+  "node":     "embewi-a1b2c3",
   "workload": "wheel-controller",
   "level":    "info",
   "msg":      "embewi agent up"

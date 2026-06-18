@@ -175,7 +175,7 @@ Identité matérielle **+ slot stagé** (clé de l'idempotence, cf. §6).
 
 ```json
 {
-  "node_id": "esp32-motor-left",
+  "node_id": "embewi-a1b2c3",
   "chip": "esp32",
   "idf_version": "5.2",
   "flash_size": 4194304,
@@ -296,7 +296,7 @@ Device-initiated (compatible avec un device qui n'accepte pas d'inbound).
 
 ```json
 {
-  "node_id": "esp32-motor-left",
+  "node_id": "embewi-a1b2c3",
   "ts": 1710000000,
   "state": "running",
   "deployment_id": "wheel-controller-1.1.0",
@@ -318,7 +318,7 @@ Une ligne JSON par message :
 ```json
 {
   "ts": 1710000000,
-  "node": "esp32-motor-left",
+  "node": "embewi-a1b2c3",
   "workload": "wheel-controller",
   "level": "info",
   "msg": "control loop started"
@@ -367,7 +367,7 @@ On privilégie le pin explicite :
 
 ```yaml
 spec:
-  nodeName: esp32-motor-left
+  nodeName: embewi-a1b2c3
 ```
 
 plutôt que le sélecteur qui peut matcher plusieurs devices :
