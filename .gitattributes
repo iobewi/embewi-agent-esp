@@ -1,0 +1,8 @@
+# Normalise tous les fichiers texte en LF dans le repo et à la sortie (checkout).
+# S'applique à tous les clones quel que soit l'OS ou core.autocrlf du développeur.
+* text=auto eol=lf
+
+# Binaires — pas de conversion
+*.bin  binary
+*.der  binary
+*.csv  text eol=lf

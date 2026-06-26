@@ -1,8 +1,12 @@
 # Build output
 build/
+build-prod/
 .cache/
 
 # ESP-IDF generated
+# sdkconfig est chip-spécifique (contient CONFIG_IDF_TARGET). Ne pas committer :
+# utiliser `idf.py set-target <chip>` + sdkconfig.defaults pour les options communes.
+sdkconfig
 sdkconfig.old
 dependencies.lock
 managed_components/
@@ -41,3 +45,6 @@ docs/_templates/
 __pycache__/
 *.pyc
 .python-version
+
+# Binaire compilé des tests host
+test/host/test_parse

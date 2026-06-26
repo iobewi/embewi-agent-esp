@@ -8,6 +8,7 @@ RUN apt-get update -y && apt-get install -y \
     udev \
     curl \
     nodejs \
+    clangd \
     npm
 
 # Installer Claude Code via npm

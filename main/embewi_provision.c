@@ -14,6 +14,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_http_server.h"
+#include "esp_https_server.h"
 #include "esp_system.h"
 #include "esp_mac.h"
 #include "esp_random.h"
@@ -41,6 +42,9 @@ static const char *TAG = "embewi.prov";
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 #define WIFI_MAX_RETRY     5
+
+// Borne la durée de vie d'une session de portail AP (hygiène / anti-wedge).
+#define AP_PORTAL_TIMEOUT_MS  (10 * 60 * 1000)   // 10 min sans config → reboot
 
 static EventGroupHandle_t s_wifi_eg;
 static int s_retry = 0;
@@ -356,13 +360,26 @@ static void run_ap_portal(void) {
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGW(TAG, "AP démarré : SSID=%s — connectez-vous et ouvrez http://192.168.4.1",
+    ESP_LOGW(TAG, "AP %s — ouvrez https://192.168.4.1 (cert auto-signé : accepter l'avertissement)",
              ap_ssid);
 
+    // Portail en HTTPS : la soumission (mot de passe WiFi + token) est chiffrée
+    // même sur l'AP ouvert → plus de sniffing passif des secrets. Cert = NVS si
+    // présent, sinon fallback auto-signé embarqué (cf. embewi_tls_load).
+    // Compromis assumé : la détection captive-portal auto des OS (sondes HTTP) ne
+    // déclenche plus de popup ; l'utilisateur ouvre l'URL https:// manuellement.
+    const uint8_t *cert; size_t cert_len;
+    const uint8_t *key;  size_t key_len;
+    embewi_tls_load(&cert, &cert_len, &key, &key_len);
+
     httpd_handle_t srv = NULL;
-    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.uri_match_fn = httpd_uri_match_wildcard;
-    ESP_ERROR_CHECK(httpd_start(&srv, &cfg));
+    httpd_ssl_config_t cfg = HTTPD_SSL_CONFIG_DEFAULT();
+    cfg.httpd.uri_match_fn = httpd_uri_match_wildcard;
+    cfg.servercert     = cert;
+    cfg.servercert_len = cert_len;
+    cfg.prvtkey_pem    = key;
+    cfg.prvtkey_len    = key_len;
+    ESP_ERROR_CHECK(httpd_ssl_start(&srv, &cfg));
 
     const httpd_uri_t routes[] = {
         { .uri = "/",      .method = HTTP_GET,  .handler = h_get  },
@@ -374,8 +391,18 @@ static void run_ap_portal(void) {
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++)
         httpd_register_uri_handler(srv, &routes[i]);
 
-    // Bloque indéfiniment : h_post fait esp_restart() après sauvegarde.
-    while (true) vTaskDelay(pdMS_TO_TICKS(1000));
+    // Fenêtre AP bornée : h_post reboote en cas de succès. Si on est toujours là
+    // après le timeout, aucune config soumise → reboot pour repartir d'un état
+    // propre (évite un AP ouvert wedgé indéfiniment ; le device ré-entre en AP
+    // au boot s'il n'est toujours pas provisionné).
+    int elapsed_ms = 0;
+    while (elapsed_ms < AP_PORTAL_TIMEOUT_MS) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        elapsed_ms += 1000;
+    }
+    ESP_LOGW(TAG, "timeout portail (%d min) sans config → reboot",
+             AP_PORTAL_TIMEOUT_MS / 60000);
+    esp_restart();
 }
 
 // ── Mode STA avec credentials NVS ────────────────────────────────────────────

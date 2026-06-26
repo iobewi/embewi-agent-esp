@@ -1,5 +1,7 @@
-// embewi_app_rainbow.c — WS2812 arc-en-ciel sur GPIO 10 via RMT
+// embewi_app_rainbow.c — WS2812 arc-en-ciel via RMT
 //
+// GPIO lu depuis NVS au boot via la clé "gpio_ws2812" (McuConfigMap §4a).
+// Défaut build : CONFIG_EMBEWI_WS2812_GPIO (GPIO10 par défaut).
 // Protocole WS2812B, ordre GRB, MSB en premier.
 // Timing à 10 MHz (100 ns/tick) :
 //   bit 0 → H=4ticks(400ns)  L=8ticks(800ns)
@@ -14,13 +16,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "embewi_app.h"
+#include "embewi_agent.h"
 
-#define WS2812_GPIO      10
-#define RMT_RES_HZ       10000000   // 10 MHz
-#define RAINBOW_PERIOD_MS 20        // ~5 s par cycle complet
-#define BRIGHTNESS        60        // 0-255, doux pour les yeux
+#define RMT_RES_HZ        10000000   // 10 MHz
+#define RAINBOW_PERIOD_MS 20         // ~5 s par cycle complet
+#define BRIGHTNESS        60         // 0-255, doux pour les yeux
 
 static const char *TAG = "embewi.rainbow";
+static int                  s_gpio    = CONFIG_EMBEWI_WS2812_GPIO;
 static rmt_channel_handle_t s_chan    = NULL;
 static rmt_encoder_handle_t s_encoder = NULL;
 static httpd_handle_t       s_app_srv = NULL;
@@ -59,10 +62,12 @@ static void rainbow_task(void *arg) {
 }
 
 void embewi_app_init(void) {
+    s_gpio = embewi_cfg_get_int("gpio_ws2812", CONFIG_EMBEWI_WS2812_GPIO);
+
     rmt_tx_channel_config_t chan_cfg = {
-        .gpio_num         = WS2812_GPIO,
-        .clk_src          = RMT_CLK_SRC_DEFAULT,
-        .resolution_hz    = RMT_RES_HZ,
+        .gpio_num          = s_gpio,
+        .clk_src           = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz     = RMT_RES_HZ,
         .mem_block_symbols = 64,
         .trans_queue_depth = 4,
     };
@@ -83,7 +88,7 @@ void embewi_app_init(void) {
 
     rmt_enable(s_chan);
     xTaskCreate(rainbow_task, "embewi_rainbow", 2048, NULL, 3, NULL);
-    ESP_LOGI(TAG, "WS2812 rainbow démarré GPIO%d", WS2812_GPIO);
+    ESP_LOGI(TAG, "WS2812 rainbow démarré GPIO%d", s_gpio);
 }
 
 // Selfcheck : le canal RMT est initialisé → hardware OK

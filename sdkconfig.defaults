@@ -32,6 +32,11 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
 
+# --- Trace facility : métrique task_hwm_min sur TOUTES les tasks (§5) --------
+# Sans ça, le heartbeat reporte seulement le HWM de sa propre task (fallback).
+# NB : ne s'applique qu'aux nouveaux sdkconfig (effacer sdkconfig pour l'adopter).
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
 # --- HTTPS server (token MVP ; mTLS cible) ----------------------------------
 CONFIG_ESP_HTTPS_SERVER_ENABLE=y
 

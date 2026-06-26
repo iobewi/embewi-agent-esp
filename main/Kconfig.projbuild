@@ -1,0 +1,39 @@
+menu "Embewi GPIO"
+
+    config EMBEWI_BUTTON_GPIO
+        int "GPIO pour le bouton de test (BOOT sur eval board)"
+        default 9 if IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32H2
+        default 0
+        help
+            GPIO9  = bouton BOOT sur ESP32-C3, C6, H2.
+            GPIO0  = bouton BOOT sur ESP32, S2, S3.
+            Ajuster si la carte cible câble le bouton ailleurs.
+
+    config EMBEWI_WS2812_GPIO
+        int "GPIO pour la LED WS2812B (app rainbow)"
+        default 10
+        help
+            GPIO libre sur la carte cible. Vérifier que le GPIO choisi
+            supporte la sortie RMT (tous les GPIO sur ESP32-C3/S3 ; sur
+            ESP32 classique, seuls certains GPIO sont compatibles RMT TX).
+
+endmenu
+
+menu "Embewi Sécurité"
+
+    config EMBEWI_VERIFY_CORE_CERT
+        bool "Vérifier le certificat TLS du Core (flux sortants)"
+        default n
+        help
+            DEV (n)  : heartbeat/logs/WS chiffrés mais NON authentifiés
+                       (skip_cert_common_name_check). Le device ne vérifie pas
+                       l'identité du Core — MITM possible. Pratique sans PKI.
+
+            PROD (y) : le device vérifie le serveur Core contre une CA embarquée
+                       (main/core_ca.pem, requis au build). Ferme le MITM.
+                       Activé par sdkconfig.defaults.prod.
+
+            La CA embarquée n'est PAS un secret (cert public). Elle doit signer
+            le certificat serveur du Core (cert-manager interne, etc.).
+
+endmenu

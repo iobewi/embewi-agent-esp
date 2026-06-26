@@ -80,6 +80,76 @@ Exigences minimales MVP :
 - Anti-rollback eFuse activé dès qu'un schéma de version de sécurité est en place.
 - Flash encryption : optionnel MVP, obligatoire si le device peut être volé.
 
+> **Dev vs Prod.** Ces exigences sont des opérations eFuse **irréversibles** :
+> elles ne s'activent **pas en dev**. Elles sont portées par un profil de build
+> séparé et opt-in (`sdkconfig.defaults.prod` + `CONFIG_EMBEWI_VERIFY_CORE_CERT`
+> pour l'auth des flux sortants). Procédure complète, gestion de la clé de
+> signature et de la CA du Core : **`embewi-prod-security.md`**. Le flux de dev
+> reste chiffré-mais-non-authentifié et librement reflashable.
+
+---
+
+## 1a. Enrôlement et identité du device **[NORMATIF]**
+
+Un device n'est pas « ajouté » par le Core : il **se présente**. L'identité et le
+secret d'authentification sont établis **hors-bande au provisioning**, pas
+négociés en ligne (pas d'AC, pas de CSR en MVP — cf. §1).
+
+```text
+Provisioning (portail captif, premier boot, AP "embewi-XXXX") :
+  admin saisit : node_id, ctrl_url, [token]
+  token vide   → généré aléatoirement par le device (128 bits hex)
+  token affiché UNE SEULE FOIS sur la page de confirmation
+  persisté en NVS (namespace embewi_prov)
+```
+
+**Durcissement du provisioning (l'AP est le moment le plus faible — aucun secret
+partagé n'existe encore) :**
+
+```text
+- AP ouvert PAR NÉCESSITÉ (œuf/poule : pas de clé pré-partageable avec un device
+  vierge). Un mot de passe dérivé du SSID serait du théâtre (déchiffrable).
+- Portail servi en HTTPS (cert auto-signé embarqué) → le mot de passe WiFi et le
+  token sont chiffrés au niveau applicatif même sur l'AP ouvert. Bloque le
+  sniffing PASSIF. Résiduel : MITM actif (rogue AP) — accepté pour le MVP.
+  Coût : l'utilisateur ouvre https://192.168.4.1 manuellement (avertissement cert).
+- Fenêtre AP bornée (10 min sans config → reboot) : évite un AP ouvert wedgé
+  indéfiniment. Hypothèse de déploiement : provisioning en zone de confiance.
+- Durcissement supérieur (hors MVP) : ESP-IDF wifi_provisioning security2
+  (X25519 + proof-of-possession imprimé) pour résister au MITM actif.
+```
+
+Le couple `(node_id, token)` est l'identité du device. Le token est le secret
+partagé : l'admin le recopie dans le Core (typiquement un `McuSecret`) au moment
+où il crée le `McuNode` correspondant. **Le Core et le device connaissent le
+token ; le réseau ne le voit jamais en clair (HTTPS, §1).**
+
+Découverte côté Core — deux modèles compatibles :
+
+```text
+1. Pré-déclaré (recommandé) :
+   l'admin crée McuNode{node_id, tokenRef} AVANT le boot du device.
+   Au premier heartbeat, le Core matche node_id + valide le token → Ready.
+
+2. Auto-enrôlement (TOFU, Trust On First Use) :
+   le Core accepte un node_id inconnu au premier heartbeat et crée un
+   McuNode en état "Pending" jusqu'à approbation manuelle (kubectl approve).
+   Le token reçu devient le secret de référence à l'approbation.
+```
+
+Invariants côté agent (ce que ce repo garantit) :
+
+```text
+- le device émet son node_id dans CHAQUE heartbeat (auto-annonce continue).
+- aucun appel inbound n'est accepté tant que le token NVS est vide (401, §1).
+- node_id absent en NVS → ID temporaire dérivé de la MAC (embewi-AABBCC),
+  marqué comme tel : à reprovisionner (pas une identité stable).
+- ré-enrôlement = repasser par le portail captif (efface/réécrit NVS prov).
+```
+
+Le Core est responsable de refuser un `node_id` en double (cf. §7,
+`AmbiguousBinding`) — l'agent ne déduplique pas, il s'annonce.
+
 ---
 
 ## 2. États de l'agent **[NORMATIF]**
@@ -193,7 +263,9 @@ Identité matérielle **+ slot stagé** (clé de l'idempotence, cf. §6).
     "deployment_id": "wheel-controller-1.1.0",
     "state": "written"
   },
-  "state": "running"
+  "state": "running",
+  "config_generation": 2,
+  "app_port": 8080
 }
 ```
 
@@ -268,9 +340,50 @@ de transfert. Pas de relecture de la partition flash après coup. Rejet si misma
 (`status: "digest_mismatch"`). Le Core a vérifié pour l'efficacité ; l'ESP
 revérifie ce qu'il a réellement écrit, sans coût de relecture.
 
-> **[RÉSERVE]** Write chunké reprenable (`Content-Range` + offset). Hors MVP : un
-> `PUT` monolithique n'est pas reprenable, une coupure wifi à 90 % refait tout.
-> À ajouter avant tout déploiement sur réseau instable.
+#### Write reprenable — `Content-Range` (in-session) **[NORMATIF]**
+
+Le `PUT` accepte un header optionnel pour reprendre après une coupure réseau
+sans retransférer tout le binaire :
+
+```text
+Content-Range: bytes <start>-<end>/<total>     (bornes inclusives, octets)
+```
+
+Protocole :
+
+```text
+- Header absent       → écriture monolithique (1 PUT = image entière). Legacy,
+                        toujours supporté.
+- start == 0          → nouvelle session : le slot est (ré)initialisé.
+- start > 0           → reprise. Doit correspondre à l'offset déjà écrit côté
+                        device. Sinon → 416 + l'offset réel (resync).
+- end + 1 == total    → dernière plage : finalisation + vérif digest.
+- sinon               → 200 {"status":"partial","written":<offset>}.
+```
+
+Le device garde la session d'écriture ouverte (handle OTA + état SHA-256) **entre
+les requêtes** : une déconnexion TCP n'avorte rien. Le Core **chunke** l'image en
+plusieurs plages et, sur échec, reprend à l'offset rapporté par le device.
+
+Réponse de resynchronisation (offset demandé ≠ offset réel) :
+
+```text
+HTTP 416 Range Not Satisfiable
+{ "error": "range_mismatch", "written": 884736 }
+```
+
+Réponse de plage intermédiaire :
+
+```text
+HTTP 200
+{ "status": "partial", "written": 65536 }
+```
+
+`Content-Range` malformé → `400 {"error":"bad_content_range"}`.
+
+> **Reprise inter-reboot** (le device redémarre au milieu du transfert) reste
+> **[RÉSERVE]** : l'état SHA et le handle OTA sont en RAM. Le Core repart alors
+> de `start=0`. La reprise in-session couvre le cas courant (coupure wifi).
 
 ### `POST /v1alpha1/ota/activate`
 
@@ -286,6 +399,234 @@ Réponse avant reboot :
 { "status": "rebooting", "target_slot": "ota_1" }
 ```
 
+### `GET /v1alpha1/config`
+
+Lit l'état de la configuration de l'agent : valeurs actives (chargées au dernier
+boot) et valeurs NVS courantes (peut diverger si un `POST /config` a été fait
+sans reboot depuis).
+
+```json
+{
+  "generation": 3,
+  "active_generation": 2,
+  "active": {
+    "gpio_button": "9",
+    "gpio_ws2812": "10"
+  },
+  "nvs": {
+    "gpio_button": "9",
+    "gpio_ws2812": "48"
+  }
+}
+```
+
+`generation > active_generation` → config poussée mais reboot en attente.
+Quand NVS est vide (aucun push depuis le flash) : `"nvs": {}`, les deux
+générations valent `0`.
+
+### `POST /v1alpha1/config`
+
+Pousse un jeu de clés/valeurs vers le NVS de l'agent. Sémantique
+**merge-on-key** : seules les clés citées sont écrites, les autres sont
+inchangées. Les valeurs sont des **chaînes UTF-8** ; l'app interprète le
+type (`atoi`, `strtof`, etc.).
+
+```json
+{
+  "data": {
+    "gpio_button": "9",
+    "gpio_ws2812": "48"
+  }
+}
+```
+
+Réponse :
+
+```json
+{
+  "status": "saved",
+  "generation": 3,
+  "note": "effective_after_reboot"
+}
+```
+
+`generation` est incrémenté à chaque `POST /config`. Pour **réinitialiser**
+une clé au défaut build, pousser la valeur `""` (chaîne vide) — l'agent
+efface la clé NVS.
+
+### `POST /v1alpha1/app/port`
+
+Reconfigure le port TCP du service applicatif embarqué (ex. serveur REST de
+l'application métier). Pris en compte au prochain démarrage de l'app service.
+
+```json
+{ "port": 9090 }
+```
+
+Réponse :
+
+```json
+{ "status": "saved", "port": 9090 }
+```
+
+Contrainte : `1024 ≤ port ≤ 65535`. Valeur persistée en NVS, active au reboot.
+
+### `POST /v1alpha1/tls/cert`
+
+Pousse un certificat TLS et sa clé privée PEM pour le serveur HTTPS de l'agent.
+Permet la rotation de certificat sans cycle OTA. Effectif au prochain
+`embewi_http_start()` (i.e. après reboot).
+
+```json
+{
+  "cert_pem": "-----BEGIN CERTIFICATE-----\n...",
+  "key_pem":  "-----BEGIN EC PRIVATE KEY-----\n..."
+}
+```
+
+Réponse :
+
+```json
+{ "status": "saved" }
+```
+
+Fallback : si aucun certificat n'a été poussé, l'agent utilise un certificat
+auto-signé EC P-256 généré au build (non secret, pour démarrage sans provisioning
+TLS préalable).
+
+### `POST /v1alpha1/token`
+
+Rotation du token Bearer par node **sans repasser par le portail captif**
+(qui exige un accès physique). Authentifié avec le token **courant** ; en cas de
+succès, le nouveau token remplace l'ancien en NVS et devient seul valide.
+
+```json
+{ "token": "<nouveau-token>" }
+```
+
+Réponse :
+
+```json
+{ "status": "rotated" }
+```
+
+Protocole de rotation sans coupure (responsabilité Core) :
+
+```text
+1. Core génère newToken, met à jour le McuSecret.
+2. Core: POST /token (Authorization: Bearer <oldToken>) {"token":"<newToken>"}
+3. device persiste newToken, répond 200, puis n'accepte plus que newToken.
+4. Core bascule sur newToken pour tous les appels suivants.
+```
+
+Contrainte : `8 ≤ len(token) ≤ 64`. Atomicité : l'écriture NVS est commitée
+**avant** la réponse ; si le commit échoue, l'ancien token reste actif et la
+réponse est `500` (`{"error":"nvs_write_failed"}`) — pas de fenêtre où aucun
+token n'est valide. Un token vide (`""`) est **refusé** (`400`) : on ne
+désactive pas l'auth par rotation (utiliser le portail pour un reset complet).
+
+> **[RÉSERVE]** Rotation à double token (overlap window où ancien ET nouveau
+> sont acceptés) pour tolérer un crash Core entre l'étape 3 et 4. Hors MVP : le
+> Core ré-applique simplement la rotation si le heartbeat reste authentifié à
+> l'ancien token au-delà d'un délai.
+
+### `POST /v1alpha1/reboot`
+
+Déclenche un reboot contrôlé, authentifié comme tous les endpoints inbound.
+Le Core l'utilise pour appliquer un `POST /config` sans cycle OTA complet.
+Si un OTA est planifié dans la même réconciliation, **ne pas appeler `/reboot`
+séparément** : `POST /ota/activate` couvre déjà le reboot.
+
+```json
+{}
+```
+
+Réponse avant reboot :
+
+```json
+{ "status": "rebooting" }
+```
+
+---
+
+## 4a. Modèle de config en couches **[NORMATIF]**
+
+```text
+Priorité (haute → basse) :
+  1. NVS runtime config  → poussé par Core via POST /config (McuConfigMap)
+  2. Défaut build        → CONFIG_EMBEWI_* baked dans le binaire (Kconfig)
+```
+
+L'agent lit la config NVS **une seule fois au boot** (`embewi_app_init`).
+Toute modification nécessite un reboot pour prendre effet — explicite via
+`POST /reboot` ou implicite via `POST /ota/activate`.
+
+**L'agent ne valide pas la sémantique des valeurs.** Il stocke et expose.
+La validation (plage GPIO valide, fréquence cohérente…) est responsabilité
+du Core au moment du push (cf. §9). Mécanisme recommandé : un
+ValidatingAdmissionWebhook côté Core — voir `embewi-core-design.md` §2 (inclut
+les limites de taille clé/valeur à faire respecter, couplées aux buffers agent).
+
+Clés standardisées (convention inter-apps, non imposées par l'agent) :
+
+| Clé           | Type | Description                                   |
+|---------------|------|-----------------------------------------------|
+| `gpio_button` | int  | GPIO du bouton de test (BOOT sur eval boards) |
+| `gpio_ws2812` | int  | GPIO de la LED WS2812B (app rainbow)          |
+| `ntp_server`  | str  | serveur NTP (défaut `pool.ntp.org` ; DHCP aussi utilisé) |
+
+Clés spécifiques à une app : documentées dans le `McuConfigMap` du
+déploiement, opaques pour l'agent.
+
+---
+
+## 4b. Vocabulaire des codes d'erreur **[NORMATIF]**
+
+Codes stables et exhaustifs émis par l'agent. Le Core **doit** les mapper en
+Kubernetes Events / conditions plutôt que de parser des messages libres (qui
+peuvent changer). Tout nouveau code passe par une révision de ce contrat.
+
+**`reason` de `POST /ota/prepare`** (champ `reason`, HTTP 200, `accepted:false`) :
+
+| `reason`           | Cause                                              | Event Core suggéré      |
+|--------------------|----------------------------------------------------|-------------------------|
+| `chip_mismatch`    | binaire pour un autre SoC que celui du device      | `OTARejectedChip`       |
+| `layout_mismatch`  | `partition_layout` incompatible                    | `OTARejectedLayout`     |
+| `idf_incompatible` | version IDF du binaire non supportée               | `OTARejectedIdf`        |
+| `size_too_large`   | image > taille du slot inactif                     | `OTARejectedSize`       |
+| `busy`             | un OTA est déjà en cours (slot réservé)            | `OTABusy`               |
+
+**`status` de `PUT /ota/write`** (HTTP 200 sauf mention) :
+
+| `status`/`error`  | Cause                                          | Event Core suggéré    |
+|-------------------|------------------------------------------------|-----------------------|
+| `written`         | succès, digest vérifié                          | `OTAWritten`          |
+| `partial`         | plage écrite, transfert non terminé (reprise)   | — (interne)           |
+| `digest_mismatch` | SHA-256 écrit ≠ `X-Embewi-Digest`              | `OTADigestMismatch`   |
+| `write_failed`    | échec flash (`esp_ota_write`)                   | `OTAWriteFailed`      |
+| `ota_begin_failed`| `esp_ota_begin` KO (HTTP 500)                   | `OTABeginFailed`      |
+| `range_mismatch`  | offset Content-Range ≠ offset device (HTTP 416) | — (resync, attendu)   |
+| `bad_content_range`| header Content-Range malformé (HTTP 400)       | `OTABadRange`         |
+
+**Erreurs de `POST /config`** (champ `error`) :
+
+| `error`              | HTTP | Cause                                    |
+|----------------------|------|------------------------------------------|
+| `missing_data_field` | 400  | objet `data` absent du corps             |
+| `nvs_write_failed`   | 500  | échec d'écriture NVS                      |
+
+**Erreurs transverses** (tout endpoint inbound) :
+
+| `error`          | HTTP | Cause                                        |
+|------------------|------|----------------------------------------------|
+| `unauthorized`   | 401  | token absent / invalide (§1)                 |
+| `body_too_large` | 413  | corps de requête > limite                     |
+| `nvs_write_failed` | 500 | échec NVS (rotation token, port, cert…)      |
+
+Règle : un refus métier légitime (`prepare` rejeté, `digest_mismatch`) répond
+**HTTP 200** avec le code dans le corps — ce n'est pas une erreur de transport.
+Les `4xx/5xx` sont réservés aux erreurs de protocole/ressource.
+
 ---
 
 ## 5. Flux sortants (ESP → Core / collector) **[NORMATIF]**
@@ -293,6 +634,8 @@ Réponse avant reboot :
 ### Heartbeat
 
 Device-initiated (compatible avec un device qui n'accepte pas d'inbound).
+Transport : HTTPS — le scheme est forcé en `https://` indépendamment du scheme
+stocké dans `ctrl_url` (contrat §1).
 
 ```json
 {
@@ -304,12 +647,52 @@ Device-initiated (compatible avec un device qui n'accepte pas d'inbound).
   "ota_validated": true,
   "uptime_ms": 120034,
   "heap_free": 82344,
-  "rssi": -61
+  "rssi": -61,
+  "config_generation": 2,
+  "temp_celsius": 41.2,
+  "task_hwm_min": 1536
 }
 ```
 
 `ota_validated` distingue `pending_verify` (false) de `running` (true) même si
 le digest est déjà celui de la nouvelle image.
+
+**Horloge / `ts` (NORMATIF).** `ts` est un **epoch UNIX en secondes, UTC**,
+synchronisé par **SNTP** au boot (serveur via la clé config `ntp_server` + NTP
+DHCP). Tant que la synchro n'a pas eu lieu, l'horloge ESP démarre à 1970 et `ts`
+ne vaut que l'uptime (petite valeur) — le Core détecte ce cas par `ts` très
+faible. **Dépendance prod** : la vérification du certificat du Core (TLS sortant
+authentifié, §1) contrôle les dates de validité du cert ; sans horloge juste, le
+handshake TLS échoue. L'agent synchronise donc l'heure **avant** d'ouvrir ses
+flux sortants. NTP injoignable en prod = pas de heartbeat/log TLS tant que
+l'heure n'est pas posée (fail-closed assumé).
+
+**Schéma extensible (télémétrie → métriques).** Le heartbeat est un objet JSON
+**ouvert** : le Core doit ignorer les champs inconnus (forward-compatibility).
+Les champs de télémétrie au-delà du minimum requis sont **optionnels** et
+exposables côté Core en métriques (`kubectl top mcunode`, Prometheus).
+
+Champs **requis** : `node_id`, `ts`, `state`, `ota_validated`,
+`config_generation`. Tout le reste est best-effort.
+
+| Champ              | Statut    | Métrique Core suggérée            |
+|--------------------|-----------|-----------------------------------|
+| `heap_free`        | présent   | `mcunode_heap_free_bytes`         |
+| `rssi`             | présent   | `mcunode_wifi_rssi_dbm`           |
+| `uptime_ms`        | présent   | `mcunode_uptime_seconds`          |
+| `temp_celsius`     | présent   | `mcunode_temperature_celsius`     |
+| `task_hwm_min`     | présent   | `mcunode_task_stack_hwm_bytes`    |
+| `flash_wear_pct`   | réservé   | `mcunode_flash_wear_ratio`        |
+
+`temp_celsius` : capteur interne du SoC, **°C**. Sentinelle **`-127.0`** si le
+capteur est indisponible (le Core doit filtrer cette valeur).
+
+`task_hwm_min` : plus petit high-water-mark de stack restant, en **octets** (plus
+c'est proche de 0, plus une task approche de l'overflow). Min sur toutes les tasks
+si `CONFIG_FREERTOS_USE_TRACE_FACILITY` est actif, sinon HWM de la task heartbeat.
+
+`flash_wear_pct` reste **réservé** : pas d'API ESP-IDF pour lire l'usure des
+partitions OTA/app. Le nom est figé pour le jour où une mesure existera.
 
 ### Logs
 
@@ -325,7 +708,48 @@ Une ligne JSON par message :
 }
 ```
 
-Flux MVP : `ESP → TCP/UDP collector → Vector/Loki`.
+Flux MVP : `ESP → HTTPS POST → Core /v1alpha1/logs`.
+
+Transport : le scheme est forcé en `https://` côté agent quel que soit le
+scheme provisionné en NVS — un `ctrl_url` en `http://` est une erreur de
+configuration, non une option. Même politique que le heartbeat.
+
+### Streaming de logs (WebSocket — outbound) **[NORMATIF]**
+
+L'agent ouvre une connexion WebSocket **cliente** vers
+`wss://ctrl_url_host:port/v1alpha1/logs` — le scheme est toujours `wss://`
+(contrat §1 : transport chiffré obligatoire), quel que soit le scheme de `ctrl_url`. Tous les messages `ESP_LOGx` — composants IDF, WiFi, OTA, code
+applicatif, bibliothèques tierces — sont capturés via `esp_log_set_vprintf` et
+streamés en temps réel sans modification des appels existants.
+
+Format par frame WebSocket (JSON, `level="raw"` — parsing du préfixe IDF hors
+MVP) :
+
+```json
+{
+  "ts": 1719392051,
+  "node": "embewi-a1b2c3",
+  "workload": "wheel-controller",
+  "level": "raw",
+  "msg": "I (10352) embewi.ota: write OK 983040 octets slot=ota_1"
+}
+```
+
+Garantie de livraison : **best-effort, sans buffering inter-reconnexion**. Un
+ring buffer 4 KB (~25 lignes) absorbe les rafales tant que le WS est connecté.
+Si le buffer sature alors que le WS est connecté, les nouveaux messages sont
+silencieusement abandonnés — **on préfère perdre des logs plutôt que bloquer le
+système**.
+
+En cas de **déconnexion WS**, les messages émis pendant la coupure sont
+**perdus** (la tâche de drain continue de vider le buffer et les jette). Choix
+assumé pour l'observabilité : à la reconnexion, on diffuse les logs **récents**
+plutôt qu'un vieux backlog accumulé. Les logs critiques OTA/lifecycle passent de
+toute façon par `embewi_log_emit()` (HTTP POST, §5 « Logs »), pas par ce canal.
+
+Connexion **device-initiated** (outbound, compatible NAT). Complémentaire à
+`embewi_log_emit()` qui reste utilisé pour les événements OTA/lifecycle via
+HTTP POST (envoi immédiat critique).
 
 ---
 
@@ -347,6 +771,24 @@ Au redémarrage, le Core lit GET /info :
 ```
 
 Sans le champ `staged`, le Core re-transfère 1 MB inutilement à chaque reprise.
+
+**Idempotence config :**
+
+```text
+Au redémarrage, le Core lit GET /config :
+  nvs == desired config ET active_generation == generation
+     → config à jour et active : rien à faire
+  nvs != desired config
+     → POST /config (push)
+     → si firmware aussi à changer → OTA (reboot inclus)
+     → sinon → POST /reboot
+  nvs == desired config ET active_generation < generation
+     → config poussée mais device pas encore rebooté
+     → POST /reboot (ou attendre le prochain OTA)
+```
+
+Config et OTA peuvent coexister dans la même réconciliation. Ordre canonique :
+**POST /config d'abord, OTA ensuite** — un seul reboot couvre les deux.
 
 ---
 
@@ -380,6 +822,53 @@ spec:
 
 Conflit (deux McuDeployment visant le même ESP) : **first-bound wins**, le second
 part en erreur `DeviceBusy`. Pas de préemption en MVP.
+
+> **Orchestration de flotte.** La mise à jour coordonnée de N devices identiques
+> (rolling/canary, rollback sur taux d'échec) est portée par un
+> `McuDeploymentSet` **purement côté Core** — voir `embewi-core-design.md` §1.
+> Cet objet génère des `McuDeployment` unitaires et n'ajoute aucune surface
+> côté agent.
+
+---
+
+## 7a. McuConfigMap **[NORMATIF]**
+
+Ressource Kubernetes portée par le Core, indépendante du binaire. Découple
+le câblage matériel (GPIOs, fréquences, adresses I²C…) de l'image OTA.
+
+```yaml
+apiVersion: embewi.io/v1alpha1
+kind: McuConfigMap
+metadata:
+  name: wheel-left-gpio
+data:
+  gpio_button: "9"
+  gpio_ws2812: "10"
+  # clés arbitraires — opaques pour l'agent, interprétées par l'app
+```
+
+Référence depuis un `McuDeployment` (optionnel — absent = défauts build) :
+
+```yaml
+apiVersion: embewi.io/v1alpha1
+kind: McuDeployment
+spec:
+  nodeName: embewi-a1b2c3
+  firmware: registry.local/embewi/wheel-controller:v1.1.0
+  configMapRef: wheel-left-gpio
+```
+
+**Règles de binding McuConfigMap → device :**
+
+```text
+configMapRef absent        → aucun push config ; défauts build actifs
+configMapRef présent       → le Core réconcilie McuConfigMap.data vs GET /config
+McuConfigMap inexistant    → erreur ConfigMapNotFound (bloque le déploiement)
+```
+
+Un `McuConfigMap` peut être partagé entre plusieurs `McuDeployment` ciblant des
+devices **identiquement câblés**. La modification du `McuConfigMap` déclenche
+une réconciliation sur tous les devices qui y référencent.
 
 ---
 
@@ -424,8 +913,14 @@ verify digest                        write OTA partition (slot inactif)
 verify chip / layout compat          set_boot_partition + reboot
 stream .bin brut (HTTP)              self-check borné watchdog
 gère idempotence (staged)            mark_valid / mark_invalid_rollback
-timeout négatif → Failed             heartbeat + logs sortants
+timeout négatif → Failed             heartbeat + logs sortants (config_generation inclus)
 pilote EndpointSlice ready           (ne connaît ni OCI ni Kubernetes)
+réconcilie McuConfigMap → POST /config  stocke clés/valeurs en NVS (opaque)
+valide sémantique des valeurs config    applique au boot suivant (§4a)
+gère McuNode + enrôlement (token ref)   s'auto-annonce (node_id) au heartbeat (§1a)
+rotation McuSecret → POST /token        persiste le nouveau token, atomique (§4)
+mappe reason/error → Events K8s         émet des codes stables (§4b)
+expose télémétrie heartbeat → métriques émet un heartbeat extensible (§5)
 ```
 
 Le device reste bête. Toute la complexité « cloud native » (OCI, ORAS, K8s,
@@ -438,12 +933,33 @@ de données.
 
 ```text
 0. Nom projet : Embewi                          ✔ figé
-1. Contrat Core ↔ Agent v2                       ← CE DOCUMENT
-2. Machine d'état OTA sécurisée (§2 §3)           prochaine étape code
-3. Partition table 4 MB / 8 MB
-4. Squelette ESP-IDF
-5. Runtime Core minimal
+1. Contrat Core ↔ Agent v2                       ✔ CE DOCUMENT
+2. Machine d'état OTA sécurisée (§2 §3)          ✔ implémenté
+3. Partition table 4 MB / 8 MB                   ✔ implémenté
+4. Squelette ESP-IDF                             ✔ implémenté
+5. McuConfigMap — config runtime (§4a §7a)        ✔ implémenté
+   5a. Agent : embewi_config.c + GET/POST /config + POST /reboot  ✔
+   5b. Agent : apps lisent NVS au boot (gpio_button, gpio_ws2812)  ✔
+   5c. Core  : McuConfigMap CRD + réconciliation                  ← prochaine étape
+6. Streaming logs ESP_LOGx → WebSocket /v1alpha1/logs            ✔ implémenté
+7. Enrôlement + identité (§1a)                                   ✔ provisioning fait
+                                                                   (modèle Core à figer)
+8. Rotation de token POST /token (§4)                            ✔ implémenté
+9. Vocabulaire reason/error (§4b)                                ✔ codes déjà émis
+10. Heartbeat extensible / métriques (§5)                        ✔ temp + task_hwm
+                                                                    émis ; flash_wear réservé
+11. OTA write reprenable — Content-Range (§4)                    ✔ in-session
+12. Horloge NTP/SNTP → ts epoch UTC (§5)                         ✔ implémenté
+13. Durcissement sécurité (embewi-prod-security.md) :
+    - Secure Boot v2 + Flash Enc + NVS flash-enc (profil prod)   ✔ build-validé
+    - portail provisioning HTTPS + fenêtre AP bornée (§1a)       ✔ implémenté
+    - vérif cert Core sortant + token constant-time (§1)         ✔ implémenté
+14. Runtime Core minimal                                         ← prochaine étape
 ```
+
+> **Côté agent : tout le contrat MVP est implémenté.** Les sections restantes
+> (`McuConfigMap` CRD, `McuDeploymentSet`, webhook de validation, runtime Core)
+> sont portées par le repo Core — voir `embewi-core-design.md`.
 
 ---
 
@@ -451,10 +967,13 @@ de données.
 
 ```text
 - OTA pull (device-initiated) pour devices NATés
-- write chunké reprenable (Content-Range)
+- write reprenable INTER-REBOOT (in-session via Content-Range : ✔ implémenté §4)
 - Pod IP logique + dataplane proxy/NAT
 - multi-workload par ESP
 - préemption sur conflit de binding
 - flash encryption (si pas activé dès le MVP)
 - Virtual Kubelet provider (exposer les ESP comme vrais Nodes)
+- DELETE /config/{key} (reset clé individuelle au défaut build)
+- hot-reload config sans reboot (clés ne nécessitant pas de re-init hardware)
+- McuConfigMap versionné (rollback config indépendant du rollback firmware)
 ```

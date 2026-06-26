@@ -1,0 +1,4 @@
+# Config clangd — pointe vers la compile DB générée par ESP-IDF.
+# Régénérée à chaque `idf.py build` / reconfigure cmake.
+CompileFlags:
+  CompilationDatabase: build

@@ -56,6 +56,8 @@ typedef struct {
     char   ctrl_url[129];             // URL contrôleur Kubernetes (depuis NVS prov)
     char   token[65];                 // token Bearer par node (NVS prov, généré si absent)
     uint16_t app_http_port;           // port du service applicatif (NVS, défaut 8080)
+    uint32_t cfg_generation;          // génération NVS courante (bumped par POST /config)
+    uint32_t cfg_active_generation;   // génération chargée au boot (fixe jusqu'au reboot)
     // checks self-check
     bool   chk_app;
     bool   chk_sensors;
@@ -82,6 +84,9 @@ esp_err_t embewi_ota_prepare(const embewi_ota_prepare_t *req,
 // /ota/write : feed incrémental. Le digest SHA-256 est calculé au fil de l'eau.
 esp_err_t embewi_ota_write_begin(void);
 esp_err_t embewi_ota_write_chunk(const uint8_t *data, size_t len);
+// Reprise Content-Range (§4) : offset déjà écrit + session active ?
+uint32_t  embewi_ota_written(void);
+bool      embewi_ota_in_progress(void);
 // finalize : compare digest calculé vs attendu, ferme la partition.
 esp_err_t embewi_ota_write_finish(const char *expected_digest,
                                   uint32_t *out_written,
@@ -129,6 +134,30 @@ esp_err_t embewi_tls_save(const char *cert_pem, const char *key_pem);
 esp_err_t embewi_http_start(void);
 esp_err_t embewi_http_stop(void);
 
+// --- Config runtime McuConfigMap (embewi_config.c) §4a §7a ------------------
+// boot_init : snapshot de la génération NVS au boot. Appeler avant embewi_app_init().
+void      embewi_cfg_boot_init(void);
+// get / get_int : lecture NVS ; retourne false / default_val si clé absente.
+bool      embewi_cfg_get(const char *key, char *out, size_t len);
+int       embewi_cfg_get_int(const char *key, int default_val);
+// write : écrit une clé (vide = effacer). Pas d'incrément de génération.
+esp_err_t embewi_cfg_write(const char *key, const char *value);
+// bump_generation : incrémente la génération NVS après un batch de write().
+esp_err_t embewi_cfg_bump_generation(void);
+// json_nvs : sérialise toutes les clés user en objet JSON (pour GET /config).
+void      embewi_cfg_json_nvs(char *buf, size_t buf_len);
+
 // --- Heartbeat / logs sortants (embewi_heartbeat.c) -------------------------
 void embewi_heartbeat_start(void);
 void embewi_log_emit(const char *level, const char *msg);
+
+// --- Streaming logs ESP_LOGx via WebSocket (embewi_log.c) -------------------
+// À appeler après embewi_heartbeat_start() (ctrl_url + réseau requis).
+void embewi_log_start(void);
+
+// --- Synchronisation horloge NTP (embewi_time.c) ----------------------------
+// sync_start : démarre SNTP (réseau requis). À appeler dès le WiFi connecté.
+// wait : bloque jusqu'à synchro ou timeout. Pré-requis du TLS authentifié prod.
+void embewi_time_sync_start(void);
+bool embewi_time_wait(int timeout_ms);
+bool embewi_time_is_set(void);

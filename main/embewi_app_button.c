@@ -1,6 +1,7 @@
-// embewi_app_button.c — bouton BOOT GPIO9 → compteur exposé sur port app
+// embewi_app_button.c — bouton BOOT → compteur exposé sur port app
 //
-// GPIO 9 = bouton BOOT sur ESP32-C3 (actif bas, pull-up interne).
+// GPIO lu depuis NVS au boot via la clé "gpio_button" (McuConfigMap §4a).
+// Défaut build : CONFIG_EMBEWI_BUTTON_GPIO (GPIO9 sur ESP32-C3/C6/H2, GPIO0 sinon).
 // Le compteur est LOCAL à cette app ; il est exposé via GET /sensors
 // sur le port applicatif (NVS, défaut 8080), distinct du port embewi.
 
@@ -11,17 +12,17 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "embewi_app.h"
-
-#define BUTTON_GPIO  9
+#include "embewi_agent.h"
 
 static const char *TAG = "embewi.button";
-static uint32_t s_counter = 0;
+static int        s_gpio    = CONFIG_EMBEWI_BUTTON_GPIO;
+static uint32_t   s_counter = 0;
 static httpd_handle_t s_app_srv = NULL;
 
 static void button_task(void *arg) {
     bool was_low = false;
     while (true) {
-        bool is_low = (gpio_get_level(BUTTON_GPIO) == 0);
+        bool is_low = (gpio_get_level(s_gpio) == 0);
         if (is_low && !was_low) {
             s_counter++;
             ESP_LOGI(TAG, "press → count=%lu", (unsigned long)s_counter);
@@ -40,8 +41,9 @@ static esp_err_t h_sensors(httpd_req_t *req) {
 }
 
 void embewi_app_init(void) {
+    s_gpio = embewi_cfg_get_int("gpio_button", CONFIG_EMBEWI_BUTTON_GPIO);
     gpio_config_t io = {
-        .pin_bit_mask   = (1ULL << BUTTON_GPIO),
+        .pin_bit_mask   = (1ULL << s_gpio),
         .mode           = GPIO_MODE_INPUT,
         .pull_up_en     = GPIO_PULLUP_ENABLE,
         .pull_down_en   = GPIO_PULLDOWN_DISABLE,
@@ -49,11 +51,11 @@ void embewi_app_init(void) {
     };
     gpio_config(&io);
     xTaskCreate(button_task, "embewi_btn", 2048, NULL, 3, NULL);
-    ESP_LOGI(TAG, "bouton BOOT GPIO%d initialisé", BUTTON_GPIO);
+    ESP_LOGI(TAG, "bouton BOOT GPIO%d initialisé", s_gpio);
 }
 
 bool embewi_app_selfcheck(void) {
-    return gpio_get_level(BUTTON_GPIO) == 1;
+    return gpio_get_level(s_gpio) == 1;
 }
 
 void embewi_app_service_start(uint16_t port) {

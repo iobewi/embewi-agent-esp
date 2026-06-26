@@ -123,7 +123,19 @@ esp_err_t embewi_ota_prepare(const embewi_ota_prepare_t *req,
 }
 
 // --- /ota/write : flux + SHA-256 incrémental --------------------------------
+// Offset déjà écrit dans la session courante (0 si aucune). Sert à la reprise
+// Content-Range : le Core resynchronise sur cette valeur après une coupure.
+uint32_t embewi_ota_written(void)     { return s_written; }
+bool     embewi_ota_in_progress(void) { return s_writing; }
+
 esp_err_t embewi_ota_write_begin(void) {
+    // Une session incomplète traîne (coupure puis Core qui recommence à 0) :
+    // on l'avorte proprement avant d'en rouvrir une — sinon handle/SHA fuités.
+    if (s_writing) {
+        esp_ota_abort(s_ota_handle);
+        psa_hash_abort(&s_sha);
+        s_writing = false;
+    }
     s_target = esp_ota_get_next_update_partition(NULL);
     if (!s_target) return ESP_FAIL;
     esp_err_t err = esp_ota_begin(s_target, OTA_SIZE_UNKNOWN, &s_ota_handle);

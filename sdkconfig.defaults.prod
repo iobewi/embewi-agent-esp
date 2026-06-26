@@ -1,0 +1,51 @@
+# Embewi Agent — overrides de build PRODUCTION (sécurité)
+#
+# ⚠️  NE PAS utiliser en dev. Plusieurs de ces options déclenchent des
+#     opérations eFuse IRRÉVERSIBLES au premier boot sur un device réel :
+#     une fois brûlées, on ne peut plus reflasher librement / lire la flash.
+#
+# Build prod (s'empile SUR sdkconfig.defaults, ne le remplace pas) :
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.prod" \
+#          -B build-prod build
+#
+# Pré-requis AVANT le premier flash prod (voir docs/embewi-prod-security.md) :
+#   - clé de signature Secure Boot générée et gardée HORS dépôt
+#   - main/core_ca.pem fourni (CA qui signe le cert serveur du Core)
+
+# ── Secure Boot v2 : racine de confiance (contrat §1, exigence MVP) ───────────
+# Le bootloader refuse de booter toute image non/mal signée. Le seul composant
+# qui ne peut pas mentir.
+CONFIG_SECURE_BOOT=y
+CONFIG_SECURE_BOOT_V2_ENABLED=y
+CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+# Clé de signature : chemin hors dépôt. Générer avec :
+#   idf.py secure-generate-signing-key --version 2 --scheme rsa3072 secure_boot_signing_key.pem
+CONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"
+# Le bootloader signé grandit → décaler la table de partitions.
+CONFIG_PARTITION_TABLE_OFFSET=0x10000
+
+# ── Flash encryption : confidentialité at-rest (vol physique) ─────────────────
+# Mode RELEASE = définitif (UART download ne peut plus lire la flash en clair).
+CONFIG_SECURE_FLASH_ENC_ENABLED=y
+CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=y
+# Optimisation : brûler les clés Secure Boot + Flash Enc en une passe.
+CONFIG_SECURE_BOOT_FLASH_ENC_KEYS_BURN_TOGETHER=y
+
+# Chiffrement NVS : schéma flash-encryption (clés dans la partition nvs_keys,
+# chiffrée par la flash enc). Override du défaut C3 = HMAC, qui exigerait de
+# brûler une clé HMAC dans un eFuse dédié (étape + risque de collision en plus).
+CONFIG_NVS_SEC_KEY_PROTECT_USING_FLASH_ENC=y
+
+# ── Anti-rollback : bloque le downgrade vers une version de sécurité < ────────
+# Couplé au champ secure_version de l'app. À incrémenter à chaque correctif sécu.
+CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK=y
+CONFIG_BOOTLOADER_APP_SECURE_VERSION=0
+
+# ── Surface d'attaque : verrouiller le mode download ROM ──────────────────────
+# Secure DL mode : l'UART reste utilisable mais sans lecture flash ni contournement.
+# Pour un verrouillage TOTAL (aucune reprise possible), remplacer par :
+#   CONFIG_SECURE_DISABLE_ROM_DL_MODE=y
+CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE=y
+
+# ── Auth des flux sortants : vérifier le cert du Core (cf. main/core_ca.pem) ──
+CONFIG_EMBEWI_VERIFY_CORE_CERT=y

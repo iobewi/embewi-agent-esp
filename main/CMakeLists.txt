@@ -37,9 +37,23 @@ else()
     set(TLS_EMBED_FILES "")
 endif()
 
+# CA du Core embarquée pour vérifier les flux sortants (prod uniquement).
+# En dev (CONFIG_EMBEWI_VERIFY_CORE_CERT non défini) → rien embarqué, le code
+# ne référence pas le symbole. En prod → main/core_ca.pem REQUIS (build échoue
+# clairement s'il manque, plutôt que d'embarquer une CA silencieusement fausse).
+if(CONFIG_EMBEWI_VERIFY_CORE_CERT)
+    set(CORE_CA_EMBED "core_ca.pem")
+else()
+    set(CORE_CA_EMBED "")
+endif()
+
 idf_component_register(
     SRCS
         "embewi_main.c"
+        "embewi_config.c"
+        "embewi_parse.c"
+        "embewi_log.c"
+        "embewi_time.c"
         "embewi_provision.c"
         "embewi_ota.c"
         "embewi_http.c"
@@ -50,19 +64,23 @@ idf_component_register(
     INCLUDE_DIRS "."
     EMBED_TXTFILES
         ${TLS_EMBED_FILES}
+        ${CORE_CA_EMBED}
     REQUIRES
         app_update          # esp_ota_* , rollback
         spi_flash           # esp_flash_get_size()
         esp_https_server    # HTTPS :443 + httpd_ssl_start
         esp_http_client     # POST heartbeat/logs vers ctrl_url (flux sortants)
+        esp_ringbuf         # ring buffer pour streaming logs (embewi_log.c)
         esp-tls             # mbedTLS sous esp_https_server
         esp_wifi
         esp_event           # event loop wifi
-        esp_netif           # netif STA
+        esp_netif           # netif STA + SNTP (esp_netif_sntp, embewi_time.c)
+        lwip                # backend SNTP
         nvs_flash           # staged state + TLS NVS
         mbedtls             # sha-256 incrémental (PSA)
         esp_timer           # deadline pending_verify
         esp_system
         esp_driver_rmt      # WS2812 (rainbow)
         esp_driver_gpio     # bouton BOOT (button)
+        esp_driver_tsens    # capteur température interne (heartbeat métriques §5)
 )

@@ -1,0 +1,4 @@
+## IDF Component Manager — dépendances du composant main
+dependencies:
+  idf: ">=5.3"
+  espressif/esp_websocket_client: ">=1.0.0"

@@ -83,6 +83,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
 
     memset(&s_rt, 0, sizeof(s_rt));
+    embewi_cfg_boot_init();   // snapshot génération NVS avant tout appel app
     s_rt.state = EMBEWI_BOOTING;
     strlcpy(s_rt.fw_version, EMBEWI_FW_VERSION, sizeof(s_rt.fw_version));
     fill_running_partition_info();
@@ -100,6 +101,10 @@ void app_main(void) {
     strlcpy(s_rt.ctrl_url, ctrl_url, sizeof(s_rt.ctrl_url));
     embewi_node_id_load(s_rt.node_id, sizeof(s_rt.node_id));
     embewi_token_load(s_rt.token, sizeof(s_rt.token));
+
+    // Démarre la synchro NTP dès le réseau dispo : elle s'effectue en tâche de
+    // fond pendant l'init suivante (app, self-check). Pré-requis du TLS prod.
+    embewi_time_sync_start();
 
     uint16_t app_port = 8080;
     embewi_app_port_load(&app_port);
@@ -130,7 +135,16 @@ void app_main(void) {
     // un device en pending_verify DOIT continuer à émettre un heartbeat (§2).
     ESP_ERROR_CHECK(embewi_http_start());
     embewi_app_service_start(s_rt.app_http_port);
+    // Attend la synchro NTP avant d'émettre/ouvrir du TLS : timestamps en epoch
+    // ET, en prod, horloge valide pour la vérif des dates du cert Core.
+    if (embewi_time_wait(8000))
+        ESP_LOGI(TAG, "horloge NTP synchronisée");
+    else
+        ESP_LOGW(TAG, "NTP non synchronisé — ts en uptime ; TLS authentifié (prod) "
+                      "échouera tant que l'horloge n'est pas posée");
+
     embewi_heartbeat_start();
+    embewi_log_start();   // streaming ESP_LOGx → WS → Core (après ctrl_url + réseau)
     embewi_log_emit("info", "embewi agent up");
 
     while (true) vTaskDelay(pdMS_TO_TICKS(1000));

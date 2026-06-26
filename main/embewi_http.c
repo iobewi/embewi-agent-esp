@@ -16,40 +16,14 @@
 #include "esp_heap_caps.h"
 #include "embewi_agent.h"
 #include "embewi_app.h"
+#include "embewi_parse.h"
 
 static const char *TAG = "embewi.http";
 static httpd_handle_t s_srv = NULL;
 
 
-// Extrait la valeur d'une clé JSON string : "key":"value" → value dans out.
-// Retourne false si la clé est absente. Pas un vrai parseur : MVP uniquement.
-static bool json_str(const char *body, const char *key, char *out, size_t out_len) {
-    char needle[64];
-    snprintf(needle, sizeof(needle), "\"%s\"", key);
-    const char *p = strstr(body, needle);
-    if (!p) return false;
-    p += strlen(needle);
-    while (*p == ' ' || *p == ':' || *p == ' ') p++;
-    if (*p != '"') return false;
-    p++;
-    size_t i = 0;
-    while (*p && *p != '"' && i < out_len - 1) out[i++] = *p++;
-    out[i] = '\0';
-    return true;
-}
-
-// Extrait la valeur d'une clé JSON number : "key":12345 → out.
-static bool json_u32(const char *body, const char *key, uint32_t *out) {
-    char needle[64];
-    snprintf(needle, sizeof(needle), "\"%s\"", key);
-    const char *p = strstr(body, needle);
-    if (!p) return false;
-    p += strlen(needle);
-    while (*p == ' ' || *p == ':' || *p == ' ') p++;
-    if (*p < '0' || *p > '9') return false;
-    *out = (uint32_t)strtoul(p, NULL, 10);
-    return true;
-}
+// Parseurs JSON (json_str/json_u32/json_data_iter) : extraits dans
+// embewi_parse.{c,h} — purs, testés sur host (test/host/test_parse.c).
 
 // Lit le body complet d'une requête dans un buffer alloué sur la stack.
 // Retourne la longueur lue, ou -1 si trop grand ou erreur réseau.
@@ -68,12 +42,15 @@ static int read_body(httpd_req_t *req, char *buf, size_t buf_len) {
 }
 
 static bool authorized(httpd_req_t *req) {
+    const char *tok = embewi_rt()->token;
+    if (tok[0] == '\0') return false;   // token absent → tout refuser (§1)
     char hdr[160];
     if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) != ESP_OK)
         return false;
     const char *p = "Bearer ";
     if (strncmp(hdr, p, strlen(p)) != 0) return false;
-    return strcmp(hdr + strlen(p), embewi_rt()->token) == 0;
+    // Comparaison à temps constant : pas de fuite du token octet par octet (§1).
+    return embewi_ct_equal(hdr + strlen(p), tok);
 }
 
 static esp_err_t deny(httpd_req_t *req) {
@@ -100,7 +77,7 @@ static esp_err_t h_info(httpd_req_t *req) {
     esp_flash_get_size(NULL, &flash_size);
     size_t ram_size = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
 
-    char body[680];
+    char body[720];
     snprintf(body, sizeof(body),
         "{\"node_id\":\"%s\",\"chip\":\"" CONFIG_IDF_TARGET "\",\"idf_version\":\"" IDF_VER "\","
         "\"flash_size\":%u,\"ram_size\":%u,"
@@ -108,11 +85,12 @@ static esp_err_t h_info(httpd_req_t *req) {
         "\"firmware\":{\"name\":\"%s\",\"version\":\"%s\",\"digest\":\"%s\"},"
         "\"staged\":{\"state\":\"%s\",\"slot\":\"%s\",\"digest\":\"%s\","
         "\"deployment_id\":\"%s\"},"
-        "\"state\":\"%s\",\"app_port\":%u}",
+        "\"state\":\"%s\",\"config_generation\":%lu,\"app_port\":%u}",
         rt->node_id, (unsigned)flash_size, (unsigned)ram_size, rt->active_slot,
         EMBEWI_FW_NAME, rt->fw_version,
         rt->fw_digest, stage_str, st.slot, st.digest, st.deployment_id,
-        embewi_state_str(rt->state), (unsigned)rt->app_http_port);
+        embewi_state_str(rt->state), (unsigned long)rt->cfg_generation,
+        (unsigned)rt->app_http_port);
     send_json(req, body);
     return ESP_OK;
 }
@@ -141,12 +119,12 @@ static esp_err_t h_ota_prepare(httpd_req_t *req) {
     if (read_body(req, buf, sizeof(buf)) < 0) return ESP_OK;
 
     embewi_ota_prepare_t p = {0};
-    json_str(buf, "deployment_id",    p.deployment_id,    sizeof(p.deployment_id));
-    json_str(buf, "digest",           p.digest,           sizeof(p.digest));
-    json_str(buf, "chip",             p.chip,             sizeof(p.chip));
-    json_str(buf, "idf_version",      p.idf_version,      sizeof(p.idf_version));
-    json_str(buf, "partition_layout", p.partition_layout, sizeof(p.partition_layout));
-    json_u32(buf, "size",             &p.size);
+    embewi_json_str(buf, "deployment_id",    p.deployment_id,    sizeof(p.deployment_id));
+    embewi_json_str(buf, "digest",           p.digest,           sizeof(p.digest));
+    embewi_json_str(buf, "chip",             p.chip,             sizeof(p.chip));
+    embewi_json_str(buf, "idf_version",      p.idf_version,      sizeof(p.idf_version));
+    embewi_json_str(buf, "partition_layout", p.partition_layout, sizeof(p.partition_layout));
+    embewi_json_u32(buf, "size",             &p.size);
 
     char slot[8]; const char *reason = NULL;
     if (embewi_ota_prepare(&p, slot, sizeof(slot), &reason) == ESP_OK) {
@@ -165,16 +143,48 @@ static esp_err_t h_ota_prepare(httpd_req_t *req) {
 }
 
 // --- PUT /ota/write : stream chunké → write incrémental ---------------------
+// Content-Range optionnel = reprise (§4). Absent → écriture monolithique (legacy).
+// Le Core chunke l'image en plusieurs plages ; sur coupure wifi, il reprend à
+// l'offset que le device rapporte (416 + written). Handle OTA + SHA survivent à
+// la déconnexion TCP (statiques), donc la reprise est gratuite côté flash.
 static esp_err_t h_ota_write(httpd_req_t *req) {
     if (!authorized(req)) return deny(req);
 
     char expected[72] = {0};
     httpd_req_get_hdr_value_str(req, "X-Embewi-Digest", expected, sizeof(expected));
 
-    if (embewi_ota_write_begin() != ESP_OK) {
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_sendstr(req, "{\"status\":\"ota_begin_failed\"}");
+    char range_hdr[64] = {0};
+    bool has_range = httpd_req_get_hdr_value_str(req, "Content-Range",
+                        range_hdr, sizeof(range_hdr)) == ESP_OK;
+    uint32_t start = 0, end = 0, total = 0;
+    if (has_range &&
+        !embewi_parse_content_range(range_hdr, &start, &end, &total)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        send_json(req, "{\"error\":\"bad_content_range\"}");
         return ESP_OK;
+    }
+
+    // Décision de reprise (logique pure, testée sur host).
+    switch (embewi_ota_plan(has_range, start,
+                            embewi_ota_in_progress(), embewi_ota_written())) {
+    case EMBEWI_OTA_BEGIN:
+        if (embewi_ota_write_begin() != ESP_OK) {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            send_json(req, "{\"status\":\"ota_begin_failed\"}");
+            return ESP_OK;
+        }
+        break;
+    case EMBEWI_OTA_RESYNC: {
+        httpd_resp_set_status(req, "416 Range Not Satisfiable");
+        char body[64];
+        snprintf(body, sizeof(body),
+            "{\"error\":\"range_mismatch\",\"written\":%u}",
+            (unsigned)embewi_ota_written());
+        send_json(req, body);
+        return ESP_OK;
+    }
+    case EMBEWI_OTA_CONTINUE:
+        break;   // session alignée : on écrit directement la plage
     }
 
     uint8_t buf[1024];
@@ -182,13 +192,25 @@ static esp_err_t h_ota_write(httpd_req_t *req) {
     while (remaining > 0) {
         r = httpd_req_recv(req, (char *)buf, sizeof(buf) < (size_t)remaining
                                               ? sizeof(buf) : remaining);
-        if (r <= 0) { return ESP_FAIL; }
+        // Coupure en cours de plage : on NE ferme PAS la session. Les octets déjà
+        // écrits restent comptés (s_written) ; le Core reprendra à cet offset.
+        if (r <= 0) return ESP_FAIL;
         if (embewi_ota_write_chunk(buf, r) != ESP_OK) {
             httpd_resp_set_status(req, "500 Internal Server Error");
-            httpd_resp_sendstr(req, "{\"status\":\"write_failed\"}");
+            send_json(req, "{\"status\":\"write_failed\"}");
             return ESP_OK;
         }
         remaining -= r;
+    }
+
+    // Transfert terminé ? (logique pure, testée sur host)
+    if (!embewi_ota_is_final(has_range, end, total)) {
+        char body[64];
+        snprintf(body, sizeof(body),
+            "{\"status\":\"partial\",\"written\":%u}",
+            (unsigned)embewi_ota_written());
+        send_json(req, body);
+        return ESP_OK;
     }
 
     uint32_t written = 0; char digest[72] = {0};
@@ -217,7 +239,7 @@ static esp_err_t h_app_port(httpd_req_t *req) {
     if (read_body(req, buf, sizeof(buf)) < 0) return ESP_OK;
 
     uint32_t port = 0;
-    if (!json_u32(buf, "port", &port) || port < 1024 || port > 65535) {
+    if (!embewi_json_u32(buf, "port", &port) || port < 1024 || port > 65535) {
         httpd_resp_set_status(req, "400 Bad Request");
         send_json(req, "{\"error\":\"port must be 1024-65535\"}");
         return ESP_OK;
@@ -287,8 +309,8 @@ static esp_err_t h_tls_cert(httpd_req_t *req) {
         return ESP_OK;
     }
 
-    json_str(buf, "cert", cert, 4096);
-    json_str(buf, "key",  key,  2048);
+    embewi_json_str(buf, "cert", cert, 4096);
+    embewi_json_str(buf, "key",  key,  2048);
     free(buf);
 
     unescape_json(cert);
@@ -317,6 +339,107 @@ static esp_err_t h_tls_cert(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// --- POST /token : rotation du token Bearer par node (contrat §4) -----------
+// Authentifié au token COURANT. Le nouveau token est commité en NVS AVANT la
+// réponse : si l'écriture échoue, l'ancien token reste seul valide (pas de
+// fenêtre sans auth). Effectif immédiatement, sans reboot.
+static esp_err_t h_token(httpd_req_t *req) {
+    if (!authorized(req)) return deny(req);
+    char buf[BODY_MAX];
+    if (read_body(req, buf, sizeof(buf)) < 0) return ESP_OK;
+
+    char new_token[65] = {0};
+    if (!embewi_json_str(buf, "token", new_token, sizeof(new_token))) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        send_json(req, "{\"error\":\"missing_token\"}");
+        return ESP_OK;
+    }
+    // Token vide refusé : on ne désactive pas l'auth par rotation (§4).
+    size_t len = strlen(new_token);
+    if (len < 8 || len > 64) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        send_json(req, "{\"error\":\"token must be 8-64 chars\"}");
+        return ESP_OK;
+    }
+
+    // Commit NVS d'abord ; l'ancien token reste actif tant que ça n'a pas réussi.
+    if (embewi_token_save(new_token) != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        send_json(req, "{\"error\":\"nvs_write_failed\"}");
+        return ESP_OK;
+    }
+    // Bascule runtime : authorized() exige le nouveau token dès maintenant.
+    strlcpy(embewi_rt()->token, new_token, sizeof(embewi_rt()->token));
+
+    send_json(req, "{\"status\":\"rotated\"}");
+    return ESP_OK;
+}
+
+// --- GET /config : génération + dump NVS ------------------------------------
+static esp_err_t h_config_get(httpd_req_t *req) {
+    if (!authorized(req)) return deny(req);
+    embewi_runtime_t *rt = embewi_rt();
+    char nvs_json[384];
+    embewi_cfg_json_nvs(nvs_json, sizeof(nvs_json));
+    char body[512];
+    snprintf(body, sizeof(body),
+        "{\"generation\":%lu,\"active_generation\":%lu,\"nvs\":%s}",
+        (unsigned long)rt->cfg_generation,
+        (unsigned long)rt->cfg_active_generation,
+        nvs_json);
+    send_json(req, body);
+    return ESP_OK;
+}
+
+// Contexte du callback de POST /config (cf. embewi_json_data_iter).
+typedef struct { int count; esp_err_t err; } cfg_post_ctx_t;
+
+static void cfg_set_cb(const char *k, const char *v, void *ctx) {
+    cfg_post_ctx_t *c = ctx;
+    if (c->err != ESP_OK) return;
+    if (k[0] == '_') return;   // clés internes ignorées silencieusement
+    c->err = embewi_cfg_write(k, v);
+    if (c->err == ESP_OK) c->count++;
+}
+
+// --- POST /config : push merge-on-key --------------------------------------
+static esp_err_t h_config_post(httpd_req_t *req) {
+    if (!authorized(req)) return deny(req);
+    char buf[BODY_MAX];
+    if (read_body(req, buf, sizeof(buf)) < 0) return ESP_OK;
+
+    cfg_post_ctx_t ctx = {0};
+    int found = embewi_json_data_iter(buf, cfg_set_cb, &ctx);
+    if (found < 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        send_json(req, "{\"error\":\"missing_data_field\"}");
+        return ESP_OK;
+    }
+    if (ctx.err != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        send_json(req, "{\"error\":\"nvs_write_failed\"}");
+        return ESP_OK;
+    }
+    if (ctx.count > 0) embewi_cfg_bump_generation();
+
+    char body[96];
+    snprintf(body, sizeof(body),
+        "{\"status\":\"saved\",\"generation\":%lu,\"note\":\"effective_after_reboot\"}",
+        (unsigned long)embewi_rt()->cfg_generation);
+    send_json(req, body);
+    return ESP_OK;
+}
+
+// --- POST /reboot : reboot contrôlé sans cycle OTA -------------------------
+static esp_err_t h_reboot(httpd_req_t *req) {
+    if (!authorized(req)) return deny(req);
+    send_json(req, "{\"status\":\"rebooting\"}");
+    embewi_log_emit("info", "reboot requested by Core");
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_restart();
+    return ESP_OK;
+}
+
 // --- POST /ota/activate -----------------------------------------------------
 static esp_err_t h_ota_activate(httpd_req_t *req) {
     if (!authorized(req)) return deny(req);
@@ -324,7 +447,7 @@ static esp_err_t h_ota_activate(httpd_req_t *req) {
     if (read_body(req, buf, sizeof(buf)) < 0) return ESP_OK;
 
     char dep[64] = {0};
-    json_str(buf, "deployment_id", dep, sizeof(dep));
+    embewi_json_str(buf, "deployment_id", dep, sizeof(dep));
     if (dep[0] == '\0') {
         httpd_resp_set_status(req, "400 Bad Request");
         send_json(req, "{\"error\":\"missing deployment_id\"}");
@@ -365,11 +488,15 @@ esp_err_t embewi_http_start(void) {
     const httpd_uri_t routes[] = {
         { .uri = EMBEWI_API_PREFIX "/info",         .method = HTTP_GET,  .handler = h_info },
         { .uri = EMBEWI_API_PREFIX "/health",       .method = HTTP_GET,  .handler = h_health },
+        { .uri = EMBEWI_API_PREFIX "/config",       .method = HTTP_GET,  .handler = h_config_get },
+        { .uri = EMBEWI_API_PREFIX "/config",       .method = HTTP_POST, .handler = h_config_post },
+        { .uri = EMBEWI_API_PREFIX "/reboot",       .method = HTTP_POST, .handler = h_reboot },
         { .uri = EMBEWI_API_PREFIX "/ota/prepare",  .method = HTTP_POST, .handler = h_ota_prepare },
         { .uri = EMBEWI_API_PREFIX "/ota/write",    .method = HTTP_PUT,  .handler = h_ota_write },
         { .uri = EMBEWI_API_PREFIX "/ota/activate", .method = HTTP_POST, .handler = h_ota_activate },
         { .uri = EMBEWI_API_PREFIX "/app/port",     .method = HTTP_POST, .handler = h_app_port },
         { .uri = EMBEWI_API_PREFIX "/tls/cert",     .method = HTTP_POST, .handler = h_tls_cert },
+        { .uri = EMBEWI_API_PREFIX "/token",        .method = HTTP_POST, .handler = h_token },
     };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++)
         httpd_register_uri_handler(s_srv, &routes[i]);
