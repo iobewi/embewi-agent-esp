@@ -23,3 +23,8 @@ html_theme_options = {
     "collapse_navigation": False, # garde l'arbo dépliée
     "style_external_links": True, # icône sur les liens externes
 }
+
+# Assets de marque déposés dans docs/_static/.
+html_static_path = ["_static"]
+html_logo = "_static/logo.png"
+html_favicon = "_static/favicon.ico"
