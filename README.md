@@ -1,13 +1,17 @@
 # Embewi Agent — ESP-IDF firmware
 
-Implémentation **device** du contrat `docs/embewi-contract-v2.md`.
+Implémentation **device** du contrat
+[`embewi-contract`](https://github.com/iobewi/embewi-contract) (`v1alpha1`),
+rattaché ici en submodule sous `contract/`.
 
 L'agent tourne sur la famille **ESP32** (testé sur C3, compatible C6, S3, H2…).
 Il expose une API HTTPS, s'auto-valide après OTA, et émet heartbeat + logs (TLS)
 vers le [embewi-core](https://github.com/iobewi/embewi-core) (contrôleur Kubernetes).
 
-📖 **Documentation** : **<https://iobewi.github.io/embewi/>** — ou le dossier
-[`docs/`](docs/) (Sphinx + MyST, publié automatiquement sur GitHub Pages).
+📖 **Documentation** (contrat + système) : **<https://iobewi.github.io/embewi-contract/>**.
+Docs propres à l'agent : dossier [`docs/`](docs/).
+
+> Cloner avec le contrat : `git clone --recursive …` (ou `git submodule update --init`).
 
 ## Fonctionnalités
 
@@ -63,9 +67,8 @@ embewi/
 ├── sdkconfig.defaults           # rollback, WDT, trace facility
 ├── sdkconfig.defaults.prod      # Secure Boot v2, Flash Enc, NVS flash-enc (opt-in)
 ├── partitions_4mb.csv / _8mb.csv
-├── docs/                        # site GitHub Pages (Sphinx + MyST)
-│   ├── conf.py · index.md       # config Sphinx + page d'accueil
-│   ├── embewi-contract-v2.md    # contrat device ↔ core (référence)
+├── contract/                    # submodule → iobewi/embewi-contract (contrat + site doc)
+├── docs/
 │   ├── embewi-core-design.md    # design côté Core (rollout, webhook)
 │   └── embewi-prod-security.md  # procédure de durcissement prod
 ├── test/
