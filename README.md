@@ -1,14 +1,14 @@
 # Embewi Agent — ESP-IDF firmware
 
 Implémentation **device** du contrat
-[`embewi-contract`](https://github.com/iobewi/embewi-contract) (`v1alpha1`),
+[`embewi`](https://github.com/iobewi/embewi) (`v1alpha1`),
 rattaché ici en submodule sous `contract/`.
 
 L'agent tourne sur la famille **ESP32** (testé sur C3, compatible C6, S3, H2…).
 Il expose une API HTTPS, s'auto-valide après OTA, et émet heartbeat + logs (TLS)
 vers le [embewi-core](https://github.com/iobewi/embewi-core) (contrôleur Kubernetes).
 
-📖 **Documentation** (contrat + système) : **<https://iobewi.github.io/embewi-contract/>**.
+📖 **Documentation** (contrat + système) : **<https://iobewi.github.io/embewi/>**.
 Docs propres à l'agent : dossier [`docs/`](docs/).
 
 > Cloner avec le contrat : `git clone --recursive …` (ou `git submodule update --init`).
@@ -67,7 +67,7 @@ embewi/
 ├── sdkconfig.defaults           # rollback, WDT, trace facility
 ├── sdkconfig.defaults.prod      # Secure Boot v2, Flash Enc, NVS flash-enc (opt-in)
 ├── partitions_4mb.csv / _8mb.csv
-├── contract/                    # submodule → iobewi/embewi-contract (contrat + site doc)
+├── contract/                    # submodule → iobewi/embewi (contrat + site doc)
 ├── docs/
 │   ├── embewi-core-design.md    # design côté Core (rollout, webhook)
 │   └── embewi-prod-security.md  # procédure de durcissement prod
