@@ -8,8 +8,8 @@ L'agent tourne sur la famille **ESP32** (testé sur C3, compatible C6, S3, H2…
 Il expose une API HTTPS, s'auto-valide après OTA, et émet heartbeat + logs (TLS)
 vers le [embewi-core](https://github.com/iobewi/embewi-core) (contrôleur Kubernetes).
 
-📖 **Documentation** (contrat + système) : **<https://iobewi.github.io/embewi/>**.
-Docs propres à l'agent : dossier [`docs/`](docs/).
+📖 **Documentation de l'agent** : **<https://iobewi.github.io/embewi-agent-esp/>**.
+Contrat & doc système (hub) : **<https://iobewi.github.io/embewi/>**.
 
 > Cloner avec le contrat : `git clone --recursive …` (ou `git submodule update --init`).
 
