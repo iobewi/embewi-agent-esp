@@ -123,19 +123,7 @@ Accessibles via `idf.py menuconfig` → **Embewi GPIO** / **Embewi Sécurité** 
 | `CONFIG_EMBEWI_WS2812_GPIO` | 10 | GPIO LED WS2812B (RMT TX) |
 | `CONFIG_EMBEWI_VERIFY_CORE_CERT` | `n` | Vérification CA Core sur flux sortants |
 
----
 
-## Sélection de l'app workload
-
-Dans `main/CMakeLists.txt` :
-
-```cmake
-set(EMBEWI_APP "button")   # ou "rainbow"
-```
-
-| Valeur | App | Périphérique |
-|---|---|---|
-| `button` | Compteur de pressions bouton BOOT | GPIO (entrée) |
-| `rainbow` | Arc-en-ciel WS2812B | RMT TX (10 MHz) |
-
-La GPIO est surchargeable au runtime via McuConfigMap (`gpio_button` / `gpio_ws2812`).
+La GPIO des workloads est surchargeable au runtime via McuConfigMap
+(`gpio_button` / `gpio_ws2812`). Voir la page [Workloads](workload) pour la
+sélection au build et la construction de l'artefact OTA.

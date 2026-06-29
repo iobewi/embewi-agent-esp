@@ -14,6 +14,7 @@ et émet heartbeat + logs chiffrés vers le Core.
 Architecture <architecture>
 API inbound <api>
 Configuration <configuration>
+Workloads <workload>
 Sécurité production <embewi-prod-security>
 ```
 
