@@ -1,13 +1,19 @@
-# Workloads
+# Développer un workload
 
 Un **workload** est le code métier embarqué dans l'agent. Il est compilé
-statiquement avec le firmware et sélectionné au build. Le binaire résultant
-est le **même artefact** que celui poussé en OTA par le Core.
+statiquement avec le firmware — le binaire résultant est l'artefact OTA que
+le Core déploie sur le device.
 
-## Interface à implémenter
+L'agent fournit au workload :
+- un **cycle de vie garanti** (4 fonctions appelées dans un ordre précis)
+- un accès à la **config runtime** poussée par le Core (`McuConfigMap`)
+- un **port TCP** alloué par le Core pour exposer un service applicatif
 
-Toute app workload doit implémenter les quatre fonctions déclarées dans
-`main/embewi_app.h` :
+---
+
+## Interface SDK (`main/embewi_app.h`)
+
+Toute app workload implémente exactement ces quatre fonctions :
 
 ```c
 void embewi_app_init(void);
@@ -16,70 +22,202 @@ void embewi_app_service_start(uint16_t port);
 void embewi_app_service_stop(void);
 ```
 
-| Fonction | Appelée par | Rôle |
-|---|---|---|
-| `embewi_app_init` | `app_main` au boot, avant le self-check | Init hardware, lecture config NVS |
-| `embewi_app_selfcheck` | `selfcheck_task` pendant `pending_verify` | Retourne `true` si l'app est saine |
-| `embewi_app_service_start(port)` | `app_main` après NTP | Démarre le service sur `port` |
-| `embewi_app_service_stop` | `app_main` sur changement de port | Arrête le service |
+### Cycle de vie
 
-### Contrainte sur `embewi_app_init`
-
-**Interdit d'écrire dans le namespace `embewi_cfg` depuis `embewi_app_init`.**
-Le snapshot `active` de `GET /config` est figé **avant** cet appel
-(`embewi_cfg_boot_init` en tête de boot). Toute écriture NVS ici serait
-invisible dans `active` mais visible dans `nvs`, créant une divergence trompeuse
-que le Core interpréterait comme une config en attente de reboot.
-
-Pour lire la config courante :
-
-```c
-void embewi_app_init(void) {
-    int gpio = embewi_cfg_get_int("gpio_button", CONFIG_EMBEWI_BUTTON_GPIO);
-    // ...
-}
+```text
+boot
+ │
+ ├─ embewi_cfg_boot_init()     ← snapshot config figé (AVANT app_init)
+ │
+ ├─ embewi_app_init()          ← lire config, init hardware
+ │
+ ├─ [OTA post-activate ?]
+ │    └─ embewi_app_selfcheck()  × N  ← hardware OK ? (fenêtre 15 s)
+ │
+ ├─ embewi_app_service_start(port)  ← démarrer le service TCP
+ │
+ │   ... device en service ...
+ │
+ └─ embewi_app_service_stop()       ← sur changement de port (POST /app/port)
+      embewi_app_service_start(nouveau_port)
 ```
 
-### Selfcheck
-
-`embewi_app_selfcheck()` est appelé pendant la fenêtre de **15 secondes** qui
-suit un boot post-OTA. Si elle retourne `false` (ou si la fenêtre expire),
-le bootloader rollback sur l'image précédente.
-
-Règle : ne tester que ce qui peut réellement planter le service — driver
-initialisé, peripheral répondant. Pas de logique applicative.
+| Fonction | Appelée | Contrainte |
+|---|---|---|
+| `embewi_app_init` | Une fois au boot, avant le self-check | Ne pas écrire dans `embewi_cfg` (voir ci-dessous) |
+| `embewi_app_selfcheck` | Pendant `pending_verify`, appels répétés sur 15 s | Doit répondre vite — pas de TLS, pas de requêtes réseau |
+| `embewi_app_service_start(port)` | Au boot après NTP, et après chaque `POST /app/port` | Le `port+1` est réservé au ctrl socket httpd — ne pas l'utiliser |
+| `embewi_app_service_stop` | Avant chaque `service_start` sur nouveau port | Idempotente si le service n'était pas démarré |
 
 ---
 
-## Workloads fournis
+## McuConfigMap — lecture depuis le workload
 
-Les deux workloads dans `apps/` servent de **référence d'implémentation**.
+La config runtime est poussée par le Core via Kubernetes (`McuConfigMap`) et
+stockée en NVS par l'agent. Le workload y accède via deux fonctions :
 
-### `apps/button/main.c` — compteur bouton BOOT
+```c
+// Lit une valeur string. Retourne false si la clé est absente ou vide.
+bool embewi_cfg_get(const char *key, char *out, size_t len);
 
-- GPIO configuré via McuConfigMap `gpio_button` (défaut : `CONFIG_EMBEWI_BUTTON_GPIO`)
-- Tâche polling 50 ms, incrémente un compteur sur front descendant
-- Service HTTP sur le port app : `GET /sensors` → `{"counter": N}`
-- Selfcheck : `gpio_get_level(s_gpio) == 1` (bouton relâché = hardware OK)
+// Lit un entier. Retourne default_val si la clé est absente ou non parseable.
+int  embewi_cfg_get_int(const char *key, int default_val);
+```
 
-### `apps/rainbow/main.c` — LED WS2812B arc-en-ciel
+### Règle fondamentale : lire dans `embewi_app_init`, jamais écrire
 
-- GPIO configuré via McuConfigMap `gpio_ws2812` (défaut : `CONFIG_EMBEWI_WS2812_GPIO`)
-- Pilotage RMT TX à 10 MHz (100 ns/tick), protocole WS2812B ordre GRB, MSB en premier
-- Cycle HSV 0-255 toutes les ~5 s, luminosité limitée à 60/255
-- Service HTTP sur le port app : `GET /status` → `{"running": true|false}`
-- Selfcheck : canal RMT et encoder initialisés (`s_chan != NULL && s_encoder != NULL`)
+```c
+void embewi_app_init(void) {
+    // ✅ Lire la config au boot
+    int gpio = embewi_cfg_get_int("gpio_button", CONFIG_EMBEWI_BUTTON_GPIO);
+
+    char server[64] = "pool.ntp.org";
+    embewi_cfg_get("mon_serveur", server, sizeof(server));
+
+    // ❌ INTERDIT — écrire dans embewi_cfg ici
+    // embewi_cfg_write("ma_cle", "valeur");  // ne pas faire
+}
+```
+
+**Pourquoi l'écriture est interdite dans `embewi_app_init` :** le snapshot
+`active` de `GET /config` est figé *avant* cet appel. Toute écriture NVS ici
+serait invisible dans `active` mais visible dans `nvs`, créant une divergence
+que le Core interpréterait comme une config en attente de reboot — alors que
+l'app a déjà lu les valeurs incorrectes.
+
+### Clés standardisées disponibles
+
+| Clé | Fonction | Défaut build | Description |
+|---|---|---|---|
+| `gpio_button` | `embewi_cfg_get_int` | `CONFIG_EMBEWI_BUTTON_GPIO` | GPIO du bouton BOOT (9 sur C3/C6/H2, 0 sinon) |
+| `gpio_ws2812` | `embewi_cfg_get_int` | `CONFIG_EMBEWI_WS2812_GPIO` | GPIO de la LED WS2812B (RMT TX) |
+| `ntp_server` | `embewi_cfg_get` | `"pool.ntp.org"` | Serveur NTP (lu par l'agent, pas par le workload) |
+
+### Ajouter des clés custom
+
+Déclarer les clés dans le `McuConfigMap` Kubernetes du déploiement :
+
+```yaml
+apiVersion: embewi.io/v1alpha1
+kind: McuConfigMap
+metadata:
+  name: mon-app-config
+data:
+  gpio_button: "9"
+  vitesse_max:  "120"       # clé custom pour ce workload
+  endpoint_api: "http://192.168.1.10:8080"
+```
+
+Lire dans le workload avec la valeur par défaut appropriée :
+
+```c
+void embewi_app_init(void) {
+    int vitesse = embewi_cfg_get_int("vitesse_max", 100);
+
+    char api[128] = "http://localhost:8080";
+    embewi_cfg_get("endpoint_api", api, sizeof(api));
+}
+```
+
+Contraintes clé/valeur imposées par les buffers NVS :
+
+| Limite | Valeur |
+|---|---|
+| Longueur max d'une clé | 15 caractères |
+| Longueur max d'une valeur | 63 caractères |
+| Préfixe `_` | Réservé à l'agent — ne pas utiliser |
+
+---
+
+## Selfcheck
+
+`embewi_app_selfcheck()` est appelé de façon répétée pendant les **15 secondes**
+qui suivent un boot post-OTA (`pending_verify`). Si elle retourne `false` — ou
+si la fenêtre expire sans retour `true` — le bootloader rollback sur l'image
+précédente.
+
+```c
+bool embewi_app_selfcheck(void) {
+    // ✅ Tester : driver initialisé, peripheral présent
+    return s_chan != NULL && gpio_get_level(s_gpio) >= 0;
+
+    // ❌ Ne pas faire : logique applicative, réseau, TLS, NVS
+}
+```
+
+**Ce que selfcheck doit tester :** uniquement ce qui peut faire planter le
+service — driver initialisé, capteur répondant, canal hardware actif.
+
+**Ce que selfcheck ne doit pas faire :** logique métier, appels réseau,
+lectures NVS, opérations bloquantes. La fenêtre est courte et partagée avec
+l'émission du heartbeat.
+
+---
+
+## Service applicatif
+
+Le Core alloue un port TCP au device (`POST /app/port`, persisté en NVS).
+L'agent passe ce port à `embewi_app_service_start(port)`. Le workload choisit
+librement le protocole : HTTP, HTTPS, WebSocket, TCP brut…
+
+```c
+void embewi_app_service_start(uint16_t port) {
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.server_port = port;
+    cfg.ctrl_port   = port + 1;  // port+1 réservé au ctrl socket httpd
+    httpd_start(&s_srv, &cfg);
+    // enregistrer les routes...
+}
+
+void embewi_app_service_stop(void) {
+    if (s_srv) { httpd_stop(s_srv); s_srv = NULL; }
+}
+```
+
+> `ctrl_port = port + 1` est obligatoire pour éviter le conflit avec le socket
+> de contrôle interne de l'httpd de l'agent (qui utilise lui aussi `port + 1`).
+
+---
+
+## Workloads fournis (`apps/`)
+
+Les workloads dans `apps/` sont des **références d'implémentation** — ils
+montrent comment utiliser chaque partie de l'interface.
+
+### `apps/button/main.c` — bouton BOOT
+
+Illustre : lecture McuConfigMap (`gpio_button`), tâche FreeRTOS de polling,
+service HTTP simple, selfcheck GPIO.
+
+| Point | Valeur |
+|---|---|
+| Config lue | `gpio_button` → `embewi_cfg_get_int` |
+| Tâche | `embewi_btn` — polling 50 ms, stack 2 048 B, priorité 3 |
+| Service | `GET /sensors` → `{"counter": N}` |
+| Selfcheck | `gpio_get_level(s_gpio) == 1` (bouton relâché) |
+
+### `apps/rainbow/main.c` — LED WS2812B
+
+Illustre : lecture McuConfigMap (`gpio_ws2812`), driver RMT, selfcheck hardware,
+service HTTP d'état.
+
+| Point | Valeur |
+|---|---|
+| Config lue | `gpio_ws2812` → `embewi_cfg_get_int` |
+| Driver | RMT TX 10 MHz, protocole WS2812B GRB, MSB en premier |
+| Tâche | `embewi_rainbow` — cycle HSV, stack 2 048 B, priorité 3 |
+| Service | `GET /status` → `{"running": true\|false}` |
+| Selfcheck | `s_chan != NULL && s_encoder != NULL` |
 
 ---
 
 ## Créer son workload
 
-1. Créer le dossier `apps/<mon-app>/` et y écrire `main.c`.
-2. Implémenter les 4 fonctions de `embewi_app.h`.
-3. Dans `main/CMakeLists.txt`, déclarer le nouveau nom et pointer vers le fichier :
+1. Créer `apps/<mon-app>/main.c` et implémenter les 4 fonctions.
+2. Dans `main/CMakeLists.txt`, ajouter le cas :
 
 ```cmake
-set(EMBEWI_APP "mon-app")
+set(EMBEWI_APP "mon-app")   # ← changer ici
 
 if(EMBEWI_APP STREQUAL "rainbow")
     set(EMBEWI_APP_SRC "../apps/rainbow/main.c")
@@ -90,49 +228,46 @@ else()
 endif()
 ```
 
-Si le workload a plusieurs fichiers sources, les lister tous dans `EMBEWI_APP_SRC`
-(liste CMake séparée par `;`) ou ajouter directement dans `SRCS` de
-`idf_component_register`.
+Les headers `embewi_app.h` et `embewi_agent.h` sont accessibles sans chemin
+supplémentaire — `INCLUDE_DIRS "."` du composant couvre `main/`.
 
-Les headers de `main/` (`embewi_app.h`, `embewi_agent.h`) sont accessibles
-sans chemin supplémentaire — `INCLUDE_DIRS "."` du composant couvre `main/`.
+Pour un workload multi-fichiers, lister les sources en liste CMake :
+
+```cmake
+set(EMBEWI_APP_SRC "../apps/mon-app/main.c;../apps/mon-app/drivers.c")
+```
+
+3. Créer le `McuConfigMap` Kubernetes avec les clés nécessaires au workload et
+   le référencer dans le `McuDeployment`.
 
 ---
 
 ## Construire l'artefact OTA
 
-L'artefact OTA est le **binaire complet** produit par `idf.py build` — firmware
+L'artefact OTA est le binaire complet produit par `idf.py build` — firmware
 agent + workload statiquement liés. C'est exactement ce que le Core pousse via
 `PUT /ota/write`.
 
 ### Build dev (non signé)
 
 ```bash
-# 1. Sélectionner la cible SoC (une seule fois par workspace)
+# 1. Cible SoC (une fois par workspace)
 idf.py set-target esp32c3
 
-# 2. Sélectionner le workload dans main/CMakeLists.txt
-#    set(EMBEWI_APP "button")   # ou "rainbow" ou "mon-app"
+# 2. Workload sélectionné dans main/CMakeLists.txt :
+#    set(EMBEWI_APP "mon-app")
 
 # 3. Compiler
 idf.py build
+# → build/embewi_agent.bin
 ```
 
-L'artefact est `build/embewi_agent.bin`.
-
-### Extraire taille et digest
-
-Le Core a besoin de ces deux valeurs pour `POST /ota/prepare` :
+### Extraire taille et digest pour `POST /ota/prepare`
 
 ```bash
-# Taille en octets
 wc -c < build/embewi_agent.bin
-
-# Digest SHA-256 (format attendu par /ota/prepare : "sha256:<hex>")
 sha256sum build/embewi_agent.bin | awk '{print "sha256:" $1}'
 ```
-
-Corps de `POST /ota/prepare` :
 
 ```json
 {
@@ -147,52 +282,37 @@ Corps de `POST /ota/prepare` :
 
 ### Build prod (signé Secure Boot v2)
 
-Avec le profil prod, le binaire est **signé au build**. Le digest doit être
-calculé sur le binaire signé (pas sur le binaire brut).
-
 ```bash
-# Build prod (isole les artefacts dans build-prod/)
 idf.py -B build-prod \
        -DSDKCONFIG=build-prod/sdkconfig.prod \
        -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.prod" \
        build
+# → build-prod/embewi_agent.bin  (signé RSA-3072)
 
-# Artefact signé
-ls -la build-prod/embewi_agent.bin
-
-# Taille et digest du binaire SIGNÉ
+# Calculer size et digest sur le binaire SIGNÉ
 wc -c < build-prod/embewi_agent.bin
 sha256sum build-prod/embewi_agent.bin | awk '{print "sha256:" $1}'
 ```
 
-> Le binaire signé est légèrement plus grand que le binaire brut (signature
-> RSA-3072 annexée). Toujours calculer `size` et `digest` sur l'artefact
-> **effectivement transmis** au Core, pas sur le binaire intermédiaire.
-
-### `fw_size` — rôle à l'initialisation
-
-Au premier flash (hors OTA), l'agent stocke la taille du binaire en NVS
-(`fw_size`). Au boot, il recalcule le SHA-256 de la flash sur exactement
-`fw_size` octets (sans padding `0xFF`). Si ce digest correspond à celui de
-l'image OTA reçue, `GET /info` expose `firmware.digest` avec la bonne valeur.
-
-En pratique : ne pas chercher à pré-renseigner `fw_size` manuellement — le
-premier flash via `idf.py flash` l'initialise automatiquement.
+> Toujours calculer `size` et `digest` sur l'artefact **effectivement transmis**
+> au Core. Le binaire signé est plus grand que le brut (signature annexée).
 
 ---
 
-## Séquence complète Core → device
+## Séquence déploiement complète
 
 ```text
-1. CI produit build/embewi_agent.bin   (workload compilé, signé si prod)
-2. CI calcule size + digest
+1. CI  → idf.py build  →  embewi_agent.bin  (workload inclus)
+2. CI  → size + digest calculés
 3. Core : POST /ota/prepare  {deployment_id, chip, size, digest, ...}
           ← {accepted: true, target_slot: "ota_1"}
-4. Core : PUT  /ota/write    <binaire brut>  X-Embewi-Digest: sha256:...
+4. Core : PUT  /ota/write    <binaire>   X-Embewi-Digest: sha256:...
           ← {written: N, digest: "sha256:...", status: "written"}
 5. Core : POST /ota/activate {deployment_id}
           ← {status: "rebooting", target_slot: "ota_1"}
-6. Agent reboot → pending_verify → self-check 15 s
-7. OK  → mark_valid, heartbeat state=running
-   KO  → rollback, heartbeat state=rollback
+6. Agent : reboot → pending_verify
+           embewi_app_init()
+           embewi_app_selfcheck()  × N  (15 s max)
+7. OK  → mark_valid, heartbeat state=running, EndpointSlice ready=true
+   KO  → rollback bootloader, heartbeat state=rollback
 ```

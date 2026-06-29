@@ -9,13 +9,19 @@ et émet heartbeat + logs chiffrés vers le Core.
 
 ```{toctree}
 :maxdepth: 2
-:caption: Agent
+:caption: Exploitation
 
 Architecture <architecture>
 API inbound <api>
 Configuration <configuration>
-Workloads <workload>
 Sécurité production <embewi-prod-security>
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Workload SDK
+
+Développer un workload <workload>
 ```
 
 ## Vue d'ensemble
@@ -37,32 +43,20 @@ Sécurité production <embewi-prod-security>
 │  │ A/B │ │Map NVS  │ │
 │  └─────┘ └─────────┘ │
 │  ┌──────────────────┐ │
-│  │ App workload     │ │
-│  │ (button/rainbow) │ │
+│  │  App workload    │ │
+│  │ (votre code ici) │ │
 │  └──────────────────┘ │
 └──────────────────────┘
 ```
 
-## Fonctionnalités
+## Deux audiences, deux sections
 
-- **Provisioning** : portail captif Wi-Fi HTTPS (AP `embewi-XXXX`, 10 min),
-  token affiché une seule fois, IP statique ou DHCP.
-- **API HTTPS :443** : 11 endpoints inbound, auth Bearer par node à temps
-  constant sur chaque appel.
-- **OTA A/B** : write chunké, digest SHA-256 incrémental (PSA crypto),
-  reprise après coupure (`Content-Range` in-session), idempotence NVS.
-- **Self-check borné** : validation 15 s après OTA → `mark_valid` ou rollback
-  bootloader ; check storage réel (canary NVS).
-- **McuConfigMap** : config runtime poussée par le Core (GPIO, NTP…), découplée
-  du binaire OTA.
-- **Heartbeat** : POST HTTPS toutes les 5 s (état, RSSI, heap, temp SoC,
-  stack HWM min des tâches).
-- **Streaming logs** : tous les `ESP_LOGx` capturés → WebSocket `wss` vers le
-  Core ; événements OTA/lifecycle via HTTPS POST.
-- **NTP/SNTP** : horloge synchronisée au boot — pré-requis du TLS authentifié
-  en prod.
-- **Sécurité** : Secure Boot v2 + Flash Encryption + anti-rollback eFuse
-  (profil opt-in).
+**Exploitation** — pour l'opérateur / l'équipe Core :
+déploiement, configuration K8s, API HTTPS, sécurité prod.
+
+**Workload SDK** — pour le développeur d'application :
+écrire le code métier qui tourne dans l'agent, lire la config,
+exposer un service, produire l'artefact OTA.
 
 ## Repères
 
@@ -70,4 +64,4 @@ Sécurité production <embewi-prod-security>
   (code source, build, tests, partitions).
 - **Contrat Core ↔ Agent** : [iobewi.github.io/embewi](https://iobewi.github.io/embewi/)
   (spécification normative `v1alpha1`, rattachée en submodule `contract/`).
-- **Chips testés** : ESP32-C3. Compatible C6, S3, H2 (même famille RISC-V).
+- **Chips supportés** : ESP32-C3 (testé). Compatible C6, S3, H2 (même famille RISC-V).
