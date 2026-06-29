@@ -176,7 +176,7 @@ Réponse (succès) :
 
 Réponse (slot non prêt) :
 
-```json
+```text
 HTTP 409
 { "error": "slot_not_ready" }
 ```
