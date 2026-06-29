@@ -30,11 +30,16 @@ pas. Le Core enchaîne avec `POST /reboot` (ou le reboot vient de `POST /ota/act
 
 `generation > active_generation` → config poussée, reboot en attente.
 
-### Clé lue par l'agent lui-même
+### Clés lues par l'agent lui-même
 
 | Clé | Défaut build | Lu par |
 |---|---|---|
 | `ntp_server` | `pool.ntp.org` | `embewi_time.c` — serveur NTP principal |
+| `allowed_cidr` | (absent) | `embewi_http.c` — CIDR autorisé pour le filtrage IP inbound (`CONFIG_EMBEWI_ENABLE_IP_FILTER=y`) |
+
+Si `allowed_cidr` est absent et que le filtrage IP est activé, l'agent dérive
+le CIDR autorisé depuis l'hôte de `ctrl_url` en `/32`. Si `ctrl_url` pointe sur
+un hostname (non-IPv4), le filtre se désactive avec un avertissement de boot.
 
 Toutes les autres clés sont opaques pour l'agent et destinées au workload.
 Les clés préfixées `_` sont réservées à l'agent (`_gen` = compteur de
@@ -136,3 +141,4 @@ Accessibles via `idf.py menuconfig` :
 | `CONFIG_EMBEWI_BUTTON_GPIO` | 9 (C3/C6/H2) / 0 (autres) | GPIO bouton BOOT (défaut build, surchargeable via McuConfigMap) |
 | `CONFIG_EMBEWI_WS2812_GPIO` | 10 | GPIO LED WS2812B (défaut build, surchargeable via McuConfigMap) |
 | `CONFIG_EMBEWI_VERIFY_CORE_CERT` | `n` | Vérification CA Core sur flux sortants (prod) |
+| `CONFIG_EMBEWI_ENABLE_IP_FILTER` | `n` | Filtrage IP inbound : rejette les connexions hors `allowed_cidr` avant tout handler (prod, voir [Sécurité production](embewi-prod-security)) |

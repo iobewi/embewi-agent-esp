@@ -11,6 +11,13 @@ RUN apt-get update -y && apt-get install -y \
     clangd \
     npm
 
+# Documentation Sphinx (docs/) — mêmes contraintes que docs/requirements.txt
+RUN pip3 install --no-cache-dir \
+    "sphinx>=7.2,<9" \
+    "myst-parser>=2.0,<5" \
+    "sphinx-rtd-theme>=3.0" \
+    "sphinxcontrib-mermaid>=0.9"
+
 # Installer Claude Code via npm
 RUN npm install -g @anthropic-ai/claude-code
 

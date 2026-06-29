@@ -126,6 +126,28 @@ flowchart LR
 Le scheme est toujours forcé en `https://` / `wss://` quel que soit le scheme
 stocké dans `ctrl_url` (contrat §1).
 
+**Champs du heartbeat (§5) :**
+
+| Champ | Description |
+|---|---|
+| `node_id` | Identifiant du device (NVS provisioning) |
+| `ip` | IP Wi-Fi courante — le Core met à jour l'EndpointSlice K8s à chaque réception (§8) |
+| `ts` | Epoch UTC (0 si NTP pas encore synchronisé) |
+| `state` | État courant (`running`, `pending_verify`, `degraded`…) |
+| `ota_validated` | `true` uniquement après `mark_valid` — pilote le `ready` de l'EndpointSlice |
+| `deployment_id` | Identifiant du déploiement validé courant |
+| `firmware_digest` | Digest SHA-256 du binaire actif |
+| `uptime_ms` | Uptime en millisecondes (`esp_timer`) |
+| `heap_free` | Heap interne libre (octets) |
+| `rssi` | Niveau Wi-Fi (dBm) |
+| `config_generation` | Génération McuConfigMap active au boot |
+| `temp_celsius` | Température interne du SoC (`-127.0` si capteur indisponible) |
+| `task_hwm_min` | Minimum high-water-mark de stack sur toutes les tâches (octets libres restants) |
+
+Le champ `ip` est la source de vérité que le Core utilise pour patcher
+`endpoints[].addresses` de l'EndpointSlice — l'IP peut changer entre deux
+reboots (DHCP) sans action manuelle.
+
 ## Tâches FreeRTOS
 
 | Tâche | Stack | Priorité | Rôle |

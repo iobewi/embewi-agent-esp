@@ -19,6 +19,7 @@
 | Mode download ROM | ouvert | secure DL mode |
 | Chiffrement NVS | ❌ off | ✅ schéma flash-enc (partition `nvs_keys`) |
 | Vérification cert du Core (sortant) | ❌ skip | ✅ CA embarquée (`CONFIG_EMBEWI_VERIFY_CORE_CERT`) |
+| Filtrage IP inbound | ❌ off | ✅ rejet avant handler (`CONFIG_EMBEWI_ENABLE_IP_FILTER`) |
 | Reflash libre | ✅ | ❌ (par design) |
 
 Le développement reste rapide et reflashable. La sécurité ne s'active que via
@@ -123,6 +124,74 @@ eFuse. Règle opérationnelle :
 
 ---
 
+## Étape 5 — Sécurité réseau (périmètre autour de l'ESP)
+
+Le token Bearer est la défense applicative de l'API inbound. En production,
+trois couches complémentaires renforcent le périmètre au niveau réseau.
+
+### VLAN ESP dédié
+
+Isoler les ESP sur un VLAN distinct du reste du LAN et du cluster. Seul le
+node K8s qui héberge le Core a une route vers ce VLAN. Les autres nodes — et
+donc tous les Pods — ne voient pas le subnet ESP au niveau L3. C'est le
+périmètre le plus efficace : il agit avant toute couche applicative.
+
+### NetworkPolicy K8s — egress vers le subnet ESP
+
+Si le CNI supporte les NetworkPolicy (Calico, Cilium, Weave…), restreindre
+l'egress vers le subnet ESP aux seuls Pods du Core :
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: esp-egress
+  namespace: embewi
+spec:
+  podSelector:
+    matchLabels:
+      app: embewi-core
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 192.168.10.0/24   # subnet VLAN ESP — adapter à l'environnement
+```
+
+Les ESP étant hors Pod CIDR, les NetworkPolicy ne s'appliquent pas *vers eux*
+nativement : la règle porte sur l'**egress des Pods cluster** vers le subnet ESP.
+
+### Filtrage IP dans l'agent (`CONFIG_EMBEWI_ENABLE_IP_FILTER=y`)
+
+Troisième couche, portée par l'agent lui-même. Activé dans
+`sdkconfig.defaults.prod`, il rejette les connexions entrantes hors du CIDR
+autorisé **avant** tout handler et avant la vérification du token, via le hook
+`open_fn` du serveur HTTPS (zéro overhead applicatif).
+
+Source du CIDR autorisé (par priorité) :
+
+1. Clé McuConfigMap `allowed_cidr` poussée par le Core via `POST /config`
+   (ex. `"10.42.0.0/16"` = CIDR du cluster K8s).
+2. IP extraite de `ctrl_url` en `/32` si `allowed_cidr` est absent.
+
+> **Recommandation** : pousser `allowed_cidr` avec le CIDR du cluster plutôt
+> que l'IP exacte du Pod Core — cette IP change à chaque redémarrage du Pod.
+> Un hostname dans `ctrl_url` sans `allowed_cidr` désactive silencieusement
+> le filtre (warning de boot).
+
+**Profondeur de défense résultante :**
+
+```text
+Connexion entrante
+  │
+  ├─ VLAN isolé → seul le node Core a une route L3 vers l'ESP
+  ├─ NetworkPolicy egress → seuls les Pods Core peuvent sortir vers le subnet
+  ├─ IP filter open_fn → rejet avant tout handler si IP hors CIDR
+  └─ Token Bearer (temps constant) → auth applicative finale
+```
+
+---
+
 ## Checklist avant déploiement terrain
 
 ```text
@@ -133,6 +202,9 @@ eFuse. Règle opérationnelle :
 [ ] rollback bootloader validé sur image de production (couper le selfcheck exprès)
 [ ] secure_version aligné avec la politique de sécurité
 [ ] mode download ROM : secure (défaut) ou disabled selon le modèle de menace
+[ ] ESP sur VLAN dédié — seul le node Core a une route L3 vers le subnet
+[ ] NetworkPolicy K8s egress appliquée (si CNI le supporte)
+[ ] CONFIG_EMBEWI_ENABLE_IP_FILTER=y + allowed_cidr poussé via McuConfigMap
 ```
 
 ---
