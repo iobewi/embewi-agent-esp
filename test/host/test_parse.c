@@ -258,6 +258,66 @@ static void test_ota_is_final(void) {
     CHECK_EQ(embewi_ota_is_final(true, 0, 1), 1);
 }
 
+// ── embewi_parse_url_host ─────────────────────────────────────────────────────
+
+static void test_parse_url_host(void) {
+    char out[64];
+
+    embewi_parse_url_host("https://192.168.1.10:8443", out, sizeof(out));
+    CHECK_STR(out, "192.168.1.10");
+
+    embewi_parse_url_host("http://core.local", out, sizeof(out));
+    CHECK_STR(out, "core.local");
+
+    // hôte nu (sans scheme)
+    embewi_parse_url_host("192.168.1.10:8443", out, sizeof(out));
+    CHECK_STR(out, "192.168.1.10");
+
+    // URL sans port ni path
+    embewi_parse_url_host("https://10.0.0.1/v1alpha1", out, sizeof(out));
+    CHECK_STR(out, "10.0.0.1");
+
+    // out_len == 0 : ne doit pas crasher
+    char dummy = 'Z';
+    embewi_parse_url_host("https://10.0.0.1", &dummy, 0);
+    CHECK_EQ(dummy, 'Z');
+}
+
+// ── embewi_parse_cidr ─────────────────────────────────────────────────────────
+
+static void test_parse_cidr(void) {
+    uint32_t ip, mask;
+
+    // /32 implicite (hôte seul)
+    CHECK_EQ(embewi_parse_cidr("192.168.1.10", &ip, &mask), 1);
+    CHECK_EQ(ip,   0xC0A8010Au);
+    CHECK_EQ(mask, 0xFFFFFFFFu);
+
+    // /24 classique
+    CHECK_EQ(embewi_parse_cidr("192.168.1.0/24", &ip, &mask), 1);
+    CHECK_EQ(ip,   0xC0A80100u);
+    CHECK_EQ(mask, 0xFFFFFF00u);
+
+    // /32 explicite
+    CHECK_EQ(embewi_parse_cidr("10.0.0.1/32", &ip, &mask), 1);
+    CHECK_EQ(mask, 0xFFFFFFFFu);
+
+    // /0 → accepte tout
+    CHECK_EQ(embewi_parse_cidr("0.0.0.0/0", &ip, &mask), 1);
+    CHECK_EQ(mask, 0u);
+
+    // membership : peer dans le sous-réseau
+    CHECK_EQ(embewi_parse_cidr("10.42.0.0/16", &ip, &mask), 1);
+    CHECK_EQ((0x0A2A0064u & mask), (ip & mask));   // 10.42.0.100 ∈ 10.42.0.0/16
+    CHECK_EQ((0x0A2B0001u & mask) == (ip & mask), 0); // 10.43.0.1 ∉
+
+    // malformé → false
+    CHECK_EQ(embewi_parse_cidr("hostname",       &ip, &mask), 0);
+    CHECK_EQ(embewi_parse_cidr("192.168.1",      &ip, &mask), 0);
+    CHECK_EQ(embewi_parse_cidr("256.0.0.1",      &ip, &mask), 0);
+    CHECK_EQ(embewi_parse_cidr("192.168.1.0/33", &ip, &mask), 0);
+}
+
 // ── embewi_ct_equal (comparaison de token à temps constant) ──────────────────
 
 static void test_ct_equal(void) {
@@ -291,6 +351,8 @@ int main(void) {
     test_content_range_rejects();
     test_ota_plan();
     test_ota_is_final();
+    test_parse_url_host();
+    test_parse_cidr();
     test_ct_equal();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);

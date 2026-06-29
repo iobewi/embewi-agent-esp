@@ -67,3 +67,15 @@ bool embewi_ota_is_final(bool has_range, uint32_t end, uint32_t total);
 // différent) — défense contre les attaques temporelles sur le token (§1).
 // La longueur reste observable par timing (acceptable : ce n'est pas le secret).
 bool embewi_ct_equal(const char *a, const char *b);
+
+// Extrait l'hôte (sans scheme ni port) d'une URL.
+//   "https://192.168.1.10:8443" → "192.168.1.10"
+//   "http://core.local"         → "core.local"
+//   "192.168.1.10:8443"         → "192.168.1.10"
+void embewi_parse_url_host(const char *url, char *out, size_t out_len);
+
+// Parse "a.b.c.d" ou "a.b.c.d/prefix" en host-byte-order.
+//   "192.168.1.10"   → ip=0xC0A8010A mask=0xFFFFFFFF (/32 implicite)
+//   "192.168.1.0/24" → ip=0xC0A80100 mask=0xFFFFFF00
+// Retourne false si la valeur n'est pas une IPv4 valide.
+bool embewi_parse_cidr(const char *s, uint32_t *ip, uint32_t *mask);

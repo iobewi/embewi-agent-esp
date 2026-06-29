@@ -49,3 +49,8 @@ CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE=y
 
 # ── Auth des flux sortants : vérifier le cert du Core (cf. main/core_ca.pem) ──
 CONFIG_EMBEWI_VERIFY_CORE_CERT=y
+
+# ── Filtrage IP inbound : rejeter les connexions hors CIDR avant tout handler ──
+# CIDR via McuConfigMap "allowed_cidr" (cluster CIDR recommandé) ou hôte de
+# ctrl_url en /32. Voir docs/embewi-prod-security.md §Étape 5.
+CONFIG_EMBEWI_ENABLE_IP_FILTER=y

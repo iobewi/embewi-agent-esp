@@ -17,6 +17,9 @@
 #include "embewi_agent.h"
 #include "embewi_app.h"
 #include "embewi_parse.h"
+#if CONFIG_EMBEWI_ENABLE_IP_FILTER
+#include <lwip/sockets.h>
+#endif
 
 static const char *TAG = "embewi.http";
 static httpd_handle_t s_srv = NULL;
@@ -58,6 +61,47 @@ static esp_err_t deny(httpd_req_t *req) {
     httpd_resp_sendstr(req, "{\"error\":\"unauthorized\"}");
     return ESP_OK;
 }
+
+// --- Filtrage IP inbound (contrat §1, opt-in CONFIG_EMBEWI_ENABLE_IP_FILTER) ---
+// open_fn appelée une fois par session TCP, avant tout handler. Retour != ESP_OK
+// → socket fermée immédiatement (avant la couche applicative).
+// Source autorisée : clé McuConfigMap "allowed_cidr" (CIDR explicite) ou hôte
+// de ctrl_url en /32 implicite. Hostname non-IPv4 → filtre désactivé + warning.
+#if CONFIG_EMBEWI_ENABLE_IP_FILTER
+static uint32_t s_filter_ip   = 0;
+static uint32_t s_filter_mask = 0;   // 0 = filtre désactivé
+
+static void ip_filter_init(void) {
+    char cidr[32] = {0};
+    if (!embewi_cfg_get("allowed_cidr", cidr, sizeof(cidr))) {
+        char host[48] = {0};
+        embewi_parse_url_host(embewi_rt()->ctrl_url, host, sizeof(host));
+        snprintf(cidr, sizeof(cidr), "%s/32", host);
+    }
+    if (!embewi_parse_cidr(cidr, &s_filter_ip, &s_filter_mask)) {
+        ESP_LOGW(TAG, "ip_filter: '%s' n'est pas une IPv4 → filtre désactivé", cidr);
+        return;
+    }
+    ESP_LOGI(TAG, "ip_filter actif : autorisé %s (mask 0x%08lx)",
+             cidr, (unsigned long)s_filter_mask);
+}
+
+static esp_err_t ip_filter_open_fn(httpd_handle_t hd, int sockfd) {
+    (void)hd;
+    if (s_filter_mask == 0) return ESP_OK;
+    struct sockaddr_in addr = {0};
+    socklen_t len = sizeof(addr);
+    if (getpeername(sockfd, (struct sockaddr *)&addr, &len) < 0) return ESP_OK;
+    uint32_t peer = ntohl(addr.sin_addr.s_addr);
+    if ((peer & s_filter_mask) != (s_filter_ip & s_filter_mask)) {
+        ESP_LOGW(TAG, "ip_filter: refus %lu.%lu.%lu.%lu",
+                 (unsigned long)(peer >> 24 & 0xFF), (unsigned long)(peer >> 16 & 0xFF),
+                 (unsigned long)(peer >>  8 & 0xFF), (unsigned long)(peer & 0xFF));
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+#endif /* CONFIG_EMBEWI_ENABLE_IP_FILTER */
 
 static void send_json(httpd_req_t *req, const char *json) {
     httpd_resp_set_type(req, "application/json");
@@ -513,6 +557,10 @@ esp_err_t embewi_http_start(void) {
     cfg.prvtkey_pem    = key;
     cfg.prvtkey_len    = key_len;
     // port_secure = 443 par défaut dans HTTPD_SSL_CONFIG_DEFAULT()
+#if CONFIG_EMBEWI_ENABLE_IP_FILTER
+    ip_filter_init();
+    cfg.httpd.open_fn = ip_filter_open_fn;
+#endif
 
     if (httpd_ssl_start(&s_srv, &cfg) != ESP_OK) return ESP_FAIL;
 

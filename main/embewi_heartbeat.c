@@ -15,6 +15,7 @@
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
+#include "esp_netif.h"
 #include "esp_http_client.h"
 #include "driver/temperature_sensor.h"
 #include "freertos/FreeRTOS.h"
@@ -34,6 +35,19 @@ extern const char core_ca_pem_start[] asm("_binary_core_ca_pem_start");
 static int current_rssi(void) {
     wifi_ap_record_t ap;
     return (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) ? ap.rssi : 0;
+}
+
+// IP STA courante en notation pointée. "0.0.0.0" si le netif n'est pas encore
+// disponible (ne devrait pas arriver : heartbeat_start est appelé après WiFi STA).
+// Incluse dans le heartbeat pour que le Core mette à jour l'EndpointSlice sans
+// dépendre de l'IP source TCP — rend l'IP dynamique (DHCP) transparente (§8).
+static void current_ip_str(char *out, size_t len) {
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip = {0};
+    if (netif) esp_netif_get_ip_info(netif, &ip);
+    snprintf(out, len, "%u.%u.%u.%u",
+        (unsigned)esp_ip4_addr1_16(&ip.ip), (unsigned)esp_ip4_addr2_16(&ip.ip),
+        (unsigned)esp_ip4_addr3_16(&ip.ip), (unsigned)esp_ip4_addr4_16(&ip.ip));
 }
 
 // --- Métriques télémétrie (contrat §5, champs optionnels) -------------------
@@ -123,14 +137,16 @@ static void emit_to(const char *path, const char *json) {
 static void heartbeat_task(void *arg) {
     while (true) {
         embewi_runtime_t *rt = embewi_rt();
-        char body[512];
+        char ip[16];
+        current_ip_str(ip, sizeof(ip));
+        char body[576];
         snprintf(body, sizeof(body),
-            "{\"node_id\":\"%s\",\"ts\":%lld,\"state\":\"%s\","
+            "{\"node_id\":\"%s\",\"ip\":\"%s\",\"ts\":%lld,\"state\":\"%s\","
             "\"deployment_id\":\"%s\",\"firmware_digest\":\"%s\","
             "\"ota_validated\":%s,\"uptime_ms\":%lld,"
             "\"heap_free\":%u,\"rssi\":%d,\"config_generation\":%lu,"
             "\"temp_celsius\":%.1f,\"task_hwm_min\":%lu}",
-            rt->node_id,
+            rt->node_id, ip,
             (long long)time(NULL),   // epoch UTC (uptime ~1970 si NTP pas encore sync)
             embewi_state_str(rt->state),
             rt->deployment_id, rt->fw_digest,

@@ -36,4 +36,23 @@ menu "Embewi Sécurité"
             La CA embarquée n'est PAS un secret (cert public). Elle doit signer
             le certificat serveur du Core (cert-manager interne, etc.).
 
+    config EMBEWI_ENABLE_IP_FILTER
+        bool "Filtrage IP sur l'API inbound (open_fn httpd)"
+        default n
+        help
+            Filtre les connexions entrantes à l'ouverture de chaque session TCP,
+            avant tout handler et avant la vérification du token Bearer.
+
+            Source autorisée (par priorité) :
+              1. Clé McuConfigMap "allowed_cidr" (ex. "192.168.1.0/24") poussée
+                 par le Core via POST /config.
+              2. Hôte de ctrl_url (NVS prov) en /32 implicite.
+
+            Si l'hôte est un hostname (pas une IPv4) et qu'aucun allowed_cidr
+            n'est défini, le filtre se désactive avec un avertissement de boot.
+
+            DEV (n)  : pas de filtre réseau — seul le token Bearer protège l'API.
+            PROD (y) : défense en profondeur, complémentaire au VLAN ESP dédié
+                       et à la NetworkPolicy K8s (egress vers le subnet ESP).
+
 endmenu

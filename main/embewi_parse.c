@@ -128,6 +128,27 @@ bool embewi_ota_is_final(bool has_range, uint32_t end, uint32_t total) {
     return !has_range || (end + 1 == total);
 }
 
+void embewi_parse_url_host(const char *url, char *out, size_t out_len) {
+    if (out_len == 0) return;
+    const char *p = url;
+    const char *ds = strstr(p, "://");
+    if (ds) p = ds + 3;
+    size_t i = 0;
+    while (*p && *p != ':' && *p != '/' && i < out_len - 1)
+        out[i++] = *p++;
+    out[i] = '\0';
+}
+
+bool embewi_parse_cidr(const char *s, uint32_t *ip, uint32_t *mask) {
+    unsigned int a, b, c, d, prefix = 32;
+    int n = sscanf(s, "%u.%u.%u.%u/%u", &a, &b, &c, &d, &prefix);
+    if (n < 4) return false;
+    if (a > 255 || b > 255 || c > 255 || d > 255 || prefix > 32) return false;
+    *ip   = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)c << 8) | d;
+    *mask = (prefix == 0) ? 0u : (0xFFFFFFFFu << (32 - prefix));
+    return true;
+}
+
 bool embewi_ct_equal(const char *a, const char *b) {
     size_t la = strlen(a), lb = strlen(b);
     // diff démarre non nul si les longueurs diffèrent ; volatile pour empêcher
