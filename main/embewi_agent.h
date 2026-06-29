@@ -88,11 +88,17 @@ esp_err_t embewi_ota_write_chunk(const uint8_t *data, size_t len);
 uint32_t  embewi_ota_written(void);
 bool      embewi_ota_in_progress(void);
 // finalize : compare digest calculé vs attendu, ferme la partition.
+// deployment_id (optionnel, header X-Embewi-Deployment-Id) : tag le slot stagé
+// dès l'écriture pour que GET /info l'expose avant l'activate (§4 §6). NULL = absent.
 esp_err_t embewi_ota_write_finish(const char *expected_digest,
+                                  const char *deployment_id,
                                   uint32_t *out_written,
                                   char *out_digest, size_t digest_len);
 
-// /ota/activate : set_boot_partition + persiste stage=activating, puis reboot.
+// /ota/activate : restaure s_target depuis NVS staged si absent (reprise §6),
+// persiste stage=activating, appelle set_boot_partition. NE REBOOT PAS — le
+// reboot est à la charge de l'appelant, après envoi de la réponse HTTP.
+// Retourne ESP_ERR_INVALID_STATE si aucun slot prêt (staged.state != WRITTEN).
 esp_err_t embewi_ota_activate(const char *deployment_id);
 
 // --- Self-check borné watchdog (embewi_selfcheck.c) -------------------------
@@ -144,8 +150,11 @@ int       embewi_cfg_get_int(const char *key, int default_val);
 esp_err_t embewi_cfg_write(const char *key, const char *value);
 // bump_generation : incrémente la génération NVS après un batch de write().
 esp_err_t embewi_cfg_bump_generation(void);
-// json_nvs : sérialise toutes les clés user en objet JSON (pour GET /config).
+// json_nvs : sérialise les clés user du NVS COURANT en objet JSON (GET /config).
 void      embewi_cfg_json_nvs(char *buf, size_t buf_len);
+// json_active : config figée au boot (ce que les apps ont chargé). Peut diverger
+// de json_nvs après un POST /config sans reboot (cf. generation vs active_generation).
+void      embewi_cfg_json_active(char *buf, size_t buf_len);
 
 // --- Heartbeat / logs sortants (embewi_heartbeat.c) -------------------------
 void embewi_heartbeat_start(void);

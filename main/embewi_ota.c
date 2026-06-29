@@ -158,6 +158,7 @@ esp_err_t embewi_ota_write_chunk(const uint8_t *data, size_t len) {
 }
 
 esp_err_t embewi_ota_write_finish(const char *expected_digest,
+                                  const char *deployment_id,
                                   uint32_t *out_written,
                                   char *out_digest, size_t digest_len) {
     if (!s_writing) return ESP_ERR_INVALID_STATE;
@@ -188,6 +189,8 @@ esp_err_t embewi_ota_write_finish(const char *expected_digest,
     embewi_staged_t staged = { .stage = EMBEWI_STAGE_WRITTEN };
     strlcpy(staged.slot, s_target->label, sizeof(staged.slot));
     strlcpy(staged.digest, hex, sizeof(staged.digest));
+    if (deployment_id)
+        strlcpy(staged.deployment_id, deployment_id, sizeof(staged.deployment_id));
     staged.size = s_written;
     embewi_staged_save(&staged);
     ESP_LOGI(TAG, "write OK %u octets slot=%s → staged=written",
@@ -195,12 +198,29 @@ esp_err_t embewi_ota_write_finish(const char *expected_digest,
     return ESP_OK;
 }
 
-// --- /ota/activate : set boot + stage=activating + reboot -------------------
+// --- /ota/activate : set boot + stage=activating (sans reboot) --------------
+// Le reboot est déclenché par l'appelant (h_ota_activate) APRÈS envoi de la
+// réponse HTTP, garantissant qu'on ne répond "rebooting" que si l'activation
+// a réussi (corrige le faux "rebooting" sur s_target NULL).
 esp_err_t embewi_ota_activate(const char *deployment_id) {
     if (!s_target) {
-        // reprise possible : recharger le slot stagé depuis NVS si process relancé
-        return ESP_ERR_INVALID_STATE;
+        // Reprise après reboot de l'agent entre write et activate (§6) :
+        // retrouver le slot depuis le NVS stagé au lieu d'échouer silencieusement.
+        embewi_staged_t st;
+        if (embewi_staged_load(&st) != ESP_OK || st.stage != EMBEWI_STAGE_WRITTEN
+                || st.slot[0] == '\0') {
+            ESP_LOGE(TAG, "activate: s_target NULL et staged absent/non prêt");
+            return ESP_ERR_INVALID_STATE;
+        }
+        s_target = esp_partition_find_first(ESP_PARTITION_TYPE_APP,
+                                            ESP_PARTITION_SUBTYPE_ANY, st.slot);
+        if (!s_target) {
+            ESP_LOGE(TAG, "activate: partition '%s' introuvable", st.slot);
+            return ESP_ERR_INVALID_STATE;
+        }
+        ESP_LOGW(TAG, "activate: s_target restauré depuis NVS staged (slot=%s)", st.slot);
     }
+
     embewi_staged_t staged;
     embewi_staged_load(&staged);
     staged.stage = EMBEWI_STAGE_ACTIVATING;
@@ -208,11 +228,13 @@ esp_err_t embewi_ota_activate(const char *deployment_id) {
     embewi_staged_save(&staged);
 
     esp_err_t err = esp_ota_set_boot_partition(s_target);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_boot_partition failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
-    ESP_LOGW(TAG, "activate dep=%s → reboot sur %s", deployment_id, s_target->label);
-    embewi_log_emit("info", "ota activate, rebooting");
-    vTaskDelay(pdMS_TO_TICKS(200));   // laisse partir la réponse HTTP + log
-    esp_restart();
-    return ESP_OK;   // non atteint
+    ESP_LOGW(TAG, "activate dep=%s → slot=%s prêt, reboot imminent",
+             deployment_id, s_target->label);
+    return ESP_OK;
+    // esp_restart() appelé par h_ota_activate après send_json.
 }

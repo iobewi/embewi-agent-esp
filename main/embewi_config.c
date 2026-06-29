@@ -19,6 +19,10 @@ static const char *TAG = "embewi.cfg";
 
 static uint32_t s_gen;        // génération NVS, mis à jour à chaque bump
 static uint32_t s_active_gen; // snapshot au boot, fixe jusqu'au prochain reboot
+// Snapshot JSON des clés config au boot : ce que les apps ont RÉELLEMENT chargé
+// (embewi_cfg_get au boot). Reste figé jusqu'au reboot, même si POST /config
+// modifie le NVS entre-temps → GET /config peut comparer "active" vs "nvs" (§4).
+static char     s_active_json[384];   // même taille que le nvs_json de h_config_get
 
 // Appelé une fois au boot, après nvs_flash_init et memset(s_rt).
 // Lit la génération NVS et l'adopte comme génération active de ce boot.
@@ -32,7 +36,15 @@ void embewi_cfg_boot_init(void) {
     s_active_gen = s_gen;
     embewi_rt()->cfg_generation        = s_gen;
     embewi_rt()->cfg_active_generation = s_active_gen;
+    // Fige l'état NVS courant comme config "active" de ce boot.
+    embewi_cfg_json_nvs(s_active_json, sizeof(s_active_json));
     ESP_LOGI(TAG, "boot init gen=%lu", (unsigned long)s_gen);
+}
+
+// Config "active" = snapshot figé au boot (cf. s_active_json). À distinguer de
+// embewi_cfg_json_nvs() qui lit le NVS courant (peut diverger après POST /config).
+void embewi_cfg_json_active(char *buf, size_t buf_len) {
+    strlcpy(buf, s_active_json, buf_len);
 }
 
 // Lit une valeur string depuis NVS. Retourne false si clé absente ou vide.

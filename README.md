@@ -60,35 +60,6 @@ Offsets **vides** (auto-placés après la table) → le layout s'adapte à
 `CONFIG_PARTITION_TABLE_OFFSET` (0x8000 dev / 0x10000 prod, bootloader signé plus
 gros). Partition `nvs_keys` pour le chiffrement NVS en prod.
 
-## Arborescence
-
-```text
-embewi/
-├── sdkconfig.defaults           # rollback, WDT, trace facility
-├── sdkconfig.defaults.prod      # Secure Boot v2, Flash Enc, NVS flash-enc (opt-in)
-├── partitions_4mb.csv / _8mb.csv
-├── contract/                    # submodule → iobewi/embewi (contrat + site doc)
-├── docs/
-│   ├── embewi-core-design.md    # design côté Core (rollout, webhook)
-│   └── embewi-prod-security.md  # procédure de durcissement prod
-├── test/
-│   ├── host/                    # tests purs (Unity-free, make)
-│   └── target/                  # tests Unity sur device/QEMU
-└── main/
-    ├── embewi_main.c            # app_main : boot, NTP, démarrage tasks
-    ├── embewi_provision.c       # portail captif HTTPS, NVS WiFi/IP/token
-    ├── embewi_selfcheck.c       # validation OTA, rollback, storage check
-    ├── embewi_ota.c             # prepare / write (SHA + Content-Range) / activate
-    ├── embewi_http.c            # serveur HTTPS, endpoints inbound
-    ├── embewi_config.c          # McuConfigMap (config runtime NVS)
-    ├── embewi_heartbeat.c       # heartbeat + logs événementiels (HTTPS)
-    ├── embewi_log.c             # streaming ESP_LOGx → WebSocket
-    ├── embewi_time.c            # synchro NTP/SNTP
-    ├── embewi_tls.c             # cert/clé depuis NVS (fallback auto-signé)
-    ├── embewi_parse.{c,h}       # helpers PURS (testés sur host)
-    └── embewi_app*.{c,h}        # interface + apps de démo (button, rainbow)
-```
-
 ## NVS
 
 | Namespace     | Contenu                                              |

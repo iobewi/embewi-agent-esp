@@ -153,6 +153,11 @@ static esp_err_t h_ota_write(httpd_req_t *req) {
     char expected[72] = {0};
     httpd_req_get_hdr_value_str(req, "X-Embewi-Digest", expected, sizeof(expected));
 
+    // Header contrat v2 : tag le slot stagé avec le deployment_id dès l'écriture,
+    // pour que GET /info expose staged.deployment_id avant même l'activate (§4 §6).
+    char dep_id[64] = {0};
+    httpd_req_get_hdr_value_str(req, "X-Embewi-Deployment-Id", dep_id, sizeof(dep_id));
+
     char range_hdr[64] = {0};
     bool has_range = httpd_req_get_hdr_value_str(req, "Content-Range",
                         range_hdr, sizeof(range_hdr)) == ESP_OK;
@@ -215,6 +220,7 @@ static esp_err_t h_ota_write(httpd_req_t *req) {
 
     uint32_t written = 0; char digest[72] = {0};
     esp_err_t err = embewi_ota_write_finish(expected[0] ? expected : NULL,
+                                            dep_id[0] ? dep_id : NULL,
                                             &written, digest, sizeof(digest));
     if (err == ESP_ERR_INVALID_CRC) {
         send_json(req, "{\"status\":\"digest_mismatch\"}");
@@ -251,8 +257,11 @@ static esp_err_t h_app_port(httpd_req_t *req) {
     rt->app_http_port = (uint16_t)port;
     embewi_app_service_start((uint16_t)port);
 
-    char body[48];
-    snprintf(body, sizeof(body), "{\"app_port\":%u}", (unsigned)port);
+    // Format contrat v2 ({status,port}) + alias app_port (rétrocompat lecteurs existants).
+    char body[72];
+    snprintf(body, sizeof(body),
+        "{\"status\":\"saved\",\"port\":%u,\"app_port\":%u}",
+        (unsigned)port, (unsigned)port);
     send_json(req, body);
     return ESP_OK;
 }
@@ -309,8 +318,12 @@ static esp_err_t h_tls_cert(httpd_req_t *req) {
         return ESP_OK;
     }
 
-    embewi_json_str(buf, "cert", cert, 4096);
-    embewi_json_str(buf, "key",  key,  2048);
+    // Champs du contrat v2 : cert_pem / key_pem. On accepte aussi les anciens
+    // noms cert / key (rétrocompat des intégrations existantes) en repli.
+    if (!embewi_json_str(buf, "cert_pem", cert, 4096))
+        embewi_json_str(buf, "cert", cert, 4096);
+    if (!embewi_json_str(buf, "key_pem", key, 2048))
+        embewi_json_str(buf, "key",  key,  2048);
     free(buf);
 
     unescape_json(cert);
@@ -379,14 +392,18 @@ static esp_err_t h_token(httpd_req_t *req) {
 static esp_err_t h_config_get(httpd_req_t *req) {
     if (!authorized(req)) return deny(req);
     embewi_runtime_t *rt = embewi_rt();
-    char nvs_json[384];
+    // active = snapshot figé au boot (§4) ; nvs = NVS courant (peut diverger
+    // après un POST /config sans reboot → generation > active_generation).
+    char active_json[384], nvs_json[384];
+    embewi_cfg_json_active(active_json, sizeof(active_json));
     embewi_cfg_json_nvs(nvs_json, sizeof(nvs_json));
-    char body[512];
+    char body[896];
     snprintf(body, sizeof(body),
-        "{\"generation\":%lu,\"active_generation\":%lu,\"nvs\":%s}",
+        "{\"generation\":%lu,\"active_generation\":%lu,"
+        "\"active\":%s,\"nvs\":%s}",
         (unsigned long)rt->cfg_generation,
         (unsigned long)rt->cfg_active_generation,
-        nvs_json);
+        active_json, nvs_json);
     send_json(req, body);
     return ESP_OK;
 }
@@ -454,14 +471,28 @@ static esp_err_t h_ota_activate(httpd_req_t *req) {
         return ESP_OK;
     }
 
-    // Réponse AVANT reboot (le client doit la recevoir).
+    // 1. Prépare le boot (set_boot_partition) AVANT de répondre.
+    //    Si le slot n'est pas prêt, on renvoie une erreur au lieu d'un faux
+    //    "rebooting" (embewi_ota_activate restaure s_target depuis NVS si absent).
+    esp_err_t ret = embewi_ota_activate(dep);
+    if (ret != ESP_OK) {
+        httpd_resp_set_status(req, "409 Conflict");
+        send_json(req, "{\"error\":\"slot_not_ready\"}");
+        return ESP_OK;
+    }
+
+    // 2. Slot configuré : le slot cible vient du NVS staged (mis à jour par activate).
+    embewi_staged_t st;
+    embewi_staged_load(&st);
     char body[128];
-    const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
     snprintf(body, sizeof(body),
-        "{\"status\":\"rebooting\",\"target_slot\":\"%s\"}",
-        next ? next->label : "ota_?");
+        "{\"status\":\"rebooting\",\"target_slot\":\"%s\"}", st.slot);
     send_json(req, body);
-    embewi_ota_activate(dep);   // set_boot + reboot (ne retourne pas)
+
+    // 3. Reboot APRÈS la réponse (le client a le temps de la recevoir).
+    embewi_log_emit("info", "ota activate, rebooting");
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_restart();
     return ESP_OK;
 }
 
