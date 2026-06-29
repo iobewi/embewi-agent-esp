@@ -22,6 +22,7 @@ Sécurité production <embewi-prod-security>
 :caption: Workload SDK
 
 Développer un workload <workload>
+Déployer un workload <deploy>
 ```
 
 ## Vue d'ensemble
