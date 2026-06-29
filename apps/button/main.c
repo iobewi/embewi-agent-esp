@@ -1,4 +1,4 @@
-// embewi_app_button.c — bouton BOOT → compteur exposé sur port app
+// apps/button/main.c — bouton BOOT → compteur exposé sur port app
 //
 // GPIO lu depuis NVS au boot via la clé "gpio_button" (McuConfigMap §4a).
 // Défaut build : CONFIG_EMBEWI_BUTTON_GPIO (GPIO9 sur ESP32-C3/C6/H2, GPIO0 sinon).

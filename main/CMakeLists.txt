@@ -4,9 +4,9 @@
 set(EMBEWI_APP "button")
 
 if(EMBEWI_APP STREQUAL "rainbow")
-    set(EMBEWI_APP_SRC "embewi_app_rainbow.c")
+    set(EMBEWI_APP_SRC "../apps/rainbow/main.c")
 else()
-    set(EMBEWI_APP_SRC "embewi_app_button.c")
+    set(EMBEWI_APP_SRC "../apps/button/main.c")
 endif()
 
 # --- Cert fallback TLS : généré au build, jamais dans les sources ----------

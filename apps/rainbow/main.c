@@ -1,4 +1,4 @@
-// embewi_app_rainbow.c — WS2812 arc-en-ciel via RMT
+// apps/rainbow/main.c — WS2812 arc-en-ciel via RMT
 //
 // GPIO lu depuis NVS au boot via la clé "gpio_ws2812" (McuConfigMap §4a).
 // Défaut build : CONFIG_EMBEWI_WS2812_GPIO (GPIO10 par défaut).

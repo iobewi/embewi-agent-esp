@@ -150,7 +150,17 @@ clés internes préfixées `_` (`_gen`). `POST /config` = merge-on-key + bump g�
 | `embewi_time.c` | synchro NTP/SNTP |
 | `embewi_tls.c` | cert/clé depuis NVS, fallback auto-signé embarqué |
 | `embewi_parse.{c,h}` | helpers **PURS** (URL, JSON, content-range, OTA plan, constant-time) — testés sur host |
-| `embewi_app*.{c,h}` | interface workload + apps démo (button, rainbow) |
+| `embewi_app.h` | interface workload (contrat des 4 fonctions à implémenter) |
+
+Les workloads d'exemple vivent dans `apps/` à la racine du dépôt :
+
+| Chemin | Workload |
+| --- | --- |
+| `apps/button/main.c` | Compteur bouton BOOT, expose `GET /sensors` |
+| `apps/rainbow/main.c` | Arc-en-ciel WS2812B via RMT, expose `GET /status` |
+
+`main/CMakeLists.txt` sélectionne le workload via `EMBEWI_APP` et référence
+`../apps/<nom>/main.c` dans `SRCS`.
 
 ## Spécificités ESP-IDF / SoC
 
