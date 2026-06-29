@@ -1,11 +1,13 @@
 # Embewi Agent — Documentation
 
-Firmware **device** (ESP32 / ESP-IDF ≥ 5.3) du système Embewi.
-L'agent implémente le contrat [`embewi`](https://iobewi.github.io/embewi/)
-(`v1alpha1`) : il est piloté par un contrôleur Kubernetes
-([embewi-core](https://github.com/iobewi/embewi-core)) via une API HTTPS
-authentifiée, gère les OTA A/B avec self-check borné + rollback automatique,
-et émet heartbeat + logs chiffrés vers le Core.
+Cette documentation s'adresse à deux publics distincts — choisissez votre
+section selon votre rôle.
+
+**Agent** — design et fonctionnement interne : architecture, API HTTPS,
+configuration, sécurité de production.
+
+**Workload SDK** — développer et déployer une application embarquée :
+écrire le code métier, lire la configuration runtime, produire l'artefact OTA.
 
 ```{toctree}
 :maxdepth: 2
@@ -14,7 +16,7 @@ et émet heartbeat + logs chiffrés vers le Core.
 Architecture <architecture>
 API inbound <api>
 Configuration <configuration>
-Sécurité production <embewi-prod-security>
+Sécurité de production <embewi-prod-security>
 ```
 
 ```{toctree}
@@ -25,7 +27,13 @@ Développer un workload <workload>
 Déployer un workload <deploy>
 ```
 
-## Vue d'ensemble
+---
+
+L'agent implémente le contrat [`embewi`](https://iobewi.github.io/embewi/)
+(`v1alpha1`) : piloté par un contrôleur Kubernetes
+([embewi-core](https://github.com/iobewi/embewi-core)) via une API HTTPS
+authentifiée, il gère les OTA A/B avec selfcheck borné et rollback automatique,
+et émet heartbeat et logs vers le Core.
 
 ```text
 ┌─────────────────────────────────────────────────┐
@@ -44,20 +52,11 @@ Déployer un workload <deploy>
 │  │ A/B │ │Map NVS  │ │
 │  └─────┘ └─────────┘ │
 │  ┌──────────────────┐ │
-│  │  App workload    │ │
+│  │    Workload      │ │
 │  │ (votre code ici) │ │
 │  └──────────────────┘ │
 └──────────────────────┘
 ```
-
-## Deux audiences, deux sections
-
-**Agent** — design de l'agent : architecture interne, API HTTPS exposée,
-configuration et sécurité production.
-
-**Workload SDK** — pour le développeur d'application :
-écrire le code métier qui tourne dans l'agent, lire la config,
-exposer un service, produire l'artefact OTA.
 
 ## Repères
 

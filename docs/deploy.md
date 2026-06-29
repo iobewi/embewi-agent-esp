@@ -20,7 +20,7 @@ Dans `main/CMakeLists.txt` :
 set(EMBEWI_APP "mon-app")   # ← changer ici
 ```
 
-### Build dev (non signé)
+### Build de développement (non signé)
 
 ```bash
 # 1. Cible SoC (une fois par workspace)
@@ -31,7 +31,7 @@ idf.py build
 # → build/embewi_agent.bin
 ```
 
-### Build prod (signé Secure Boot v2)
+### Build de production (signé Secure Boot v2)
 
 ```bash
 idf.py -B build-prod \
@@ -41,7 +41,7 @@ idf.py -B build-prod \
 # → build-prod/embewi_agent.bin  (signé RSA-3072)
 ```
 
-> Voir [Sécurité production](embewi-prod-security) pour la gestion des clés
+> Voir [Sécurité de production](embewi-prod-security) pour la gestion des clés
 > de signature et la procédure de premier flash.
 
 ---
@@ -51,11 +51,11 @@ idf.py -B build-prod \
 Le Core a besoin de ces deux valeurs pour `POST /ota/prepare` :
 
 ```bash
-# Sur le binaire dev
+# Sur le binaire de développement
 wc -c < build/embewi_agent.bin
 sha256sum build/embewi_agent.bin | awk '{print "sha256:" $1}'
 
-# Sur le binaire prod signé
+# Sur le binaire de production signé
 wc -c < build-prod/embewi_agent.bin
 sha256sum build-prod/embewi_agent.bin | awk '{print "sha256:" $1}'
 ```

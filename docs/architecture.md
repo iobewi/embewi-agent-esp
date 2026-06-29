@@ -28,7 +28,7 @@ embewi_app_init()          ← workload lit sa config NVS ici
       └─ image déjà validée ──► état RUNNING / DEGRADED          │
            ota_validated = true                                   │
                                                      ┌───────────┴──────────┐
-                                                     │  self-check borné    │
+                                                     │  selfcheck borné    │
                                                      │  deadline 15 s       │
                                                      │  (esp_timer haute    │
                                                      │  résolution)         │
@@ -108,7 +108,7 @@ POST /ota/activate ─────────────────►  set_b
                                         reboot
 
                          [boot sur le nouveau slot]
-                                        self-check borné 15 s
+                                        selfcheck borné 15 s
                          ┌──────────────────────────────┐
                          │ OK → mark_valid              │
                          │      staged = none (NVS)     │
@@ -162,5 +162,5 @@ stocké dans `ctrl_url` (contrat §1).
 |---|---|---|---|
 | `embewi_hb` | 8 192 B | 4 | Heartbeat HTTPS (esp_http_client exige ~4 KB) |
 | `embewi_log` | 8 192 B | 3 | Drain ring buffer → WebSocket |
-| `embewi_selfchk` | 4 096 B | 5 | Self-check borné post-OTA |
+| `embewi_selfchk` | 4 096 B | 5 | Selfcheck borné post-OTA |
 | httpd (HTTPS) | ~10 240 B | — | Serveur HTTPS :443 (mbedTLS inclus) |

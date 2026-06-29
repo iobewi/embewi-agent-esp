@@ -8,7 +8,7 @@ TLS et options de build.
 
 ---
 
-## Config runtime — modèle interne (§4a)
+## Configuration runtime — modèle interne (§4a)
 
 Le Core pousse des paires clé/valeur via `POST /config`. L'agent les stocke
 dans le namespace NVS `embewi_cfg` **sans interpréter leur sémantique** — il
