@@ -1,83 +1,19 @@
 # Configuration
 
-Design de la configuration de l'agent : ressources Kubernetes (`McuConfigMap`),
-NVS, provisioning, TLS et options de build. Pour les règles de codage côté
-workload (comment lire la config depuis le firmware), voir
-[Développer un workload](workload).
+Design interne de la configuration de l'agent : modèle NVS, provisioning,
+TLS et options de build.
+
+- Ressource Kubernetes `McuConfigMap` et règles de binding → [Déployer un workload](deploy)
+- Lecture de la config depuis un workload → [Développer un workload](workload)
 
 ---
 
-## McuConfigMap (§7a)
+## Config runtime — modèle interne (§4a)
 
-`McuConfigMap` est une ressource Kubernetes portée par le Core. Elle découple
-le câblage matériel (GPIOs, adresses, serveurs…) du binaire OTA : un même
-firmware peut être déployé sur des devices câblés différemment.
-
-### Ressource Kubernetes
-
-```yaml
-apiVersion: embewi.io/v1alpha1
-kind: McuConfigMap
-metadata:
-  name: wheel-left-gpio
-data:
-  gpio_button: "9"       # toutes les valeurs sont des strings
-  gpio_ws2812: "10"
-  ntp_server:  "ntp.local"
-  # clés arbitraires — opaques pour l'agent, interprétées par le workload
-```
-
-Référence depuis un `McuDeployment` (champ optionnel) :
-
-```yaml
-apiVersion: embewi.io/v1alpha1
-kind: McuDeployment
-spec:
-  nodeName: embewi-a1b2c3
-  firmware: registry.local/embewi/wheel-controller:v1.1.0
-  configMapRef: wheel-left-gpio   # absent = défauts build actifs
-```
-
-### Règles de binding
-
-| Situation | Comportement |
-|---|---|
-| `configMapRef` absent | Aucun push config — les défauts build (`CONFIG_EMBEWI_*`) restent actifs |
-| `configMapRef` présent | Le Core réconcilie `McuConfigMap.data` contre `GET /config` et pousse les écarts via `POST /config` |
-| `McuConfigMap` référencé mais inexistant | Erreur `ConfigMapNotFound` — le déploiement est bloqué |
-
-Un même `McuConfigMap` peut être partagé entre plusieurs `McuDeployment`
-ciblant des devices **identiquement câblés**. Toute modification déclenche une
-réconciliation sur tous les devices référençants — potentiellement un reboot
-coordonné de la flotte. Anticiper cet effet avant de modifier un ConfigMap partagé.
-
-### Clés standardisées
-
-Les clés suivantes sont définies par convention entre Core et workloads fournis.
-L'agent lui-même est opaque aux clés — il stocke et expose sans valider.
-
-| Clé | Type | Défaut build | Effet |
-|---|---|---|---|
-| `gpio_button` | int | 9 (C3/C6/H2) · 0 (ESP32/S2/S3) | GPIO du bouton BOOT (`apps/button`) |
-| `gpio_ws2812` | int | 10 | GPIO de la LED WS2812B (`apps/rainbow`) |
-| `ntp_server` | str | `pool.ntp.org` | Serveur NTP principal |
-
-Les clés spécifiques à un workload custom sont à documenter dans le `McuConfigMap`
-du déploiement. Les clés préfixées `_` sont réservées à l'agent (`_gen`) et
-ignorées silencieusement par `POST /config`.
-
-### Limites
-
-| Limite | Valeur |
-|---|---|
-| Longueur max d'une clé | 15 caractères (contrainte NVS ESP-IDF) |
-| Longueur max d'une valeur | 63 caractères |
-| Nombre de clés | Limité par la partition NVS (~8 KB par namespace) |
-
-La validation sémantique des valeurs est responsabilité du Core, typiquement
-via un `ValidatingAdmissionWebhook` sur la ressource `McuConfigMap`.
-
-### Comportement runtime
+Le Core pousse des paires clé/valeur via `POST /config`. L'agent les stocke
+dans le namespace NVS `embewi_cfg` **sans interpréter leur sémantique** — il
+est opaque au contenu. La signification des clés appartient au workload (et au
+Core qui valide).
 
 ```text
 Modèle de priorité (haute → basse) :
@@ -86,14 +22,31 @@ Modèle de priorité (haute → basse) :
 ```
 
 La config est appliquée **au prochain reboot** — `POST /config` seul ne suffit
-pas. Le Core doit enchaîner avec `POST /reboot` (ou le reboot arrive avec le
-prochain `POST /ota/activate`).
+pas. Le Core enchaîne avec `POST /reboot` (ou le reboot vient de `POST /ota/activate`).
 
-`GET /config` expose les deux couches pour comparer :
+`GET /config` expose les deux couches :
 - `active` — snapshot figé au boot (ce que les apps voient réellement)
 - `nvs` — NVS courant (peut diverger si `POST /config` sans reboot)
 
 `generation > active_generation` → config poussée, reboot en attente.
+
+### Clé lue par l'agent lui-même
+
+| Clé | Défaut build | Lu par |
+|---|---|---|
+| `ntp_server` | `pool.ntp.org` | `embewi_time.c` — serveur NTP principal |
+
+Toutes les autres clés sont opaques pour l'agent et destinées au workload.
+Les clés préfixées `_` sont réservées à l'agent (`_gen` = compteur de
+génération) et ignorées silencieusement par `POST /config`.
+
+### Limites des buffers agent
+
+| Limite | Valeur |
+|---|---|
+| Longueur max d'une clé | 15 caractères (contrainte NVS ESP-IDF) |
+| Longueur max d'une valeur | 63 caractères |
+| Taille totale | Partition NVS `embewi_cfg` (~8 KB) |
 
 ---
 
