@@ -9,7 +9,7 @@ et émet heartbeat + logs chiffrés vers le Core.
 
 ```{toctree}
 :maxdepth: 2
-:caption: Exploitation
+:caption: Agent
 
 Architecture <architecture>
 API inbound <api>
@@ -52,8 +52,8 @@ Déployer un workload <deploy>
 
 ## Deux audiences, deux sections
 
-**Exploitation** — pour l'opérateur / l'équipe Core :
-déploiement, configuration K8s, API HTTPS, sécurité prod.
+**Agent** — design de l'agent : architecture interne, API HTTPS exposée,
+configuration et sécurité production.
 
 **Workload SDK** — pour le développeur d'application :
 écrire le code métier qui tourne dans l'agent, lire la config,

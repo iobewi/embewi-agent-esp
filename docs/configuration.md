@@ -1,8 +1,9 @@
-# Configuration — vue opérateur
+# Configuration
 
-Cette page s'adresse à l'opérateur qui configure et déploie les devices via
-le Core Kubernetes. Pour les règles de codage côté workload (comment lire la
-config depuis le firmware), voir [Développer un workload](workload).
+Design de la configuration de l'agent : ressources Kubernetes (`McuConfigMap`),
+NVS, provisioning, TLS et options de build. Pour les règles de codage côté
+workload (comment lire la config depuis le firmware), voir
+[Développer un workload](workload).
 
 ---
 
