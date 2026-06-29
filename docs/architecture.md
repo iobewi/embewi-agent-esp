@@ -2,88 +2,55 @@
 
 ## Séquence de boot
 
-```text
-nvs_flash_init
-      │
-embewi_cfg_boot_init()   ← snapshot génération config (figé jusqu'au reboot)
-      │
-fill_running_partition_info()
-      │  ├─ slot actif (ota_0 / ota_1), version firmware
-      │  └─ SHA-256 du binaire courant depuis la flash (sur fw_size exact)
-      │
-embewi_wifi_start()
-      │  ├─ NVS vide (premier boot) → AP "embewi-XXXX" + portail HTTPS
-      │  │    (bloquant, reboot après config)
-      │  └─ NVS rempli → STA + ctrl_url chargé
-      │
-embewi_time_sync_start()   ← SNTP en tâche de fond (pré-requis TLS prod)
-      │
-embewi_app_init()          ← workload lit sa config NVS ici
-      │
-      ├─ image PENDING_VERIFY ? ──────────────────────────────────┐
-      │   (boot juste après /ota/activate)                        │
-      │                                                           ▼
-      │                                              embewi_selfcheck_start()
-      │                                                    (tâche priorité 5)
-      └─ image déjà validée ──► état RUNNING / DEGRADED          │
-           ota_validated = true                                   │
-                                                     ┌───────────┴──────────┐
-                                                     │  selfcheck borné    │
-                                                     │  deadline 15 s       │
-                                                     │  (esp_timer haute    │
-                                                     │  résolution)         │
-                                                     └─────────┬────────────┘
-                                                       OK      │    KO / hang
-                                              ┌────────────────┴──┐
-                                              ▼                   ▼
-                                         mark_valid         mark_invalid
-                                         RUNNING            → reboot
-                                         ota_validated=true → bootloader
-                                                              rollback
-      │
-embewi_http_start()    ← HTTPS :443 (lancé même en PENDING_VERIFY, §2)
-embewi_app_service_start()
-      │
-attente NTP max 8 s    ← avant tout TLS sortant
-      │
-embewi_heartbeat_start()   ← POST HTTPS /v1alpha1/heartbeat toutes les 5 s
-embewi_log_start()         ← ring buffer 4 KB → WSS /v1alpha1/logs
-embewi_log_emit("info", "embewi agent up")
-      │
-      └─ boucle principale vTaskDelay(1 s)
+```{mermaid}
+flowchart TD
+    A([nvs_flash_init]) --> B["embewi_cfg_boot_init\nSnapshot configuration figé au boot"]
+    B --> C["fill_running_partition_info\nSlot actif · SHA-256 du binaire"]
+    C --> D{NVS vide ?}
+    D -->|"Premier démarrage"| E(["AP embewi-XXXX · Portail HTTPS\nbloquant → reboot après configuration"])
+    D -->|"Démarrages suivants"| F["STA · ctrl_url chargé\nembewi_time_sync_start — SNTP"]
+    F --> G[embewi_app_init]
+    G --> H{PENDING_VERIFY ?}
+    H -->|"oui — boot post-activate"| I["selfcheck_task lancée\nen tâche de fond · priorité 5"]
+    H -->|"non — image déjà validée"| J["state = RUNNING\nota_validated = true"]
+    I --> K["embewi_http_start — HTTPS :443\n(lancé même en PENDING_VERIFY)"]
+    J --> K
+    K --> L["Attente NTP max 8 s\nHeartbeat · Logs WSS"]
+    L --> M([Boucle principale])
+
+    I -.->|"deadline esp_timer 15 s"| SC{"Selfcheck OK ?"}
+    SC -->|"OK"| N["mark_valid\nstate = RUNNING · ota_validated = true"]
+    SC -->|"KO / timeout"| O(["reset → rollback bootloader"])
 ```
 
 ## Machine d'état (contrat §2)
 
-```text
-                    ┌──────────┐
-                    │ booting  │
-                    └────┬─────┘
-          image déjà     │      image PENDING_VERIFY
-          validée        │      (boot post-activate)
-              ┌──────────┴──────────┐
-              ▼                     ▼
-         ┌─────────┐        ┌───────────────┐
-         │ running │        │pending_verify │
-         └────┬────┘        └───────┬───────┘
-              │               OK    │    KO / deadline
-              │         ┌───────────┴──┐
-              │         ▼              ▼
-              │    ┌─────────┐   ┌──────────┐
-              │    │ running │   │ rollback │
-              │    └─────────┘   └────┬─────┘
-              │                       │ rollback impossible
-         check KO                     ▼
-              │                  ┌────────┐
-              ▼                  │ failed │  ← ne reboot pas,
-         ┌──────────┐            └────────┘    reste joignable
-         │ degraded │
-         └──────────┘
+```{mermaid}
+stateDiagram-v2
+    [*] --> booting
+    booting --> running       : image validée / ota_validated=true
+    booting --> pending_verify: PENDING_VERIFY — boot post-activate
+
+    pending_verify --> running : selfcheck OK · mark_valid
+    pending_verify --> rollback: KO ou deadline 15 s
+
+    running --> degraded : check KO
+    rollback --> failed  : rollback impossible
+
+    note right of pending_verify
+        Heartbeat émis en continu —
+        le silence est indistinguable
+        d'un crash pour le Core
+    end note
+
+    note right of failed
+        Ne reboot pas :
+        reste joignable pour que
+        le Core repousse une image saine
+    end note
 ```
 
 **Invariants clés :**
-- Un device en `pending_verify` **continue d'émettre le heartbeat** (le silence
-  est indistinguable d'un crash pour le Core).
 - `ota_validated` passe à `true` **uniquement** après
   `esp_ota_mark_app_valid_cancel_rollback()` — un seul endroit dans le code
   (`selfcheck_task`).
@@ -92,32 +59,36 @@ embewi_log_emit("info", "embewi agent up")
 
 ## Séquence OTA (contrat §3)
 
-```text
-Core                                    Agent
-────                                    ─────
-POST /ota/prepare ──────────────────►  valide chip/layout/size
-                  ◄── {accepted, slot} réserve slot inactif
+```{mermaid}
+sequenceDiagram
+    participant Core
+    participant Agent
+    participant Bootloader
 
-PUT /ota/write ─────────────────────►  écriture chunkée + SHA-256 incrémental
-(répétable sur coupure réseau,          (handle OTA + état SHA statiques,
- Content-Range in-session)              survivent à la déconnexion TCP)
-                  ◄── {written, digest} vérifie SHA en fin de transfert
+    Core->>Agent: POST /ota/prepare {chip, size, digest}
+    Agent-->>Core: {accepted: true, target_slot: "ota_1"}
 
-POST /ota/activate ─────────────────►  set_boot_partition
-                  ◄── {rebooting}       staged = activating (NVS)
-                                        reboot
+    loop Transfert par chunks (Content-Range)
+        Core->>Agent: PUT /ota/write
+        Agent-->>Core: {status: "partial", written: N}
+    end
+    Core->>Agent: PUT /ota/write — dernier chunk
+    Agent-->>Core: {status: "written", digest: "sha256:..."}
 
-                         [boot sur le nouveau slot]
-                                        selfcheck borné 15 s
-                         ┌──────────────────────────────┐
-                         │ OK → mark_valid              │
-                         │      staged = none (NVS)     │
-                         │      heartbeat: running      │
-                         │                              │
-                         │ KO / hang → reset            │
-                         │      bootloader rollback     │
-                         │      heartbeat: rollback     │
-                         └──────────────────────────────┘
+    Core->>Agent: POST /ota/activate
+    Agent->>Bootloader: set_boot_partition
+    Agent-->>Core: {status: "rebooting"}
+    Agent->>Agent: esp_restart()
+
+    Note over Agent,Bootloader: Selfcheck borné 15 s (esp_timer haute résolution)
+
+    alt Selfcheck OK
+        Agent->>Agent: mark_valid · staged = none (NVS)
+        Agent-->>Core: heartbeat state=running
+    else KO ou timeout
+        Bootloader->>Agent: rollback vers image précédente
+        Agent-->>Core: heartbeat state=rollback
+    end
 ```
 
 **Reprise après coupure (`Content-Range`)** — protocole in-session :
@@ -129,7 +100,7 @@ POST /ota/activate ─────────────────►  set_b
 | `start` désaligné | `416` + `{"written": N}` pour resync |
 | `end+1 == total` | Finalise + vérifie SHA |
 
-**Idempotence** — le Core peut reprendre un reconcile interrompu via `GET /info` :
+**Idempotence** — le Core reprend un reconcile interrompu via `GET /info` :
 
 | `staged.state` | Comportement Core |
 |---|---|
@@ -140,17 +111,16 @@ POST /ota/activate ─────────────────►  set_b
 
 ## Flux sortants
 
-```text
-ESP_LOGx (toutes tasks)
-    │
-log_hook (esp_log_set_vprintf)
-    ├─ UART (inchangé)
-    └─ ring buffer 4 KB (non-bloquant, drop si plein)
-              │
-         drain_task ──► WSS /v1alpha1/logs  (level="raw", best-effort)
+```{mermaid}
+flowchart LR
+    Logs["ESP_LOGx\ntoutes tâches"] --> Hook["log_hook\nesp_log_set_vprintf"]
+    Hook --> UART[UART]
+    Hook --> Ring["Ring buffer 4 KB\nnon-bloquant · drop si plein"]
+    Ring --> Drain[drain_task]
+    Drain -->|best-effort| WSS["WSS /v1alpha1/logs"]
 
-embewi_log_emit() ───────► HTTPS POST /v1alpha1/logs  (événements critiques OTA/lifecycle)
-heartbeat_task ──────────► HTTPS POST /v1alpha1/heartbeat  (toutes les 5 s)
+    Emit["embewi_log_emit()"] -->|"événements OTA / lifecycle"| HTTPS["HTTPS POST\n/v1alpha1/logs"]
+    HB["heartbeat_task\ntoutes les 5 s"] --> HBPost["HTTPS POST\n/v1alpha1/heartbeat"]
 ```
 
 Le scheme est toujours forcé en `https://` / `wss://` quel que soit le scheme

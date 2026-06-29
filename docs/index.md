@@ -35,27 +35,20 @@ L'agent implémente le contrat [`embewi`](https://iobewi.github.io/embewi/)
 authentifiée, il gère les OTA A/B avec selfcheck borné et rollback automatique,
 et émet heartbeat et logs vers le Core.
 
-```text
-┌─────────────────────────────────────────────────┐
-│              embewi-core (Kubernetes)            │
-│  McuDeployment · McuNode · McuConfigMap          │
-└──────────┬────────────────────────┬─────────────┘
-           │ inbound HTTPS :443     │ outbound
-           │ (token Bearer)         │ HTTPS heartbeat
-           ▼                        │ WSS logs
-┌──────────────────────┐            │
-│   embewi-agent-esp   │◄───────────┘
-│   ESP32 (C3/C6/S3…)  │
-│                       │
-│  ┌─────┐ ┌─────────┐ │
-│  │ OTA │ │McuConfig│ │
-│  │ A/B │ │Map NVS  │ │
-│  └─────┘ └─────────┘ │
-│  ┌──────────────────┐ │
-│  │    Workload      │ │
-│  │ (votre code ici) │ │
-│  └──────────────────┘ │
-└──────────────────────┘
+```{mermaid}
+graph TB
+    subgraph core["embewi-core — Kubernetes"]
+        K["McuDeployment · McuNode · McuConfigMap"]
+    end
+
+    subgraph esp["embewi-agent-esp — ESP32 C3 / C6 / S3…"]
+        OTA["OTA A/B"]
+        CFG["McuConfigMap NVS"]
+        WL["Workload\n(votre code ici)"]
+    end
+
+    core -- "HTTPS :443 · token Bearer" --> esp
+    esp -- "HTTPS heartbeat · WSS logs" --> core
 ```
 
 ## Repères

@@ -6,7 +6,7 @@ author = "Embewi"
 copyright = "2026, Embewi"
 language = "fr"
 
-extensions = ["myst_parser", "sphinx_rtd_theme"]
+extensions = ["myst_parser", "sphinx_rtd_theme", "sphinxcontrib.mermaid"]
 
 source_suffix = {".md": "markdown"}
 myst_enable_extensions = ["colon_fence", "deflist"]
