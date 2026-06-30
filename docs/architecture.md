@@ -148,6 +148,69 @@ Le champ `ip` est la source de vérité que le Core utilise pour patcher
 `endpoints[].addresses` de l'EndpointSlice — l'IP peut changer entre deux
 reboots (DHCP) sans action manuelle.
 
+### Streaming WebSocket — fonctionnement détaillé
+
+**Connexion outbound device-initiated.** L'agent ouvre la connexion WS en
+client vers `wss://<ctrl_url_host>:<port>/v1alpha1/logs` — c'est le device qui
+initie, pas le Core. Compatible NAT et pare-feu entrant restrictif. Le scheme
+est toujours forcé en `wss://` (contrat §1), quel que soit le scheme de
+`ctrl_url`.
+
+**Séquence d'initialisation (`embewi_log_start`) :**
+
+```{mermaid}
+sequenceDiagram
+    participant Main as app_main
+    participant Log as embewi_log_start
+    participant WS as esp_websocket_client
+    participant Hook as log_hook (vprintf)
+
+    Main->>Log: embewi_log_start()
+    Log->>Log: xRingbufferCreate(4 KB)
+    Log->>WS: esp_websocket_client_init(wss://...)
+    Log->>WS: esp_websocket_client_start()
+    Note over WS: connexion TLS + handshake WS<br/>(asynchrone, en arrière-plan)
+    Log->>Log: xTaskCreate(drain_task) → s_drain rempli
+    Log->>Hook: esp_log_set_vprintf(log_hook)
+    Note over Hook: hook actif — UART conservé
+```
+
+**Ordre critique** : la `drain_task` est créée et son handle (`s_drain`) est
+affecté **avant** l'installation du hook. Cela garantit que le hook peut
+comparer `xTaskGetCurrentTaskHandle() != s_drain` dès le premier appel.
+
+**Pipeline complet :**
+
+| Étape | Composant | Comportement |
+|---|---|---|
+| 1 | `ESP_LOGx` (toute tâche) | Appel vprintf normal |
+| 2 | `log_hook` | Écrit sur l'UART original **et** pousse dans le ring buffer — non-bloquant (`pdMS_TO_TICKS(0)`), drop silencieux si plein |
+| 3 | Ring buffer 4 KB | ~25 lignes de 160 chars. La `drain_task` est ignorée par le hook (guard via handle) pour éviter la récursion infinie |
+| 4 | `drain_task` | Tire les lignes, les encode en JSON et les envoie via `esp_websocket_client_send_text` si le WS est connecté |
+| 5 | WebSocket | Reconnexion automatique gérée par `esp_websocket_client` (bibliothèque Espressif) |
+
+**Comportement en cas de déconnexion WS :** la `drain_task` continue de
+consommer le ring buffer et **jette** les messages. Les logs ne s'accumulent
+pas — à la reconnexion, seuls les logs récents (ceux dans le ring buffer à
+l'instant de la reconnexion) sont diffusés. Choix assumé : fraîcheur plutôt que
+complétude. Les événements OTA et lifecycle critiques passent par
+`embewi_log_emit()` (HTTPS POST, garanti délivré ou erreur loggée).
+
+**Récursion :** la `drain_task` génère elle-même des `ESP_LOGx` (connexion,
+erreur…). Le hook détecte son propre handle et saute l'écriture dans le ring
+buffer pour cette tâche uniquement — l'UART reçoit quand même ces logs.
+
+**Garanties de livraison :**
+
+| Canal | Garantie | Usage |
+|---|---|---|
+| WebSocket `wss` | Best-effort, drop si buffer plein ou WS déconnecté | Tous les `ESP_LOGx` en streaming |
+| HTTPS POST `/v1alpha1/logs` via `embewi_log_emit()` | Tentative unique, erreur loggée | Événements OTA et lifecycle |
+
+**TLS :**
+- Dev (`CONFIG_EMBEWI_VERIFY_CORE_CERT=n`) : connexion chiffrée, cert serveur non vérifié.
+- Prod (`CONFIG_EMBEWI_VERIFY_CORE_CERT=y`) : cert du Core vérifié contre la CA embarquée (`main/core_ca.pem`).
+
 ## Tâches FreeRTOS
 
 | Tâche | Stack | Priorité | Rôle |
