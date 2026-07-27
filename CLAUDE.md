@@ -123,6 +123,13 @@ clés internes préfixées `_` (`_gen`). `POST /config` = merge-on-key + bump g�
   requise au build) vérifie le serveur Core. Secure Boot v2 + Flash Encryption +
   anti-rollback = profil **opt-in** `sdkconfig.defaults.prod` (eFuse **IRRÉVERSIBLE**).
 - NTP est un **pré-requis du TLS authentifié** (horloge à 1970 → cert « pas encore valide »).
+  `CONFIG_MBEDTLS_HAVE_TIME_DATE=y` (prod) active la vérif de date — sans quoi
+  elle est **silencieusement désactivée** par défaut ESP-IDF, y compris une
+  fois synchronisé. Fenêtre avant synchro : **canal de détresse NTP** (contrat
+  §5) — `embewi_tls_relaxed.c` relâche uniquement `notBefore`/`notAfter`
+  (chaîne/CN restent vérifiés) pour le heartbeat + `embewi_log_emit()`,
+  heartbeat marqué `reason:"clock_unsynced"`. Le streaming logs WebSocket
+  (`embewi_log.c`) n'est **pas** couvert (limitation assumée, best-effort).
 - Token : généré au provisioning, **affiché une seule fois** (page de confirmation),
   rotation via `POST /token` (commit NVS avant réponse → pas de fenêtre sans auth).
 
@@ -149,6 +156,7 @@ clés internes préfixées `_` (`_gen`). `POST /config` = merge-on-key + bump g�
 | `embewi_log.c` | streaming ESP_LOGx → ring buffer → WebSocket |
 | `embewi_time.c` | synchro NTP/SNTP |
 | `embewi_tls.c` | cert/clé depuis NVS, fallback auto-signé embarqué |
+| `embewi_tls_relaxed.c` | canal de détresse NTP (§5) : POST HTTPS bas niveau mbedTLS, tolère `BADCERT_EXPIRED`/`FUTURE` tant que SNTP n'a pas convergé (prod uniquement) |
 | `embewi_parse.{c,h}` | helpers **PURS** (URL, JSON, content-range, OTA plan, constant-time) — testés sur host |
 | `embewi_app.h` | interface workload (contrat des 4 fonctions à implémenter) |
 
