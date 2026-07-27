@@ -126,6 +126,7 @@ Voir [Sécurité production](embewi-prod-security) pour la procédure complète.
 | `CONFIG_SECURE_FLASH_ENC_ENABLED` | Flash chiffrée (mode RELEASE) |
 | `CONFIG_NVS_ENCRYPTION` | NVS chiffré (schéma flash-enc, partition `nvs_keys`) |
 | `CONFIG_EMBEWI_VERIFY_CORE_CERT` | CA du Core embarquée pour authentifier les flux sortants |
+| `CONFIG_MBEDTLS_HAVE_TIME_DATE` | Vérifie `notBefore`/`notAfter` du cert Core (sinon ignoré silencieusement, défaut ESP-IDF) — canal de détresse tant que SNTP n'a pas convergé, voir [Sécurité production](embewi-prod-security) |
 | `CONFIG_PARTITION_TABLE_OFFSET=0x10000` | Table de partition décalée (bootloader signé plus grand) |
 
 Ces options impliquent des opérations eFuse **irréversibles** au premier flash.
