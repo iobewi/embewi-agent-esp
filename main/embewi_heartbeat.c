@@ -96,6 +96,21 @@ static void emit_to(const char *path, const char *json) {
         return;
     }
 
+#if CONFIG_EMBEWI_VERIFY_CORE_CERT
+    // Canal de détresse NTP (§5, NORMATIF) : tant que l'horloge n'est pas
+    // posée, esp_http_client (esp-tls) ne permet pas de relâcher SEULEMENT la
+    // validité temporelle du cert Core — bascule sur un client mbedTLS dédié
+    // qui, lui, ne tolère QUE BADCERT_EXPIRED/BADCERT_FUTURE (voir
+    // embewi_tls_relaxed.c). Dès la synchro, on repasse par esp_http_client
+    // ci-dessous (vérification stricte).
+    if (!embewi_time_is_set()) {
+        char host[48]; uint16_t port;
+        embewi_parse_url_host_port(ctrl_url, host, sizeof(host), &port);
+        embewi_tls_relaxed_post(host, port, path, json);
+        return;
+    }
+#endif
+
     // Contrat §1 : transport chiffré obligatoire. On force https:// quel que
     // soit le scheme stocké en NVS (cf. embewi_url_rebase, testé sur host).
     char url[256];
@@ -139,13 +154,13 @@ static void heartbeat_task(void *arg) {
         embewi_runtime_t *rt = embewi_rt();
         char ip[16];
         current_ip_str(ip, sizeof(ip));
-        char body[576];
+        char body[608];
         snprintf(body, sizeof(body),
             "{\"node_id\":\"%s\",\"ip\":\"%s\",\"ts\":%lld,\"state\":\"%s\","
             "\"deployment_id\":\"%s\",\"firmware_digest\":\"%s\","
             "\"ota_validated\":%s,\"uptime_ms\":%lld,"
             "\"heap_free\":%u,\"rssi\":%d,\"config_generation\":%lu,"
-            "\"temp_celsius\":%.1f,\"task_hwm_min\":%lu}",
+            "\"temp_celsius\":%.1f,\"task_hwm_min\":%lu%s}",
             rt->node_id, ip,
             (long long)time(NULL),   // epoch UTC (uptime ~1970 si NTP pas encore sync)
             embewi_state_str(rt->state),
@@ -156,7 +171,10 @@ static void heartbeat_task(void *arg) {
             current_rssi(),
             (unsigned long)rt->cfg_active_generation,
             current_temp(),
-            (unsigned long)min_task_hwm());
+            (unsigned long)min_task_hwm(),
+            // Canal de détresse NTP (§5, NORMATIF) : signal de diagnostic
+            // tant que SNTP n'a pas convergé ; disparaît dès la synchro.
+            embewi_time_is_set() ? "" : ",\"reason\":\"clock_unsynced\"");
         emit_to("/v1alpha1/heartbeat", body);
         vTaskDelay(pdMS_TO_TICKS(HEARTBEAT_PERIOD_MS));
     }

@@ -49,6 +49,12 @@ CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE=y
 
 # ── Auth des flux sortants : vérifier le cert du Core (cf. main/core_ca.pem) ──
 CONFIG_EMBEWI_VERIFY_CORE_CERT=y
+# Sans ça, mbedTLS ignore SILENCIEUSEMENT notBefore/notAfter (défaut IDF = n)
+# — un cert Core expiré/pas-encore-valide serait accepté indéfiniment. La
+# contrepartie (horloge non posée dès le boot) est gérée par le canal de
+# détresse NTP (contrat §5) : embewi_tls_relaxed.c, tant que
+# !embewi_time_is_set().
+CONFIG_MBEDTLS_HAVE_TIME_DATE=y
 
 # ── Filtrage IP inbound : rejeter les connexions hors CIDR avant tout handler ──
 # CIDR via McuConfigMap "allowed_cidr" (cluster CIDR recommandé) ou hôte de

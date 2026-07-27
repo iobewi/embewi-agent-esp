@@ -140,8 +140,11 @@ void app_main(void) {
     if (embewi_time_wait(8000))
         ESP_LOGI(TAG, "horloge NTP synchronisée");
     else
-        ESP_LOGW(TAG, "NTP non synchronisé — ts en uptime ; TLS authentifié (prod) "
-                      "échouera tant que l'horloge n'est pas posée");
+        // Pas de silence pour autant : canal de détresse NTP (§5) — heartbeat
+        // et embewi_log_emit() basculent sur embewi_tls_relaxed_post() tant
+        // que l'horloge n'est pas posée (reason="clock_unsynced").
+        ESP_LOGW(TAG, "NTP non synchronisé — ts en uptime, canal de détresse actif "
+                      "(reason=clock_unsynced) jusqu'à la synchro");
 
     embewi_heartbeat_start();
     embewi_log_start();   // streaming ESP_LOGx → WS → Core (après ctrl_url + réseau)

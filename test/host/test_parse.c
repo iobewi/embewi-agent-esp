@@ -283,6 +283,31 @@ static void test_parse_url_host(void) {
     CHECK_EQ(dummy, 'Z');
 }
 
+// ── embewi_parse_url_host_port ────────────────────────────────────────────────
+
+static void test_parse_url_host_port(void) {
+    char host[64]; uint16_t port;
+
+    embewi_parse_url_host_port("https://192.168.1.10:8443", host, sizeof(host), &port);
+    CHECK_STR(host, "192.168.1.10");
+    CHECK_EQ(port, 8443);
+
+    // pas de port explicite → 0 (l'appelant applique son défaut)
+    embewi_parse_url_host_port("http://core.local", host, sizeof(host), &port);
+    CHECK_STR(host, "core.local");
+    CHECK_EQ(port, 0);
+
+    // hôte nu (sans scheme)
+    embewi_parse_url_host_port("192.168.1.10:8443", host, sizeof(host), &port);
+    CHECK_STR(host, "192.168.1.10");
+    CHECK_EQ(port, 8443);
+
+    // port suivi d'un path
+    embewi_parse_url_host_port("https://core.local:9443/v1alpha1", host, sizeof(host), &port);
+    CHECK_STR(host, "core.local");
+    CHECK_EQ(port, 9443);
+}
+
 // ── embewi_parse_cidr ─────────────────────────────────────────────────────────
 
 static void test_parse_cidr(void) {
@@ -352,6 +377,7 @@ int main(void) {
     test_ota_plan();
     test_ota_is_final();
     test_parse_url_host();
+    test_parse_url_host_port();
     test_parse_cidr();
     test_ct_equal();
 

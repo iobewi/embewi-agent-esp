@@ -5,6 +5,7 @@
 #include "esp_err.h"
 
 #define EMBEWI_API_PREFIX        "/v1alpha1"
+#define EMBEWI_API_VERSION       "v1alpha1"   // cf. api_versions, GET /info (§4)
 #define EMBEWI_FW_NAME           "wheel-controller"
 #define EMBEWI_FW_VERSION        "1.0.0"
 
@@ -159,6 +160,14 @@ void      embewi_cfg_json_active(char *buf, size_t buf_len);
 // --- Heartbeat / logs sortants (embewi_heartbeat.c) -------------------------
 void embewi_heartbeat_start(void);
 void embewi_log_emit(const char *level, const char *msg);
+
+// --- Canal de détresse NTP (embewi_tls_relaxed.c, contrat §5) ---------------
+// POST HTTPS bas niveau (mbedTLS direct) utilisé UNIQUEMENT tant que SNTP n'a
+// pas convergé : la validité temporelle (notBefore/notAfter) du cert Core est
+// tolérée, la chaîne/CN restent vérifiés. Prod uniquement
+// (CONFIG_EMBEWI_VERIFY_CORE_CERT) — no-op sinon (voir garde dans le .c).
+void embewi_tls_relaxed_post(const char *host, uint16_t port,
+                             const char *path, const char *json);
 
 // --- Streaming logs ESP_LOGx via WebSocket (embewi_log.c) -------------------
 // À appeler après embewi_heartbeat_start() (ctrl_url + réseau requis).

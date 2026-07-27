@@ -74,6 +74,15 @@ bool embewi_ct_equal(const char *a, const char *b);
 //   "192.168.1.10:8443"         → "192.168.1.10"
 void embewi_parse_url_host(const char *url, char *out, size_t out_len);
 
+// Extrait hôte ET port d'une URL. Port absent → *port_out = 0 (l'appelant
+// applique son propre défaut, ex. 443 pour HTTPS).
+//   "https://192.168.1.10:8443" → host="192.168.1.10" port=8443
+//   "http://core.local"         → host="core.local"    port=0
+// Sert au canal de détresse NTP (§5) : connexion mbedTLS bas niveau, qui a
+// besoin de l'hôte et du port séparément (pas d'une URL reconstruite).
+void embewi_parse_url_host_port(const char *url, char *host_out, size_t host_len,
+                                uint16_t *port_out);
+
 // Parse "a.b.c.d" ou "a.b.c.d/prefix" en host-byte-order.
 //   "192.168.1.10"   → ip=0xC0A8010A mask=0xFFFFFFFF (/32 implicite)
 //   "192.168.1.0/24" → ip=0xC0A80100 mask=0xFFFFFF00

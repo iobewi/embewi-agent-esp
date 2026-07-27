@@ -139,6 +139,24 @@ void embewi_parse_url_host(const char *url, char *out, size_t out_len) {
     out[i] = '\0';
 }
 
+void embewi_parse_url_host_port(const char *url, char *host_out, size_t host_len,
+                                uint16_t *port_out) {
+    embewi_parse_url_host(url, host_out, host_len);
+    *port_out = 0;
+    const char *p = url;
+    const char *ds = strstr(p, "://");
+    if (ds) p = ds + 3;
+    while (*p && *p != ':' && *p != '/') p++;
+    if (*p != ':') return;
+    p++;
+    uint32_t port = 0;
+    while (*p >= '0' && *p <= '9') {
+        port = port * 10 + (uint32_t)(*p - '0');
+        p++;
+    }
+    *port_out = (port > 0xFFFF) ? 0 : (uint16_t)port;
+}
+
 bool embewi_parse_cidr(const char *s, uint32_t *ip, uint32_t *mask) {
     unsigned int a, b, c, d, prefix = 32;
     int n = sscanf(s, "%u.%u.%u.%u/%u", &a, &b, &c, &d, &prefix);

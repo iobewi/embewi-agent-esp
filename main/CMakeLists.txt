@@ -60,6 +60,7 @@ idf_component_register(
         "embewi_tls.c"
         "embewi_selfcheck.c"
         "embewi_heartbeat.c"
+        "embewi_tls_relaxed.c"
         "${EMBEWI_APP_SRC}"
     INCLUDE_DIRS "."
     EMBED_TXTFILES

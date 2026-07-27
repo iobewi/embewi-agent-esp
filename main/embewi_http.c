@@ -72,7 +72,8 @@ static uint32_t s_filter_ip   = 0;
 static uint32_t s_filter_mask = 0;   // 0 = filtre désactivé
 
 static void ip_filter_init(void) {
-    char cidr[32] = {0};
+    // 48 (host) + "/32" + '\0' : évite toute troncature côté snprintf ci-dessous.
+    char cidr[54] = {0};
     if (!embewi_cfg_get("allowed_cidr", cidr, sizeof(cidr))) {
         char host[48] = {0};
         embewi_parse_url_host(embewi_rt()->ctrl_url, host, sizeof(host));
@@ -123,7 +124,11 @@ static esp_err_t h_info(httpd_req_t *req) {
 
     char body[720];
     snprintf(body, sizeof(body),
-        "{\"node_id\":\"%s\",\"chip\":\"" CONFIG_IDF_TARGET "\",\"idf_version\":\"" IDF_VER "\","
+        // api_versions (§4, NORMATIF) : versions supportées, la plus élevée en
+        // premier. Un seul protocole aujourd'hui ; absent → le Core suppose
+        // v1alpha1, donc l'émettre explicitement teste la négociation réelle.
+        "{\"node_id\":\"%s\",\"api_versions\":[\"" EMBEWI_API_VERSION "\"],"
+        "\"chip\":\"" CONFIG_IDF_TARGET "\",\"idf_version\":\"" IDF_VER "\","
         "\"flash_size\":%u,\"ram_size\":%u,"
         "\"partition_layout\":\"embewi-ab-v1\",\"active_slot\":\"%s\","
         "\"firmware\":{\"name\":\"%s\",\"version\":\"%s\",\"digest\":\"%s\"},"
