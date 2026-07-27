@@ -19,6 +19,17 @@
 // buffer et JETTE les messages (pas de buffering jusqu'à reconnexion). Choix
 // assumé : on garde toujours les logs RÉCENTS une fois reconnecté, plutôt que
 // de retenir un vieux backlog. Les logs émis pendant une coupure sont perdus.
+//
+// Limitation assumée (canal de détresse NTP, §5) : ce flux WS reste sur
+// esp_websocket_client, donc sur la vérification TLS STRICTE d'esp-tls (pas
+// de bascule vers embewi_tls_relaxed_post()). Tant que SNTP n'a pas convergé
+// en prod (CONFIG_EMBEWI_VERIFY_CORE_CERT), la connexion WS échoue purement
+// et simplement — comme esp_websocket_client n'expose pas de hook équivalent
+// à un VERIFY_OPTIONAL + inspection manuelle, la même bascule que pour le
+// heartbeat/embewi_log_emit (embewi_heartbeat.c) demanderait de réécrire tout
+// ce fichier sur mbedTLS brut. Accepté : ce canal est déjà best-effort/lossy
+// par conception (cf. ci-dessus) — le heartbeat (§2, jamais silencieux) est
+// couvert par le canal de détresse ; ce flux logs, non.
 
 #include <string.h>
 #include <stdio.h>

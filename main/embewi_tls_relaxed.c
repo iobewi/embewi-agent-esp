@@ -18,6 +18,11 @@
 //
 // Best-effort, comme emit_to() (embewi_heartbeat.c) : toute erreur est
 // loggée puis abandonnée, sans retry — le prochain tick heartbeat réessaiera.
+//
+// Portée : utilisé par emit_to() pour heartbeat + embewi_log_emit() (events
+// OTA/lifecycle via HTTPS). Le streaming ESP_LOGx → WebSocket (embewi_log.c)
+// N'EST PAS couvert — limitation assumée, cf. commentaire en tête de ce
+// fichier.
 
 #include "sdkconfig.h"
 
@@ -114,7 +119,14 @@ void embewi_tls_relaxed_post(const char *host, uint16_t port,
     }
 
     {
-        char req[640];
+        // Pire cas : en-têtes statiques (~100) + path (~32) + host (jusqu'à
+        // 47, borné côté appelant) + Content-Length (jusqu'à 5 chiffres) +
+        // corps JSON (jusqu'à 607, cf. body[608] dans embewi_heartbeat.c —
+        // node_id/firmware_digest/deployment_id à leur taille max). Un ancien
+        // dimensionnement à 640 tronquait silencieusement (requête abandonnée,
+        // cf. vérification n >= sizeof(req) ci-dessous) sur des valeurs
+        // longues — exactement le heartbeat que ce canal doit garantir.
+        char req[896];
         int n = snprintf(req, sizeof(req),
             "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\n"
             "Content-Length: %d\r\nConnection: close\r\n\r\n%s",
