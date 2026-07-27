@@ -18,7 +18,7 @@
 | Anti-rollback | ❌ off | ✅ downgrade sécurité bloqué (eFuse) |
 | Mode download ROM | ouvert | secure DL mode |
 | Chiffrement NVS | ❌ off | ✅ schéma flash-enc (partition `nvs_keys`) |
-| Vérification cert du Core (sortant) | ❌ skip | ✅ CA embarquée (`CONFIG_EMBEWI_VERIFY_CORE_CERT`) |
+| Vérification cert du Core (sortant) | ❌ skip | ✅ CA embarquée + validité temporelle (`CONFIG_EMBEWI_VERIFY_CORE_CERT` + `CONFIG_MBEDTLS_HAVE_TIME_DATE`) |
 | Filtrage IP inbound | ❌ off | ✅ rejet avant handler (`CONFIG_EMBEWI_ENABLE_IP_FILTER`) |
 | Reflash libre | ✅ | ❌ (par design) |
 
@@ -60,6 +60,21 @@ cp <votre-core-ca>.pem main/core_ca.pem
   l'environnement** → gardé hors dépôt (`.gitignore` `*.pem`).
 - Absent au build de production → le build **échoue clairement** (volontaire :
   pas d'embarquement d'une CA silencieusement fausse).
+
+> **Validité temporelle du cert et canal de détresse NTP.**
+> `CONFIG_MBEDTLS_HAVE_TIME_DATE=y` (activé dans `sdkconfig.defaults.prod`)
+> fait vérifier `notBefore`/`notAfter` en plus de la chaîne/CN — sans cette
+> option, mbedTLS les ignore **silencieusement** (défaut ESP-IDF), et un cert
+> Core expiré serait accepté indéfiniment. Contrepartie : au boot, avant que
+> SNTP ait convergé, l'horloge ESP est à 1970 et le cert paraît « pas encore
+> valide ». Pour éviter un device silencieux le temps de la synchro (règle
+> d'or §2 du contrat), le heartbeat et `embewi_log_emit()` basculent
+> temporairement sur un client mbedTLS dédié (`embewi_tls_relaxed.c`) qui
+> tolère **uniquement** `BADCERT_EXPIRED`/`BADCERT_FUTURE` — la chaîne de
+> confiance et le CN du cert Core restent vérifiés sans exception. Dès la
+> synchro, retour au chemin `esp_http_client` strict. Le streaming logs
+> WebSocket (`embewi_log.c`) n'est pas couvert par ce bypass (déjà
+> best-effort par conception) : détail dans `architecture.md`.
 
 ---
 
