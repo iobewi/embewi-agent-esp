@@ -22,7 +22,7 @@ Contrat & doc système (hub) : **<https://iobewi.github.io/embewi/>**.
 - **McuConfigMap** : config runtime poussée par le Core (NVS), découplée du binaire OTA — GPIO, `ntp_server`, etc. (`embewi_config.c`)
 - **Heartbeat** : POST HTTPS / 5 s (état, RSSI, heap, uptime, `ota_validated`, `config_generation`, **temp °C**, **stack HWM min**)
 - **Streaming logs** : tous les `ESP_LOGx` capturés (`esp_log_set_vprintf`) → **WebSocket `wss`** vers le Core ; `embewi_log_emit()` HTTPS pour les événements OTA/lifecycle
-- **Horloge** : synchro **NTP/SNTP** au boot → `ts` en epoch UTC ; pré-requis du TLS authentifié (dates de cert)
+- **Horloge** : synchro **NTP/SNTP** au boot → `ts` en epoch UTC ; pré-requis du TLS authentifié (dates de cert) — canal de détresse (`reason:"clock_unsynced"`) tant que la synchro n'a pas eu lieu, pour ne jamais rester silencieux
 - **Sécurité** : token Bearer par nœud (**comparaison à temps constant**), TLS sortant authentifié en prod (CA du Core embarquée), profil **Secure Boot v2 + Flash Encryption** opt-in (`sdkconfig.defaults.prod`)
 
 ## Build
@@ -43,7 +43,7 @@ idf.py -B build-prod \
 
 ```bash
 # Logique pure (parsing, URL, décision OTA, constant-time) — host, sans hardware
-cd test/host && make            # 85 assertions
+cd test/host && make            # 115 assertions
 
 # Code ESP-couplé (config NVS…) — Unity sur device ou QEMU
 idf.py -C test/target set-target esp32c3   # voir test/target/README.md
