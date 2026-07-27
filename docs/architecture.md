@@ -143,10 +143,24 @@ stocké dans `ctrl_url` (contrat §1).
 | `config_generation` | Génération McuConfigMap active au boot |
 | `temp_celsius` | Température interne du SoC (`-127.0` si capteur indisponible) |
 | `task_hwm_min` | Minimum high-water-mark de stack sur toutes les tâches (octets libres restants) |
+| `reason` | Présent uniquement tant que SNTP n'a pas convergé : `"clock_unsynced"` |
 
 Le champ `ip` est la source de vérité que le Core utilise pour patcher
 `endpoints[].addresses` de l'EndpointSlice — l'IP peut changer entre deux
 reboots (DHCP) sans action manuelle.
+
+**Canal de détresse NTP (§5, prod uniquement).** Avant que SNTP ait convergé,
+l'horloge ESP est à 1970 : une fois `CONFIG_MBEDTLS_HAVE_TIME_DATE=y` (profil
+prod), le cert du Core paraît « pas encore valide » et bloquerait le
+heartbeat/`embewi_log_emit()` — silence que la règle d'or §2 interdit. Pendant
+cette fenêtre, `emit_to()` bascule sur `embewi_tls_relaxed_post()`
+(`embewi_tls_relaxed.c`) : client mbedTLS bas niveau, `VERIFY_OPTIONAL` +
+inspection manuelle du résultat de handshake — seuls `BADCERT_EXPIRED`/
+`BADCERT_FUTURE` sont tolérés, la chaîne de confiance et le CN du cert Core
+restent vérifiés. Dès la synchro, retour au chemin `esp_http_client` strict.
+Portée limitée et assumée : ce bypass couvre le heartbeat et
+`embewi_log_emit()`, **pas** le streaming logs WebSocket (`embewi_log.c`),
+qui reste sur `esp_websocket_client` (déjà best-effort/lossy par conception).
 
 ### Streaming WebSocket — fonctionnement détaillé
 

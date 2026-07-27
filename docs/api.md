@@ -17,6 +17,7 @@ Identité matérielle, firmware courant et slot stagé (clé de l'idempotence).
 ```json
 {
   "node_id": "embewi-a1b2c3",
+  "api_versions": ["v1alpha1"],
   "chip": "esp32c3",
   "idf_version": "v5.3",
   "flash_size": 4194304,
@@ -43,6 +44,13 @@ Identité matérielle, firmware courant et slot stagé (clé de l'idempotence).
 `staged.state` ∈ `none | written | activating`. `staged.deployment_id` est
 renseigné dès l'écriture (`PUT /ota/write` avec header `X-Embewi-Deployment-Id`),
 avant même l'`activate`.
+
+`api_versions` liste les versions de protocole supportées, la plus élevée en
+premier (un seul protocole aujourd'hui : `v1alpha1`). Le Core choisit la
+version la plus élevée qu'il supporte ET que le device annonce ; champ absent
+(device antérieur à cette révision) → `v1alpha1` supposé. `GET /info` reste le
+point d'entrée stable de la négociation, quelle que soit l'évolution future du
+protocole.
 
 ---
 
