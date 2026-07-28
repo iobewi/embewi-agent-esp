@@ -36,7 +36,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 idf.py -B build-prod -DSDKCONFIG=build-prod/sdkconfig.prod \
        -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.prod" build
 
-# Tests logique pure (host, sans hardware, ~115 assertions) ← lancer en priorité
+# Tests logique pure (host, sans hardware, ~123 assertions) ← lancer en priorité
 cd test/host && make
 
 # Tests ESP-couplés (NVS…) via Unity sur device/QEMU — voir test/target/README.md

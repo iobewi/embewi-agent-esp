@@ -43,7 +43,7 @@ idf.py -B build-prod \
 
 ```bash
 # Logique pure (parsing, URL, décision OTA, constant-time) — host, sans hardware
-cd test/host && make            # 115 assertions
+cd test/host && make            # 123 assertions
 
 # Code ESP-couplé (config NVS…) — Unity sur device ou QEMU
 idf.py -C test/target set-target esp32c3   # voir test/target/README.md

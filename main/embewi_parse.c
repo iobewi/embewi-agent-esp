@@ -128,6 +128,14 @@ bool embewi_ota_is_final(bool has_range, uint32_t end, uint32_t total) {
     return !has_range || (end + 1 == total);
 }
 
+bool embewi_idf_version_compatible(const char *req_version, int running_major) {
+    if (!req_version || !*req_version) return false;
+    char *e;
+    long major = strtol(req_version, &e, 10);
+    if (e == req_version || *e != '.') return false;
+    return major == running_major;
+}
+
 void embewi_parse_url_host(const char *url, char *out, size_t out_len) {
     if (out_len == 0) return;
     const char *p = url;

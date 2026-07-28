@@ -258,6 +258,22 @@ static void test_ota_is_final(void) {
     CHECK_EQ(embewi_ota_is_final(true, 0, 1), 1);
 }
 
+// ── embewi_idf_version_compatible (§4b, reason="idf_incompatible") ───────────
+
+static void test_idf_version_compatible(void) {
+    CHECK_EQ(embewi_idf_version_compatible("5.2", 5), 1);
+    CHECK_EQ(embewi_idf_version_compatible("5.2.1", 5), 1);
+    CHECK_EQ(embewi_idf_version_compatible("5.9", 5), 1);   // minor différent, même major → OK
+
+    CHECK_EQ(embewi_idf_version_compatible("6.0", 5), 0);   // major différent
+    CHECK_EQ(embewi_idf_version_compatible("4.4", 5), 0);
+
+    // formats invalides → incompatible (fail-safe)
+    CHECK_EQ(embewi_idf_version_compatible("", 5), 0);
+    CHECK_EQ(embewi_idf_version_compatible("abc", 5), 0);
+    CHECK_EQ(embewi_idf_version_compatible("5", 5), 0);
+}
+
 // ── embewi_parse_url_host ─────────────────────────────────────────────────────
 
 static void test_parse_url_host(void) {
@@ -376,6 +392,7 @@ int main(void) {
     test_content_range_rejects();
     test_ota_plan();
     test_ota_is_final();
+    test_idf_version_compatible();
     test_parse_url_host();
     test_parse_url_host_port();
     test_parse_cidr();

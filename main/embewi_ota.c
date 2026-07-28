@@ -11,9 +11,11 @@
 #include "psa/crypto.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "esp_idf_version.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "embewi_agent.h"
+#include "embewi_parse.h"
 
 static const char *TAG = "embewi.ota";
 #define NVS_NS  "embewi"
@@ -111,6 +113,9 @@ esp_err_t embewi_ota_prepare(const embewi_ota_prepare_t *req,
     }
     if (strcmp(req->partition_layout, "embewi-ab-v1") != 0) {
         *out_reason = "layout_mismatch"; return ESP_FAIL;
+    }
+    if (!embewi_idf_version_compatible(req->idf_version, ESP_IDF_VERSION_MAJOR)) {
+        *out_reason = "idf_incompatible"; return ESP_FAIL;
     }
 
     const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);

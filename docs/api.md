@@ -112,6 +112,7 @@ Codes `reason` stables :
 |---|---|
 | `chip_mismatch` | Binaire pour un autre SoC |
 | `layout_mismatch` | `partition_layout` incompatible (seul `embewi-ab-v1` accepté) |
+| `idf_incompatible` | `idf_version` d'un major IDF différent de celui du device |
 | `size_too_large` | Image > taille du slot inactif |
 | `busy` | Slot introuvable (OTA en cours ?) |
 

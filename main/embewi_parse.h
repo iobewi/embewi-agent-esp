@@ -83,6 +83,12 @@ void embewi_parse_url_host(const char *url, char *out, size_t out_len);
 void embewi_parse_url_host_port(const char *url, char *host_out, size_t host_len,
                                 uint16_t *port_out);
 
+// Compat IDF (§4b, reason="idf_incompatible") : req_version ("major.minor" ou
+// "major.minor.patch", ex. "5.2") est-il compatible avec la version IDF du
+// device ? Compat = même major (ABI/bootloader/partition table stables au
+// sein d'une série majeure ESP-IDF). Format invalide → incompatible (fail-safe).
+bool embewi_idf_version_compatible(const char *req_version, int running_major);
+
 // Parse "a.b.c.d" ou "a.b.c.d/prefix" en host-byte-order.
 //   "192.168.1.10"   → ip=0xC0A8010A mask=0xFFFFFFFF (/32 implicite)
 //   "192.168.1.0/24" → ip=0xC0A80100 mask=0xFFFFFF00
