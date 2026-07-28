@@ -1,0 +1,20 @@
+name: Tests
+
+# Logique pure (parsing, décision OTA, comparaison à temps constant) — aucun
+# ESP-IDF requis, juste gcc. Complémentaire de test/target/ (ESP-couplé,
+# nécessite device/QEMU — non couvert ici, voir test/target/README.md).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cd test/host && make
