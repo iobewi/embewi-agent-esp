@@ -76,6 +76,9 @@ Secure Boot v2 + Flash Encryption + anti-rollback : profil **opt-in**
 **compile et signe** (validé), reste la validation eFuse sur device.
 Procédure complète, gestion des clés : **`docs/embewi-prod-security.md`**.
 
-## Licence
+## Licence, sécurité, changelog
 
-MIT — voir [LICENSE](LICENSE).
+- Licence : MIT — voir [LICENSE](LICENSE).
+- Vulnérabilité de sécurité à signaler ? Voir [SECURITY.md](SECURITY.md)
+  (divulgation privée, pas d'issue publique).
+- Historique des versions : [CHANGELOG.md](CHANGELOG.md).
