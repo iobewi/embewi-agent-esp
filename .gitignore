@@ -38,6 +38,7 @@ settings.local.json
 # Documentation build
 site/
 docs/_build/
+docs/locale/**/*.mo
 docs/_templates/
 .venv-docs/
 

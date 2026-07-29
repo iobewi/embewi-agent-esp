@@ -1,0 +1,383 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Embewi
+# This file is distributed under the same license as the Embewi Agent
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Embewi Agent \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-28 18:26+0200\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: en\n"
+"Language-Team: en <LL@li.org>\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../embewi-prod-security.md:1
+msgid "Sécurité de production"
+msgstr ""
+
+#: ../../embewi-prod-security.md:3
+msgid ""
+"Met en œuvre les exigences du contrat §1 (racine de confiance) **sans "
+"toucher au flux de développement**. Tout est porté par un profil de build"
+" séparé et opt-in."
+msgstr ""
+
+#: ../../embewi-prod-security.md:6
+msgid ""
+"⚠️ **Opérations eFuse IRRÉVERSIBLES.** Lire entièrement avant le premier "
+"flash. Une erreur ici brique définitivement la capacité à "
+"reflasher/déboguer le device. **Tester d'abord sur un device "
+"sacrifiable.**"
+msgstr ""
+
+#: ../../embewi-prod-security.md:12
+msgid "Développement vs production — le principe"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "Développement (défaut)"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "Production (`sdkconfig.defaults.prod`)"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "Secure Boot v2"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "❌ off"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "✅ bootloader refuse les images non signées"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "Chiffrement flash"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "✅ flash chiffrée (mode RELEASE)"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "Anti-rollback"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "✅ downgrade sécurité bloqué (eFuse)"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "Mode download ROM"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "ouvert"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "secure DL mode"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "Chiffrement NVS"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "✅ schéma flash-enc (partition `nvs_keys`)"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "Vérification cert du Core (sortant)"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "❌ skip"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid ""
+"✅ CA embarquée + validité temporelle (`CONFIG_EMBEWI_VERIFY_CORE_CERT` + "
+"`CONFIG_MBEDTLS_HAVE_TIME_DATE`)"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "Filtrage IP inbound"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "✅ rejet avant handler (`CONFIG_EMBEWI_ENABLE_IP_FILTER`)"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "Reflash libre"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "✅"
+msgstr ""
+
+#: ../../embewi-prod-security.md
+msgid "❌ (par design)"
+msgstr ""
+
+#: ../../embewi-prod-security.md:25
+msgid ""
+"Le développement reste rapide et reflashable. La sécurité ne s'active que"
+" via le profil de production, jamais par défaut."
+msgstr ""
+
+#: ../../embewi-prod-security.md:28
+msgid ""
+"**Statut : profil de production build-validé.** Un build complet a "
+"confirmé que tout l'empilement compile et signe (bootloader Secure Boot "
+"v2 inclus). **Reste à valider sur silicium** : le burn eFuse au premier "
+"flash (non testable hors hardware)."
+msgstr ""
+
+#: ../../embewi-prod-security.md:35
+msgid "Étape 1 — Prérequis (une fois par environnement)"
+msgstr ""
+
+#: ../../embewi-prod-security.md:37
+msgid "Clé de signature Secure Boot (secrète — jamais dans le dépôt)"
+msgstr ""
+
+#: ../../embewi-prod-security.md:44
+msgid "Garder cette clé dans un coffre (Vault, HSM, gestionnaire de secrets CI)."
+msgstr ""
+
+#: ../../embewi-prod-security.md:45
+msgid ""
+"Sa perte = impossibilité de signer de futurs OTA pour les devices déjà "
+"verrouillés. Sa fuite = un attaquant peut signer des images acceptées."
+msgstr ""
+
+#: ../../embewi-prod-security.md:47
+msgid ""
+"`*.pem` est déjà dans `.gitignore` — vérifier qu'elle n'est jamais "
+"commitée."
+msgstr ""
+
+#: ../../embewi-prod-security.md:49
+msgid "CA du Core (publique — authentifie les flux sortants)"
+msgstr ""
+
+#: ../../embewi-prod-security.md:51
+msgid ""
+"Le device vérifie le serveur du Core (`/heartbeat`, `/logs` WS) contre "
+"cette CA. Fournir le certificat de l'autorité qui signe le cert serveur "
+"du Core (cert-manager interne, CA d'entreprise, etc.) :"
+msgstr ""
+
+#: ../../embewi-prod-security.md:59
+msgid ""
+"Ce n'est **pas** un secret (cert public), mais il est **spécifique à "
+"l'environnement** → gardé hors dépôt (`.gitignore` `*.pem`)."
+msgstr ""
+
+#: ../../embewi-prod-security.md:61
+msgid ""
+"Absent au build de production → le build **échoue clairement** "
+"(volontaire : pas d'embarquement d'une CA silencieusement fausse)."
+msgstr ""
+
+#: ../../embewi-prod-security.md:64
+msgid ""
+"**Validité temporelle du cert et canal de détresse NTP.** "
+"`CONFIG_MBEDTLS_HAVE_TIME_DATE=y` (activé dans `sdkconfig.defaults.prod`)"
+" fait vérifier `notBefore`/`notAfter` en plus de la chaîne/CN — sans "
+"cette option, mbedTLS les ignore **silencieusement** (défaut ESP-IDF), et"
+" un cert Core expiré serait accepté indéfiniment. Contrepartie : au boot,"
+" avant que SNTP ait convergé, l'horloge ESP est à 1970 et le cert paraît "
+"« pas encore valide ». Pour éviter un device silencieux le temps de la "
+"synchro (règle d'or §2 du contrat), le heartbeat et `embewi_log_emit()` "
+"basculent temporairement sur un client mbedTLS dédié "
+"(`embewi_tls_relaxed.c`) qui tolère **uniquement** "
+"`BADCERT_EXPIRED`/`BADCERT_FUTURE` — la chaîne de confiance et le CN du "
+"cert Core restent vérifiés sans exception. Dès la synchro, retour au "
+"chemin `esp_http_client` strict. Le streaming logs WebSocket "
+"(`embewi_log.c`) n'est pas couvert par ce bypass (déjà best-effort par "
+"conception) : détail dans `architecture.md`."
+msgstr ""
+
+#: ../../embewi-prod-security.md:81
+msgid "Étape 2 — Build de production"
+msgstr ""
+
+#: ../../embewi-prod-security.md:83
+msgid ""
+"Le profil de production s'**empile** sur `sdkconfig.defaults` (il ne le "
+"remplace pas) :"
+msgstr ""
+
+#: ../../embewi-prod-security.md:92
+msgid ""
+"`-B build-prod` isole les artefacts → le `sdkconfig` de développement "
+"n'est **jamais** écrasé. Les deux builds coexistent ; `build-prod/` est "
+"gitignoré."
+msgstr ""
+
+#: ../../embewi-prod-security.md:95
+msgid ""
+"Pour un build de **validation sans flasher**, une clé de signature et une"
+" `core_ca.pem` jetables suffisent — le build ne touche aucun eFuse (le "
+"verrouillage n'arrive qu'au flash/premier démarrage)."
+msgstr ""
+
+#: ../../embewi-prod-security.md:101
+msgid "Étape 3 — Premier flash et verrouillage eFuse"
+msgstr ""
+
+#: ../../embewi-prod-security.md:103
+msgid ""
+"Au **premier démarrage** d'une image Secure Boot + Flash Enc, le "
+"bootloader brûle les clés dans les eFuse et chiffre la flash. Ce "
+"démarrage est **plus long** et **ne doit pas être interrompu** (coupure "
+"d'alimentation = device potentiellement briqué)."
+msgstr ""
+
+#: ../../embewi-prod-security.md:112
+msgid "Après ce démarrage :"
+msgstr ""
+
+#: ../../embewi-prod-security.md:113
+msgid "l'UART ne peut plus lire la flash en clair (mode RELEASE) ;"
+msgstr ""
+
+#: ../../embewi-prod-security.md:114
+msgid "seules les images signées avec `secure_boot_signing_key.pem` démarrent ;"
+msgstr ""
+
+#: ../../embewi-prod-security.md:115
+msgid ""
+"les OTA suivants (via le Core) doivent livrer des binaires **signés** — "
+"la chaîne OTA du contrat (§3) reste identique, le bootloader ajoute juste"
+" la vérification de signature à l'activation."
+msgstr ""
+
+#: ../../embewi-prod-security.md:119
+msgid ""
+"**Build reproductible pour OTA.** Les binaires OTA poussés par le Core "
+"doivent être signés avec la même clé. Le Core signe l'artefact avant `PUT"
+" /ota/write` ; le device vérifie au démarrage (§1 : « Core verifies for "
+"efficiency, bootloader verifies for trust »)."
+msgstr ""
+
+#: ../../embewi-prod-security.md:126
+msgid "Étape 4 — Anti-rollback : discipline de version"
+msgstr ""
+
+#: ../../embewi-prod-security.md:128
+msgid ""
+"`CONFIG_BOOTLOADER_APP_SECURE_VERSION` (défaut 0) est gravé/incrémenté "
+"dans les eFuse. Règle opérationnelle :"
+msgstr ""
+
+#: ../../embewi-prod-security.md:142
+msgid "Étape 5 — Sécurité réseau (périmètre autour de l'ESP)"
+msgstr ""
+
+#: ../../embewi-prod-security.md:144
+msgid ""
+"Le token Bearer est la défense applicative de l'API inbound. En "
+"production, trois couches complémentaires renforcent le périmètre au "
+"niveau réseau."
+msgstr ""
+
+#: ../../embewi-prod-security.md:147
+msgid "VLAN ESP dédié"
+msgstr ""
+
+#: ../../embewi-prod-security.md:149
+msgid ""
+"Isoler les ESP sur un VLAN distinct du reste du LAN et du cluster. Seul "
+"le node K8s qui héberge le Core a une route vers ce VLAN. Les autres "
+"nodes — et donc tous les Pods — ne voient pas le subnet ESP au niveau L3."
+" C'est le périmètre le plus efficace : il agit avant toute couche "
+"applicative."
+msgstr ""
+
+#: ../../embewi-prod-security.md:154
+msgid "NetworkPolicy K8s — egress vers le subnet ESP"
+msgstr ""
+
+#: ../../embewi-prod-security.md:156
+msgid ""
+"Si le CNI supporte les NetworkPolicy (Calico, Cilium, Weave…), "
+"restreindre l'egress vers le subnet ESP aux seuls Pods du Core :"
+msgstr ""
+
+#: ../../embewi-prod-security.md:176
+msgid ""
+"Les ESP étant hors Pod CIDR, les NetworkPolicy ne s'appliquent pas *vers "
+"eux* nativement : la règle porte sur l'**egress des Pods cluster** vers "
+"le subnet ESP."
+msgstr ""
+
+#: ../../embewi-prod-security.md:179
+msgid "Filtrage IP dans l'agent (`CONFIG_EMBEWI_ENABLE_IP_FILTER=y`)"
+msgstr ""
+
+#: ../../embewi-prod-security.md:181
+msgid ""
+"Troisième couche, portée par l'agent lui-même. Activé dans "
+"`sdkconfig.defaults.prod`, il rejette les connexions entrantes hors du "
+"CIDR autorisé **avant** tout handler et avant la vérification du token, "
+"via le hook `open_fn` du serveur HTTPS (zéro overhead applicatif)."
+msgstr ""
+
+#: ../../embewi-prod-security.md:186
+msgid "Source du CIDR autorisé (par priorité) :"
+msgstr ""
+
+#: ../../embewi-prod-security.md:188
+msgid ""
+"Clé McuConfigMap `allowed_cidr` poussée par le Core via `POST /config` "
+"(ex. `\"10.42.0.0/16\"` = CIDR du cluster K8s)."
+msgstr ""
+
+#: ../../embewi-prod-security.md:190
+msgid "IP extraite de `ctrl_url` en `/32` si `allowed_cidr` est absent."
+msgstr ""
+
+#: ../../embewi-prod-security.md:192
+msgid ""
+"**Recommandation** : pousser `allowed_cidr` avec le CIDR du cluster "
+"plutôt que l'IP exacte du Pod Core — cette IP change à chaque redémarrage"
+" du Pod. Un hostname dans `ctrl_url` sans `allowed_cidr` désactive "
+"silencieusement le filtre (warning de boot)."
+msgstr ""
+
+#: ../../embewi-prod-security.md:197
+msgid "**Profondeur de défense résultante :**"
+msgstr ""
+
+#: ../../embewi-prod-security.md:210
+msgid "Checklist avant déploiement terrain"
+msgstr ""
+
+#: ../../embewi-prod-security.md:227
+msgid "Voir aussi"
+msgstr ""
+
+#: ../../embewi-prod-security.md:229
+msgid "`embewi-contract-v2.md` §1 — modèle de sécurité (le « pourquoi »)."
+msgstr ""
+
+#: ../../embewi-prod-security.md:230
+msgid "`sdkconfig.defaults.prod` — les options exactes (le « quoi »)."
+msgstr ""
+

@@ -1,0 +1,417 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Embewi
+# This file is distributed under the same license as the Embewi Agent
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Embewi Agent \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-28 18:26+0200\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: en\n"
+"Language-Team: en <LL@li.org>\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../workload.md:1
+msgid "Développer un workload"
+msgstr ""
+
+#: ../../workload.md:3
+msgid ""
+"Un **workload** est le code métier embarqué dans l'agent. Il est compilé "
+"statiquement avec le firmware — le binaire résultant est l'artefact OTA "
+"que le Core déploie sur le device."
+msgstr ""
+
+#: ../../workload.md:7
+msgid "L'agent fournit au workload :"
+msgstr ""
+
+#: ../../workload.md:8
+msgid "un **cycle de vie garanti** (4 fonctions appelées dans un ordre précis)"
+msgstr ""
+
+#: ../../workload.md:9
+msgid "un accès à la **config runtime** poussée par le Core (`McuConfigMap`)"
+msgstr ""
+
+#: ../../workload.md:10
+msgid "un **port TCP** alloué par le Core pour exposer un service applicatif"
+msgstr ""
+
+#: ../../workload.md:14
+msgid "Interface SDK (`main/embewi_app.h`)"
+msgstr ""
+
+#: ../../workload.md:16
+msgid "Toute app workload implémente exactement ces quatre fonctions :"
+msgstr ""
+
+#: ../../workload.md:25
+msgid "Cycle de vie"
+msgstr ""
+
+#: ../../workload.md
+msgid "Fonction"
+msgstr ""
+
+#: ../../workload.md
+msgid "Appelée"
+msgstr ""
+
+#: ../../workload.md
+msgid "Contrainte"
+msgstr ""
+
+#: ../../workload.md
+msgid "`embewi_app_init`"
+msgstr ""
+
+#: ../../workload.md
+msgid "Une fois au boot, avant le self-check"
+msgstr ""
+
+#: ../../workload.md
+msgid "Ne pas écrire dans `embewi_cfg` (voir ci-dessous)"
+msgstr ""
+
+#: ../../workload.md
+msgid "`embewi_app_selfcheck`"
+msgstr ""
+
+#: ../../workload.md
+msgid "Pendant `pending_verify`, appels répétés sur 15 s"
+msgstr ""
+
+#: ../../workload.md
+msgid "Doit répondre vite — pas de TLS, pas de requêtes réseau"
+msgstr ""
+
+#: ../../workload.md
+msgid "`embewi_app_service_start(port)`"
+msgstr ""
+
+#: ../../workload.md
+msgid "Au boot après NTP, et après chaque `POST /app/port`"
+msgstr ""
+
+#: ../../workload.md
+msgid "Le `port+1` est réservé au ctrl socket httpd — ne pas l'utiliser"
+msgstr ""
+
+#: ../../workload.md
+msgid "`embewi_app_service_stop`"
+msgstr ""
+
+#: ../../workload.md
+msgid "Avant chaque `service_start` sur nouveau port"
+msgstr ""
+
+#: ../../workload.md
+msgid "Idempotente si le service n'était pas démarré"
+msgstr ""
+
+#: ../../workload.md:54
+msgid "McuConfigMap — lecture depuis le workload"
+msgstr ""
+
+#: ../../workload.md:56
+msgid ""
+"La config runtime est poussée par le Core via Kubernetes (`McuConfigMap`)"
+" et stockée en NVS par l'agent. Le workload y accède via deux fonctions :"
+msgstr ""
+
+#: ../../workload.md:67
+msgid "Règle fondamentale : lire dans `embewi_app_init`, jamais écrire"
+msgstr ""
+
+#: ../../workload.md:82
+msgid ""
+"**Pourquoi l'écriture est interdite dans `embewi_app_init` :** le "
+"snapshot `active` de `GET /config` est figé *avant* cet appel. Toute "
+"écriture NVS ici serait invisible dans `active` mais visible dans `nvs`, "
+"créant une divergence que le Core interpréterait comme une config en "
+"attente de reboot — alors que l'app a déjà lu les valeurs incorrectes."
+msgstr ""
+
+#: ../../workload.md:88
+msgid "Clés standardisées disponibles"
+msgstr ""
+
+#: ../../workload.md
+msgid "Clé"
+msgstr ""
+
+#: ../../workload.md
+msgid "Défaut build"
+msgstr ""
+
+#: ../../workload.md
+msgid "Description"
+msgstr ""
+
+#: ../../workload.md
+msgid "`gpio_button`"
+msgstr ""
+
+#: ../../workload.md
+msgid "`embewi_cfg_get_int`"
+msgstr ""
+
+#: ../../workload.md
+msgid "`CONFIG_EMBEWI_BUTTON_GPIO`"
+msgstr ""
+
+#: ../../workload.md
+msgid "GPIO du bouton BOOT (9 sur C3/C6/H2, 0 sinon)"
+msgstr ""
+
+#: ../../workload.md
+msgid "`gpio_ws2812`"
+msgstr ""
+
+#: ../../workload.md
+msgid "`CONFIG_EMBEWI_WS2812_GPIO`"
+msgstr ""
+
+#: ../../workload.md
+msgid "GPIO de la LED WS2812B (RMT TX)"
+msgstr ""
+
+#: ../../workload.md
+msgid "`ntp_server`"
+msgstr ""
+
+#: ../../workload.md
+msgid "`embewi_cfg_get`"
+msgstr ""
+
+#: ../../workload.md
+msgid "`\"pool.ntp.org\"`"
+msgstr ""
+
+#: ../../workload.md
+msgid "Serveur NTP (lu par l'agent, pas par le workload)"
+msgstr ""
+
+#: ../../workload.md:96
+msgid "Ajouter des clés custom"
+msgstr ""
+
+#: ../../workload.md:98
+msgid "Déclarer les clés dans le `McuConfigMap` Kubernetes du déploiement :"
+msgstr ""
+
+#: ../../workload.md:111
+msgid "Lire dans le workload avec la valeur par défaut appropriée :"
+msgstr ""
+
+#: ../../workload.md:122
+msgid "Contraintes clé/valeur imposées par les buffers NVS :"
+msgstr ""
+
+#: ../../workload.md
+msgid "Limite"
+msgstr ""
+
+#: ../../workload.md
+msgid "Valeur"
+msgstr ""
+
+#: ../../workload.md
+msgid "Longueur max d'une clé"
+msgstr ""
+
+#: ../../workload.md
+msgid "15 caractères"
+msgstr ""
+
+#: ../../workload.md
+msgid "Longueur max d'une valeur"
+msgstr ""
+
+#: ../../workload.md
+msgid "63 caractères"
+msgstr ""
+
+#: ../../workload.md
+msgid "Préfixe `_`"
+msgstr ""
+
+#: ../../workload.md
+msgid "Réservé à l'agent — ne pas utiliser"
+msgstr ""
+
+#: ../../workload.md ../../workload.md:132
+msgid "Selfcheck"
+msgstr ""
+
+#: ../../workload.md:134
+msgid ""
+"`embewi_app_selfcheck()` est appelé de façon répétée pendant les **15 "
+"secondes** qui suivent un boot post-OTA (`pending_verify`). Si elle "
+"retourne `false` — ou si la fenêtre expire sans retour `true` — le "
+"bootloader rollback sur l'image précédente."
+msgstr ""
+
+#: ../../workload.md:148
+msgid ""
+"**Ce que selfcheck doit tester :** uniquement ce qui peut faire planter "
+"le service — driver initialisé, capteur répondant, canal hardware actif."
+msgstr ""
+
+#: ../../workload.md:151
+msgid ""
+"**Ce que selfcheck ne doit pas faire :** logique métier, appels réseau, "
+"lectures NVS, opérations bloquantes. La fenêtre est courte et partagée "
+"avec l'émission du heartbeat."
+msgstr ""
+
+#: ../../workload.md:157
+msgid "Service applicatif"
+msgstr ""
+
+#: ../../workload.md:159
+msgid ""
+"Le Core alloue un port TCP au device (`POST /app/port`, persisté en NVS)."
+" L'agent passe ce port à `embewi_app_service_start(port)`. Le workload "
+"choisit librement le protocole : HTTP, HTTPS, WebSocket, TCP brut…"
+msgstr ""
+
+#: ../../workload.md:177
+msgid ""
+"`ctrl_port = port + 1` est obligatoire pour éviter le conflit avec le "
+"socket de contrôle interne de l'httpd de l'agent (qui utilise lui aussi "
+"`port + 1`)."
+msgstr ""
+
+#: ../../workload.md:182
+msgid "Workloads fournis (`apps/`)"
+msgstr ""
+
+#: ../../workload.md:184
+msgid ""
+"Les workloads dans `apps/` sont des **références d'implémentation** — ils"
+" montrent comment utiliser chaque partie de l'interface."
+msgstr ""
+
+#: ../../workload.md:187
+msgid "`apps/button/main.c` — bouton BOOT"
+msgstr ""
+
+#: ../../workload.md:189
+msgid ""
+"Illustre : lecture McuConfigMap (`gpio_button`), tâche FreeRTOS de "
+"polling, service HTTP simple, selfcheck GPIO."
+msgstr ""
+
+#: ../../workload.md
+msgid "Point"
+msgstr ""
+
+#: ../../workload.md
+msgid "Config lue"
+msgstr ""
+
+#: ../../workload.md
+msgid "`gpio_button` → `embewi_cfg_get_int`"
+msgstr ""
+
+#: ../../workload.md
+msgid "Tâche"
+msgstr ""
+
+#: ../../workload.md
+msgid "`embewi_btn` — polling 50 ms, stack 2 048 B, priorité 3"
+msgstr ""
+
+#: ../../workload.md
+msgid "Service"
+msgstr ""
+
+#: ../../workload.md
+#, python-brace-format
+msgid "`GET /sensors` → `{\"counter\": N}`"
+msgstr ""
+
+#: ../../workload.md
+msgid "`gpio_get_level(s_gpio) == 1` (bouton relâché)"
+msgstr ""
+
+#: ../../workload.md:199
+msgid "`apps/rainbow/main.c` — LED WS2812B"
+msgstr ""
+
+#: ../../workload.md:201
+msgid ""
+"Illustre : lecture McuConfigMap (`gpio_ws2812`), driver RMT, selfcheck "
+"hardware, service HTTP d'état."
+msgstr ""
+
+#: ../../workload.md
+msgid "`gpio_ws2812` → `embewi_cfg_get_int`"
+msgstr ""
+
+#: ../../workload.md
+msgid "Driver"
+msgstr ""
+
+#: ../../workload.md
+msgid "RMT TX 10 MHz, protocole WS2812B GRB, MSB en premier"
+msgstr ""
+
+#: ../../workload.md
+msgid "`embewi_rainbow` — cycle HSV, stack 2 048 B, priorité 3"
+msgstr ""
+
+#: ../../workload.md
+#, python-brace-format
+msgid "`GET /status` → `{\"running\": true|false}`"
+msgstr ""
+
+#: ../../workload.md
+msgid "`s_chan != NULL && s_encoder != NULL`"
+msgstr ""
+
+#: ../../workload.md:214
+msgid "Créer son workload"
+msgstr ""
+
+#: ../../workload.md:216
+msgid "Créer `apps/<mon-app>/main.c` et implémenter les 4 fonctions."
+msgstr ""
+
+#: ../../workload.md:217
+msgid "Dans `main/CMakeLists.txt`, ajouter le cas :"
+msgstr ""
+
+#: ../../workload.md:231
+msgid ""
+"Les headers `embewi_app.h` et `embewi_agent.h` sont accessibles sans "
+"chemin supplémentaire — `INCLUDE_DIRS \".\"` du composant couvre `main/`."
+msgstr ""
+
+#: ../../workload.md:234
+msgid "Pour un workload multi-fichiers, lister les sources en liste CMake :"
+msgstr ""
+
+#: ../../workload.md:240
+msgid ""
+"Créer le `McuConfigMap` Kubernetes avec les clés nécessaires au workload "
+"et le référencer dans le `McuDeployment`."
+msgstr ""
+
+#: ../../workload.md:244
+msgid ""
+"Pour construire l'artefact OTA et le déployer via le Core, voir [Déployer"
+" un workload](deploy)."
+msgstr ""
+

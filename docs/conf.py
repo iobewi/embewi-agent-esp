@@ -6,6 +6,15 @@ author = "Embewi"
 copyright = "2026, Embewi"
 language = "fr"
 
+# i18n : français = langue source, anglais = traduction via gettext/sphinx-intl.
+#   sphinx-build -b gettext docs docs/_build/gettext   → extrait les .pot
+#   sphinx-intl update -p docs/_build/gettext -l en    → génère locale/en/LC_MESSAGES/*.po
+#   (traduire les .po)
+#   sphinx-intl build -d locale                        → compile en .mo
+#   sphinx-build -b html -D language=en docs docs/_build/html/en
+locale_dirs = ["locale/"]
+gettext_compact = True
+
 extensions = ["myst_parser", "sphinx_rtd_theme", "sphinxcontrib.mermaid"]
 
 source_suffix = {".md": "markdown"}

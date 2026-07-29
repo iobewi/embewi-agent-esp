@@ -1,0 +1,562 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Embewi
+# This file is distributed under the same license as the Embewi Agent
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Embewi Agent \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-28 18:26+0200\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: en\n"
+"Language-Team: en <LL@li.org>\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../architecture.md:1
+msgid "Architecture"
+msgstr ""
+
+#: ../../architecture.md:3
+msgid "Séquence de boot"
+msgstr ""
+
+#: ../../architecture.md:26
+msgid "Machine d'état (contrat §2)"
+msgstr ""
+
+#: ../../architecture.md:53
+msgid "**Invariants clés :**"
+msgstr ""
+
+#: ../../architecture.md:54
+msgid ""
+"`ota_validated` passe à `true` **uniquement** après "
+"`esp_ota_mark_app_valid_cancel_rollback()` — un seul endroit dans le code"
+" (`selfcheck_task`)."
+msgstr ""
+
+#: ../../architecture.md:57
+msgid ""
+"`FAILED` : le device ne reboot pas — il reste joignable pour que le Core "
+"puisse repousser une image saine."
+msgstr ""
+
+#: ../../architecture.md:60
+msgid "Séquence OTA (contrat §3)"
+msgstr ""
+
+#: ../../architecture.md:94
+msgid "**Reprise après coupure (`Content-Range`)** — protocole in-session :"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "Situation"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "Action agent"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "Header absent ou `start=0`"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "Nouvelle session (BEGIN)"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "`start` aligné sur `written`"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "Continue (CONTINUE)"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "`start` désaligné"
+msgstr ""
+
+#: ../../architecture.md:62
+#, python-brace-format
+msgid "`416` + `{\"written\": N}` pour resync"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "`end+1 == total`"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "Finalise + vérifie SHA"
+msgstr ""
+
+#: ../../architecture.md:103
+msgid ""
+"**Idempotence** — le Core reprend un reconcile interrompu via `GET /info`"
+" :"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "`staged.state`"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "Comportement Core"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "`none`"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "Repartir de `/ota/prepare`"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "`written` + bon digest"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "Sauter write, aller à `/ota/activate`"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "`written` + digest périmé"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "Re-préparer + ré-écrire"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "`activating`"
+msgstr ""
+
+#: ../../architecture.md:62
+msgid "Attendre le heartbeat (timeout négatif §3)"
+msgstr ""
+
+#: ../../architecture.md:112
+msgid "Flux sortants"
+msgstr ""
+
+#: ../../architecture.md:126
+msgid ""
+"Le scheme est toujours forcé en `https://` / `wss://` quel que soit le "
+"scheme stocké dans `ctrl_url` (contrat §1)."
+msgstr ""
+
+#: ../../architecture.md:129
+msgid "**Champs du heartbeat (§5) :**"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Champ"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Description"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`node_id`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Identifiant du device (NVS provisioning)"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`ip`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid ""
+"IP Wi-Fi courante — le Core met à jour l'EndpointSlice K8s à chaque "
+"réception (§8)"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`ts`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Epoch UTC (0 si NTP pas encore synchronisé)"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`state`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "État courant (`running`, `pending_verify`, `degraded`…)"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`ota_validated`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid ""
+"`true` uniquement après `mark_valid` — pilote le `ready` de "
+"l'EndpointSlice"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`deployment_id`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Identifiant du déploiement validé courant"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`firmware_digest`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Digest SHA-256 du binaire actif"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`uptime_ms`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Uptime en millisecondes (`esp_timer`)"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`heap_free`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Heap interne libre (octets)"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`rssi`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Niveau Wi-Fi (dBm)"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`config_generation`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Génération McuConfigMap active au boot"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`temp_celsius`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Température interne du SoC (`-127.0` si capteur indisponible)"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`task_hwm_min`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid ""
+"Minimum high-water-mark de stack sur toutes les tâches (octets libres "
+"restants)"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "`reason`"
+msgstr ""
+
+#: ../../architecture.md:114
+msgid "Présent uniquement tant que SNTP n'a pas convergé : `\"clock_unsynced\"`"
+msgstr ""
+
+#: ../../architecture.md:148
+msgid ""
+"Le champ `ip` est la source de vérité que le Core utilise pour patcher "
+"`endpoints[].addresses` de l'EndpointSlice — l'IP peut changer entre deux"
+" reboots (DHCP) sans action manuelle."
+msgstr ""
+
+#: ../../architecture.md:152
+msgid ""
+"**Canal de détresse NTP (§5, prod uniquement).** Avant que SNTP ait "
+"convergé, l'horloge ESP est à 1970 : une fois "
+"`CONFIG_MBEDTLS_HAVE_TIME_DATE=y` (profil prod), le cert du Core paraît «"
+" pas encore valide » et bloquerait le heartbeat/`embewi_log_emit()` — "
+"silence que la règle d'or §2 interdit. Pendant cette fenêtre, `emit_to()`"
+" bascule sur `embewi_tls_relaxed_post()` (`embewi_tls_relaxed.c`) : "
+"client mbedTLS bas niveau, `VERIFY_OPTIONAL` + inspection manuelle du "
+"résultat de handshake — seuls `BADCERT_EXPIRED`/ `BADCERT_FUTURE` sont "
+"tolérés, la chaîne de confiance et le CN du cert Core restent vérifiés. "
+"Dès la synchro, retour au chemin `esp_http_client` strict. Portée limitée"
+" et assumée : ce bypass couvre le heartbeat et `embewi_log_emit()`, "
+"**pas** le streaming logs WebSocket (`embewi_log.c`), qui reste sur "
+"`esp_websocket_client` (déjà best-effort/lossy par conception)."
+msgstr ""
+
+#: ../../architecture.md:165
+msgid "Streaming WebSocket — fonctionnement détaillé"
+msgstr ""
+
+#: ../../architecture.md:167
+msgid ""
+"**Connexion outbound device-initiated.** L'agent ouvre la connexion WS en"
+" client vers `wss://<ctrl_url_host>:<port>/v1alpha1/logs` — c'est le "
+"device qui initie, pas le Core. Compatible NAT et pare-feu entrant "
+"restrictif. Le scheme est toujours forcé en `wss://` (contrat §1), quel "
+"que soit le scheme de `ctrl_url`."
+msgstr ""
+
+#: ../../architecture.md:173
+msgid "**Séquence d'initialisation (`embewi_log_start`) :**"
+msgstr ""
+
+#: ../../architecture.md:192
+msgid ""
+"**Ordre critique** : la `drain_task` est créée et son handle (`s_drain`) "
+"est affecté **avant** l'installation du hook. Cela garantit que le hook "
+"peut comparer `xTaskGetCurrentTaskHandle() != s_drain` dès le premier "
+"appel."
+msgstr ""
+
+#: ../../architecture.md:196
+msgid "**Pipeline complet :**"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Étape"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Composant"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Comportement"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "1"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "`ESP_LOGx` (toute tâche)"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Appel vprintf normal"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "2"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "`log_hook`"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid ""
+"Écrit sur l'UART original **et** pousse dans le ring buffer — non-"
+"bloquant (`pdMS_TO_TICKS(0)`), drop silencieux si plein"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "3"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Ring buffer 4 KB"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid ""
+"~25 lignes de 160 chars. La `drain_task` est ignorée par le hook (guard "
+"via handle) pour éviter la récursion infinie"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "4"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "`drain_task`"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid ""
+"Tire les lignes, les encode en JSON et les envoie via "
+"`esp_websocket_client_send_text` si le WS est connecté"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "5"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "WebSocket"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid ""
+"Reconnexion automatique gérée par `esp_websocket_client` (bibliothèque "
+"Espressif)"
+msgstr ""
+
+#: ../../architecture.md:206
+msgid ""
+"**Comportement en cas de déconnexion WS :** la `drain_task` continue de "
+"consommer le ring buffer et **jette** les messages. Les logs ne "
+"s'accumulent pas — à la reconnexion, seuls les logs récents (ceux dans le"
+" ring buffer à l'instant de la reconnexion) sont diffusés. Choix assumé :"
+" fraîcheur plutôt que complétude. Les événements OTA et lifecycle "
+"critiques passent par `embewi_log_emit()` (HTTPS POST, garanti délivré ou"
+" erreur loggée)."
+msgstr ""
+
+#: ../../architecture.md:213
+msgid ""
+"**Récursion :** la `drain_task` génère elle-même des `ESP_LOGx` "
+"(connexion, erreur…). Le hook détecte son propre handle et saute "
+"l'écriture dans le ring buffer pour cette tâche uniquement — l'UART "
+"reçoit quand même ces logs."
+msgstr ""
+
+#: ../../architecture.md:217
+msgid "**Garanties de livraison :**"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Canal"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Garantie"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Usage"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "WebSocket `wss`"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Best-effort, drop si buffer plein ou WS déconnecté"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Tous les `ESP_LOGx` en streaming"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "HTTPS POST `/v1alpha1/logs` via `embewi_log_emit()`"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Tentative unique, erreur loggée"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Événements OTA et lifecycle"
+msgstr ""
+
+#: ../../architecture.md:224
+msgid "**TLS :**"
+msgstr ""
+
+#: ../../architecture.md:225
+msgid ""
+"Dev (`CONFIG_EMBEWI_VERIFY_CORE_CERT=n`) : connexion chiffrée, cert "
+"serveur non vérifié."
+msgstr ""
+
+#: ../../architecture.md:226
+msgid ""
+"Prod (`CONFIG_EMBEWI_VERIFY_CORE_CERT=y`) : cert du Core vérifié contre "
+"la CA embarquée (`main/core_ca.pem`)."
+msgstr ""
+
+#: ../../architecture.md:228
+msgid "Tâches FreeRTOS"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Tâche"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Stack"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Priorité"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Rôle"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "`embewi_hb`"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "8 192 B"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Heartbeat HTTPS (esp_http_client exige ~4 KB)"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "`embewi_log`"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Drain ring buffer → WebSocket"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "`embewi_selfchk`"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "4 096 B"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Selfcheck borné post-OTA"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "httpd (HTTPS)"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "~10 240 B"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "—"
+msgstr ""
+
+#: ../../architecture.md:175
+msgid "Serveur HTTPS :443 (mbedTLS inclus)"
+msgstr ""
+

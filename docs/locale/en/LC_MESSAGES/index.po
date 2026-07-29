@@ -1,0 +1,127 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Embewi
+# This file is distributed under the same license as the Embewi Agent
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Embewi Agent \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-28 18:26+0200\n"
+"PO-Revision-Date: 2026-07-28 18:26+0200\n"
+"Last-Translator: Embewi\n"
+"Language: en\n"
+"Language-Team: en <LL@li.org>\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../index.md:12
+msgid "Architecture"
+msgstr "Architecture"
+
+#: ../../index.md:12
+msgid "API inbound"
+msgstr "Inbound API"
+
+#: ../../index.md:12
+msgid "Configuration"
+msgstr "Configuration"
+
+#: ../../index.md:12
+msgid "Sécurité de production"
+msgstr "Production security"
+
+#: ../../index.md:12
+msgid "Agent"
+msgstr "Agent"
+
+#: ../../index.md:22
+msgid "Développer un workload"
+msgstr "Developing a workload"
+
+#: ../../index.md:22
+msgid "Déployer un workload"
+msgstr "Deploying a workload"
+
+#: ../../index.md:22
+msgid "Workload SDK"
+msgstr "Workload SDK"
+
+#: ../../index.md:1
+msgid "Embewi Agent — Documentation"
+msgstr "Embewi Agent — Documentation"
+
+#: ../../index.md:3
+msgid ""
+"Cette documentation s'adresse à deux publics distincts — choisissez votre"
+" section selon votre rôle."
+msgstr ""
+"This documentation targets two distinct audiences — pick the section "
+"that matches your role."
+
+#: ../../index.md:6
+msgid ""
+"**Agent** — design et fonctionnement interne : architecture, API HTTPS, "
+"configuration, sécurité de production."
+msgstr ""
+"**Agent** — internal design and operation: architecture, HTTPS API, "
+"configuration, production security."
+
+#: ../../index.md:9
+msgid ""
+"**Workload SDK** — développer et déployer une application embarquée : "
+"écrire le code métier, lire la configuration runtime, produire l'artefact"
+" OTA."
+msgstr ""
+"**Workload SDK** — developing and deploying an embedded application: "
+"writing business logic, reading runtime configuration, producing the "
+"OTA artifact."
+
+#: ../../index.md:32
+msgid ""
+"L'agent implémente le contrat "
+"[`embewi`](https://iobewi.github.io/embewi/) (`v1alpha1`) : piloté par un"
+" contrôleur Kubernetes ([embewi-core](https://github.com/iobewi/embewi-"
+"core)) via une API HTTPS authentifiée, il gère les OTA A/B avec selfcheck"
+" borné et rollback automatique, et émet heartbeat et logs vers le Core."
+msgstr ""
+"The agent implements the [`embewi`](https://iobewi.github.io/embewi/) "
+"contract (`v1alpha1`): driven by a Kubernetes controller "
+"([embewi-core](https://github.com/iobewi/embewi-core)) over an "
+"authenticated HTTPS API, it handles A/B OTA with a time-bounded "
+"self-check and automatic rollback, and emits heartbeat and logs to the "
+"Core."
+
+#: ../../index.md:54
+msgid "Repères"
+msgstr "Reference points"
+
+#: ../../index.md:56
+msgid ""
+"**Dépôt** : [iobewi/embewi-agent-esp](https://github.com/iobewi/embewi-"
+"agent-esp) (code source, build, tests, partitions)."
+msgstr ""
+"**Repository**: [iobewi/embewi-agent-esp](https://github.com/iobewi/"
+"embewi-agent-esp) (source code, build, tests, partitions)."
+
+#: ../../index.md:58
+msgid ""
+"**Contrat Core ↔ Agent** : "
+"[iobewi.github.io/embewi](https://iobewi.github.io/embewi/) "
+"(spécification normative `v1alpha1`, rattachée en submodule `contract/`)."
+msgstr ""
+"**Core ↔ Agent contract**: "
+"[iobewi.github.io/embewi](https://iobewi.github.io/embewi/) (normative "
+"`v1alpha1` specification, attached as the `contract/` submodule)."
+
+#: ../../index.md:60
+msgid ""
+"**Chips supportés** : ESP32-C3 (testé). Compatible C6, S3, H2 (même "
+"famille RISC-V)."
+msgstr ""
+"**Supported chips**: ESP32-C3 (tested). Compatible with C6, S3, H2 "
+"(same RISC-V family)."

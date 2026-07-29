@@ -1,0 +1,545 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Embewi
+# This file is distributed under the same license as the Embewi Agent
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Embewi Agent \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-28 18:26+0200\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: en\n"
+"Language-Team: en <LL@li.org>\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../configuration.md:1
+msgid "Configuration"
+msgstr ""
+
+#: ../../configuration.md:3
+msgid ""
+"Design interne de la configuration de l'agent : modèle NVS, provisioning,"
+" TLS et options de build."
+msgstr ""
+
+#: ../../configuration.md:6
+msgid ""
+"Ressource Kubernetes `McuConfigMap` et règles de binding → [Déployer un "
+"workload](deploy)"
+msgstr ""
+
+#: ../../configuration.md:7
+msgid ""
+"Lecture de la config depuis un workload → [Développer un "
+"workload](workload)"
+msgstr ""
+
+#: ../../configuration.md:11
+msgid "Configuration runtime — modèle interne (§4a)"
+msgstr ""
+
+#: ../../configuration.md:13
+msgid ""
+"Le Core pousse des paires clé/valeur via `POST /config`. L'agent les "
+"stocke dans le namespace NVS `embewi_cfg` **sans interpréter leur "
+"sémantique** — il est opaque au contenu. La signification des clés "
+"appartient au workload (et au Core qui valide)."
+msgstr ""
+
+#: ../../configuration.md:24
+msgid ""
+"La config est appliquée **au prochain reboot** — `POST /config` seul ne "
+"suffit pas. Le Core enchaîne avec `POST /reboot` (ou le reboot vient de "
+"`POST /ota/activate`)."
+msgstr ""
+
+#: ../../configuration.md:27
+msgid "`GET /config` expose les deux couches :"
+msgstr ""
+
+#: ../../configuration.md:28
+msgid "`active` — snapshot figé au boot (ce que les apps voient réellement)"
+msgstr ""
+
+#: ../../configuration.md:29
+msgid "`nvs` — NVS courant (peut diverger si `POST /config` sans reboot)"
+msgstr ""
+
+#: ../../configuration.md:31
+msgid "`generation > active_generation` → config poussée, reboot en attente."
+msgstr ""
+
+#: ../../configuration.md:33
+msgid "Clés lues par l'agent lui-même"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Clé"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Défaut build"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Lu par"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`ntp_server`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`pool.ntp.org`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`embewi_time.c` — serveur NTP principal"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`allowed_cidr`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "(absent)"
+msgstr ""
+
+#: ../../configuration.md
+msgid ""
+"`embewi_http.c` — CIDR autorisé pour le filtrage IP inbound "
+"(`CONFIG_EMBEWI_ENABLE_IP_FILTER=y`)"
+msgstr ""
+
+#: ../../configuration.md:40
+msgid ""
+"Si `allowed_cidr` est absent et que le filtrage IP est activé, l'agent "
+"dérive le CIDR autorisé depuis l'hôte de `ctrl_url` en `/32`. Si "
+"`ctrl_url` pointe sur un hostname (non-IPv4), le filtre se désactive avec"
+" un avertissement de boot."
+msgstr ""
+
+#: ../../configuration.md:44
+msgid ""
+"Toutes les autres clés sont opaques pour l'agent et destinées au "
+"workload. Les clés préfixées `_` sont réservées à l'agent (`_gen` = "
+"compteur de génération) et ignorées silencieusement par `POST /config`."
+msgstr ""
+
+#: ../../configuration.md:48
+msgid "Limites des buffers agent"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Limite"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Valeur"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Longueur max d'une clé"
+msgstr ""
+
+#: ../../configuration.md
+msgid "15 caractères (contrainte NVS ESP-IDF)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Longueur max d'une valeur"
+msgstr ""
+
+#: ../../configuration.md
+msgid "63 caractères"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Taille totale"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Partition NVS `embewi_cfg` (~8 KB)"
+msgstr ""
+
+#: ../../configuration.md:58
+msgid "NVS — namespaces"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Namespace"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Contenu"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`embewi_prov`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "WiFi (ssid/pass), `ctrl_url`, `node_id`, `token`, IP statique"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`embewi_tls`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Certificat TLS + clé privée (format PEM)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`embewi`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`fw_size`, `app_port`, `staged` (idempotence OTA)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`embewi_cfg`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "McuConfigMap (clés runtime + `_gen`)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`embewi_chk`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Canary du self-check (clé temporaire, effacée après lecture)"
+msgstr ""
+
+#: ../../configuration.md:70
+msgid "Provisioning — premier boot"
+msgstr ""
+
+#: ../../configuration.md:72
+msgid ""
+"Au premier boot (NVS vide), l'agent ouvre un AP Wi-Fi `embewi-XXYY` (2 "
+"derniers octets de la MAC de base) et sert un portail de configuration "
+"HTTPS sur `192.168.4.1`. La fenêtre se ferme après **10 minutes** sans "
+"soumission (reboot)."
+msgstr ""
+
+#: ../../configuration.md
+msgid "Champ"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Obligatoire"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Description"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`node_id`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "oui"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Identifiant unique du device (ex. `embewi-moteur-gauche`)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`ssid`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "SSID du réseau Wi-Fi"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`pass`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "non"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Mot de passe Wi-Fi"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`ctrl_url`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "URL du contrôleur (ex. `https://core.local:8443`)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`token`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Token Bearer (auto-généré 128 bits si vide)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "IP statique"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`ip`, `mask`, `gw`, `dns` (DHCP si absent)"
+msgstr ""
+
+#: ../../configuration.md:85
+msgid ""
+"Le token est affiché **une seule fois** sur la page de confirmation — le "
+"noter immédiatement. Rotation possible sans re-provisioning via `POST "
+"/token`."
+msgstr ""
+
+#: ../../configuration.md:90
+msgid "Certificat TLS du serveur HTTPS"
+msgstr ""
+
+#: ../../configuration.md:92
+msgid "L'agent sert son API en HTTPS. Priorité du certificat :"
+msgstr ""
+
+#: ../../configuration.md:94
+msgid ""
+"**NVS** — cert poussé par le Core via `POST /tls/cert` (CA-signé, "
+"rotation sans OTA)."
+msgstr ""
+
+#: ../../configuration.md:95
+msgid ""
+"**Fallback auto-signé** — EC P-256 généré au build par `openssl`, "
+"embarqué dans le binaire. Le Core doit faire du certificate pinning en "
+"mode fallback."
+msgstr ""
+
+#: ../../configuration.md:98
+msgid ""
+"Le cert fallback est généré au build, jamais commité. `openssl` doit être"
+" dans le PATH au moment du build."
+msgstr ""
+
+#: ../../configuration.md:103
+msgid "`sdkconfig.defaults` — options critiques"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Option"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Rôle"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`y`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "**Obligatoire** — rollback automatique si `mark_valid` non appelé"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_ESP_HTTPS_SERVER_ENABLE`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Serveur HTTPS :443"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_FREERTOS_USE_TRACE_FACILITY`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`task_hwm_min` sur toutes les tâches dans le heartbeat"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_ESP_TASK_WDT_TIMEOUT_S`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`30`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Watchdog tâche (backstop du self-check)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_FREERTOS_HZ`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`1000`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Tick 1 ms"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_COMPILER_OPTIMIZATION_SIZE`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Optimisation taille binaire"
+msgstr ""
+
+#: ../../configuration.md:114
+msgid ""
+"Après modification de `sdkconfig.defaults`, effacer le `sdkconfig` généré"
+" et relancer `idf.py build` pour adopter les nouvelles options."
+msgstr ""
+
+#: ../../configuration.md:119
+msgid "Profil prod (`sdkconfig.defaults.prod`)"
+msgstr ""
+
+#: ../../configuration.md:121
+msgid ""
+"Voir [Sécurité production](embewi-prod-security) pour la procédure "
+"complète."
+msgstr ""
+
+#: ../../configuration.md
+msgid "Effet"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_SECURE_BOOT_V2_ENABLED`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Bootloader refuse les images non signées"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_SECURE_FLASH_ENC_ENABLED`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Flash chiffrée (mode RELEASE)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_NVS_ENCRYPTION`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "NVS chiffré (schéma flash-enc, partition `nvs_keys`)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_EMBEWI_VERIFY_CORE_CERT`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "CA du Core embarquée pour authentifier les flux sortants"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_MBEDTLS_HAVE_TIME_DATE`"
+msgstr ""
+
+#: ../../configuration.md
+msgid ""
+"Vérifie `notBefore`/`notAfter` du cert Core (sinon ignoré "
+"silencieusement, défaut ESP-IDF) — canal de détresse tant que SNTP n'a "
+"pas convergé, voir [Sécurité production](embewi-prod-security)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_PARTITION_TABLE_OFFSET=0x10000`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Table de partition décalée (bootloader signé plus grand)"
+msgstr ""
+
+#: ../../configuration.md:132
+msgid ""
+"Ces options impliquent des opérations eFuse **irréversibles** au premier "
+"flash."
+msgstr ""
+
+#: ../../configuration.md:136
+msgid "Kconfig — options build"
+msgstr ""
+
+#: ../../configuration.md:138
+msgid "Accessibles via `idf.py menuconfig` :"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Symbole"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Défaut"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_EMBEWI_BUTTON_GPIO`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "9 (C3/C6/H2) / 0 (autres)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "GPIO bouton BOOT (défaut build, surchargeable via McuConfigMap)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_EMBEWI_WS2812_GPIO`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "10"
+msgstr ""
+
+#: ../../configuration.md
+msgid "GPIO LED WS2812B (défaut build, surchargeable via McuConfigMap)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`n`"
+msgstr ""
+
+#: ../../configuration.md
+msgid "Vérification CA Core sur flux sortants (prod)"
+msgstr ""
+
+#: ../../configuration.md
+msgid "`CONFIG_EMBEWI_ENABLE_IP_FILTER`"
+msgstr ""
+
+#: ../../configuration.md
+msgid ""
+"Filtrage IP inbound : rejette les connexions hors `allowed_cidr` avant "
+"tout handler (prod, voir [Sécurité production](embewi-prod-security))"
+msgstr ""
+

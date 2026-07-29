@@ -1,0 +1,509 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Embewi
+# This file is distributed under the same license as the Embewi Agent
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Embewi Agent \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-28 18:26+0200\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: en\n"
+"Language-Team: en <LL@li.org>\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../api.md:1
+msgid "API inbound (Core → Agent)"
+msgstr ""
+
+#: ../../api.md:3
+msgid ""
+"Tous les endpoints sont sous le préfixe `/v1alpha1` et servis en **HTTPS "
+":443**. Chaque appel doit porter un header `Authorization: Bearer "
+"<token>` — le token est établi au provisioning et stocké en NVS. Un token"
+" absent ou invalide retourne **401** sur **tous** les endpoints sans "
+"exception (y compris `/ota/activate`)."
+msgstr ""
+
+#: ../../api.md:8
+msgid ""
+"La comparaison du token est effectuée en **temps constant** (pas de "
+"court-circuit au premier octet différent) pour résister aux attaques "
+"temporelles."
+msgstr ""
+
+#: ../../api.md:13
+msgid "`GET /v1alpha1/info`"
+msgstr ""
+
+#: ../../api.md:15
+msgid ""
+"Identité matérielle, firmware courant et slot stagé (clé de "
+"l'idempotence)."
+msgstr ""
+
+#: ../../api.md:44
+msgid ""
+"`staged.state` ∈ `none | written | activating`. `staged.deployment_id` "
+"est renseigné dès l'écriture (`PUT /ota/write` avec header `X-Embewi-"
+"Deployment-Id`), avant même l'`activate`."
+msgstr ""
+
+#: ../../api.md:48
+msgid ""
+"`api_versions` liste les versions de protocole supportées, la plus élevée"
+" en premier (un seul protocole aujourd'hui : `v1alpha1`). Le Core choisit"
+" la version la plus élevée qu'il supporte ET que le device annonce ; "
+"champ absent (device antérieur à cette révision) → `v1alpha1` supposé. "
+"`GET /info` reste le point d'entrée stable de la négociation, quelle que "
+"soit l'évolution future du protocole."
+msgstr ""
+
+#: ../../api.md:57
+msgid "`GET /v1alpha1/health`"
+msgstr ""
+
+#: ../../api.md:59
+msgid "Health **local** (pas seulement connectivité réseau)."
+msgstr ""
+
+#: ../../api.md:73
+msgid ""
+"`status` ∈ `ok | degraded | fail`. `storage` est un canary NVS réel "
+"(write → commit → read → erase) — pas un flag en RAM."
+msgstr ""
+
+#: ../../api.md:78
+msgid "`POST /v1alpha1/ota/prepare`"
+msgstr ""
+
+#: ../../api.md:80
+msgid ""
+"Annonce le firmware avant transfert. L'agent vérifie la compatibilité "
+"**avant** tout octet. En cas de refus, retourne HTTP 200 avec `accepted: "
+"false` et un `reason` stable (§4b — ne pas parser les messages libres)."
+msgstr ""
+
+#: ../../api.md:84 ../../api.md:174 ../../api.md:229 ../../api.md:280
+msgid "Corps :"
+msgstr ""
+
+#: ../../api.md:97
+msgid "Réponse accept :"
+msgstr ""
+
+#: ../../api.md:103
+msgid "Réponse refus :"
+msgstr ""
+
+#: ../../api.md:109
+msgid "Codes `reason` stables :"
+msgstr ""
+
+#: ../../api.md
+msgid "`reason`"
+msgstr ""
+
+#: ../../api.md
+msgid "Cause"
+msgstr ""
+
+#: ../../api.md
+msgid "`chip_mismatch`"
+msgstr ""
+
+#: ../../api.md
+msgid "Binaire pour un autre SoC"
+msgstr ""
+
+#: ../../api.md
+msgid "`layout_mismatch`"
+msgstr ""
+
+#: ../../api.md
+msgid "`partition_layout` incompatible (seul `embewi-ab-v1` accepté)"
+msgstr ""
+
+#: ../../api.md
+msgid "`idf_incompatible`"
+msgstr ""
+
+#: ../../api.md
+msgid "`idf_version` d'un major IDF différent de celui du device"
+msgstr ""
+
+#: ../../api.md
+msgid "`size_too_large`"
+msgstr ""
+
+#: ../../api.md
+msgid "Image > taille du slot inactif"
+msgstr ""
+
+#: ../../api.md
+msgid "`busy`"
+msgstr ""
+
+#: ../../api.md
+msgid "Slot introuvable (OTA en cours ?)"
+msgstr ""
+
+#: ../../api.md:121
+msgid "`PUT /v1alpha1/ota/write`"
+msgstr ""
+
+#: ../../api.md:123
+msgid ""
+"Streame le `.bin` brut. L'agent calcule le SHA-256 **en incrémental** "
+"(PSA crypto, pas de relecture flash après coup)."
+msgstr ""
+
+#: ../../api.md:126
+msgid "Headers :"
+msgstr ""
+
+#: ../../api.md:136
+msgid "Reprise après coupure (`Content-Range`)"
+msgstr ""
+
+#: ../../api.md:138
+msgid ""
+"Le handle OTA et l'état SHA-256 sont **statiques** — ils survivent à une "
+"déconnexion TCP. Le Core chunke l'image et reprend à l'offset rapporté."
+msgstr ""
+
+#: ../../api.md
+msgid "Situation"
+msgstr ""
+
+#: ../../api.md
+msgid "Réponse agent"
+msgstr ""
+
+#: ../../api.md
+msgid "Header absent ou `start=0`"
+msgstr ""
+
+#: ../../api.md
+msgid "Nouvelle session, HTTP 200"
+msgstr ""
+
+#: ../../api.md
+msgid "`start` aligné sur `written`"
+msgstr ""
+
+#: ../../api.md
+msgid "Continue, HTTP 200"
+msgstr ""
+
+#: ../../api.md
+msgid "`start` désaligné"
+msgstr ""
+
+#: ../../api.md
+#, python-brace-format
+msgid "HTTP 416 + `{\"error\":\"range_mismatch\",\"written\":N}`"
+msgstr ""
+
+#: ../../api.md
+msgid "Header malformé"
+msgstr ""
+
+#: ../../api.md
+#, python-brace-format
+msgid "HTTP 400 + `{\"error\":\"bad_content_range\"}`"
+msgstr ""
+
+#: ../../api.md:148
+#, python-brace-format
+msgid "Réponse plage intermédiaire : `{\"status\":\"partial\",\"written\":N}`"
+msgstr ""
+
+#: ../../api.md:150
+msgid "Réponse finale (dernière plage ou monolithique) :"
+msgstr ""
+
+#: ../../api.md:156
+msgid "Codes `status` stables :"
+msgstr ""
+
+#: ../../api.md
+msgid "`status`"
+msgstr ""
+
+#: ../../api.md
+msgid "HTTP"
+msgstr ""
+
+#: ../../api.md
+msgid "`written`"
+msgstr ""
+
+#: ../../api.md
+msgid "200"
+msgstr ""
+
+#: ../../api.md
+msgid "Succès, digest vérifié"
+msgstr ""
+
+#: ../../api.md
+msgid "`partial`"
+msgstr ""
+
+#: ../../api.md
+msgid "Plage intermédiaire reçue"
+msgstr ""
+
+#: ../../api.md
+msgid "`digest_mismatch`"
+msgstr ""
+
+#: ../../api.md
+msgid "SHA-256 écrit ≠ `X-Embewi-Digest`"
+msgstr ""
+
+#: ../../api.md
+msgid "`write_failed`"
+msgstr ""
+
+#: ../../api.md
+msgid "500"
+msgstr ""
+
+#: ../../api.md
+msgid "Échec flash"
+msgstr ""
+
+#: ../../api.md
+msgid "`ota_begin_failed`"
+msgstr ""
+
+#: ../../api.md
+msgid "`esp_ota_begin` KO"
+msgstr ""
+
+#: ../../api.md:168
+msgid "`POST /v1alpha1/ota/activate`"
+msgstr ""
+
+#: ../../api.md:170
+msgid ""
+"Configure le prochain boot et redémarre. L'agent effectue "
+"`set_boot_partition` **avant** de répondre — si le slot n'est pas prêt "
+"(session non initialisée), répond `409` sans rebooter (pas de faux "
+"\"rebooting\")."
+msgstr ""
+
+#: ../../api.md:180
+msgid "Réponse (succès) :"
+msgstr ""
+
+#: ../../api.md:186
+msgid "Réponse (slot non prêt) :"
+msgstr ""
+
+#: ../../api.md:193
+msgid ""
+"**Reprise après reboot de l'agent** : si l'agent redémarre entre `write` "
+"et `activate`, il restaure le `s_target` depuis le NVS stagé "
+"(`staged.state == written`). Le Core peut relancer `POST /ota/activate` "
+"normalement."
+msgstr ""
+
+#: ../../api.md:199
+msgid "`GET /v1alpha1/config`"
+msgstr ""
+
+#: ../../api.md:201
+msgid "État de la configuration en deux vues :"
+msgstr ""
+
+#: ../../api.md:202
+msgid "`active` : snapshot figé au boot (ce que les apps ont chargé)."
+msgstr ""
+
+#: ../../api.md:203
+msgid ""
+"`nvs` : NVS courant (peut diverger si un `POST /config` a eu lieu sans "
+"reboot)."
+msgstr ""
+
+#: ../../api.md:220
+msgid "`generation > active_generation` → config poussée, reboot en attente."
+msgstr ""
+
+#: ../../api.md:224
+msgid "`POST /v1alpha1/config`"
+msgstr ""
+
+#: ../../api.md:226
+msgid ""
+"Pousse des clés/valeurs vers le NVS. Sémantique **merge-on-key** : seules"
+" les clés citées sont modifiées. Valeur `\"\"` = effacer la clé (retour "
+"au défaut build)."
+msgstr ""
+
+#: ../../api.md:235
+msgid "Réponse :"
+msgstr ""
+
+#: ../../api.md:241
+msgid "Codes d'erreur :"
+msgstr ""
+
+#: ../../api.md
+msgid "`error`"
+msgstr ""
+
+#: ../../api.md
+msgid "`missing_data_field`"
+msgstr ""
+
+#: ../../api.md
+msgid "400"
+msgstr ""
+
+#: ../../api.md
+msgid "Objet `data` absent"
+msgstr ""
+
+#: ../../api.md
+msgid "`nvs_write_failed`"
+msgstr ""
+
+#: ../../api.md
+msgid "Échec écriture NVS"
+msgstr ""
+
+#: ../../api.md:250
+msgid "`POST /v1alpha1/reboot`"
+msgstr ""
+
+#: ../../api.md:252
+msgid ""
+"Reboot contrôlé sans OTA. À utiliser pour appliquer un `POST /config`. Si"
+" un OTA est planifié dans la même réconciliation, ne pas appeler "
+"`/reboot` séparément — `POST /ota/activate` couvre déjà le reboot."
+msgstr ""
+
+#: ../../api.md:256
+#, python-brace-format
+msgid "Corps : `{}`"
+msgstr ""
+
+#: ../../api.md:258
+#, python-brace-format
+msgid "Réponse : `{ \"status\": \"rebooting\" }`"
+msgstr ""
+
+#: ../../api.md:262
+msgid "`POST /v1alpha1/app/port`"
+msgstr ""
+
+#: ../../api.md:264
+msgid "Reconfigure le port TCP du service applicatif (persisté en NVS)."
+msgstr ""
+
+#: ../../api.md:266
+#, python-brace-format
+msgid "Corps : `{ \"port\": 9090 }`"
+msgstr ""
+
+#: ../../api.md:268
+#, python-brace-format
+msgid "Réponse : `{ \"status\": \"saved\", \"port\": 9090, \"app_port\": 9090 }`"
+msgstr ""
+
+#: ../../api.md:270
+msgid "Contrainte : `1024 ≤ port ≤ 65535`."
+msgstr ""
+
+#: ../../api.md:274
+msgid "`POST /v1alpha1/tls/cert`"
+msgstr ""
+
+#: ../../api.md:276
+msgid ""
+"Pousse un certificat TLS et sa clé privée PEM pour le serveur HTTPS de "
+"l'agent. Effectif au prochain reboot. Utiliser les noms de champs "
+"`cert_pem` / `key_pem` (spécification v2) — les anciens noms `cert` / "
+"`key` restent acceptés."
+msgstr ""
+
+#: ../../api.md:289
+#, python-brace-format
+msgid ""
+"Réponse : `{ \"status\": \"saved\", \"note\": \"effective_after_reboot\" "
+"}`"
+msgstr ""
+
+#: ../../api.md:293
+msgid "`POST /v1alpha1/token`"
+msgstr ""
+
+#: ../../api.md:295
+msgid ""
+"Rotation du token Bearer sans repasser par le provisioning physique. "
+"Authentifié au token **courant**. Le nouveau token est commité en NVS "
+"**avant** la réponse — si le commit échoue, l'ancien token reste actif."
+msgstr ""
+
+#: ../../api.md:299
+#, python-brace-format
+msgid "Corps : `{ \"token\": \"<nouveau-token>\" }`"
+msgstr ""
+
+#: ../../api.md:301
+#, python-brace-format
+msgid "Réponse : `{ \"status\": \"rotated\" }`"
+msgstr ""
+
+#: ../../api.md:303
+msgid "Contrainte : `8 ≤ len(token) ≤ 64`. Un token vide est refusé (`400`)."
+msgstr ""
+
+#: ../../api.md:307
+msgid "Erreurs transverses"
+msgstr ""
+
+#: ../../api.md
+msgid "`unauthorized`"
+msgstr ""
+
+#: ../../api.md
+msgid "401"
+msgstr ""
+
+#: ../../api.md
+msgid "Token absent ou invalide"
+msgstr ""
+
+#: ../../api.md
+msgid "`body_too_large`"
+msgstr ""
+
+#: ../../api.md
+msgid "413"
+msgstr ""
+
+#: ../../api.md
+msgid "Corps > limite (512 B général, 6 KB pour `/tls/cert`)"
+msgstr ""
+
+#: ../../api.md:314
+msgid ""
+"**Convention §4b** : un refus **métier** (`prepare` rejeté, "
+"`digest_mismatch`) répond HTTP **200** avec le code dans le corps. Les "
+"`4xx/5xx` sont réservés aux erreurs de protocole ou de ressource. Les "
+"codes sont stables — le Core les mappe en Kubernetes Events."
+msgstr ""
+

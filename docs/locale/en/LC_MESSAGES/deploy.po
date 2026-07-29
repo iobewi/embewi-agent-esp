@@ -1,0 +1,117 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Embewi
+# This file is distributed under the same license as the Embewi Agent
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Embewi Agent \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-28 18:26+0200\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: en\n"
+"Language-Team: en <LL@li.org>\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../deploy.md:1
+msgid "Déployer un workload"
+msgstr ""
+
+#: ../../deploy.md:3
+msgid ""
+"Cette page couvre la construction de l'artefact OTA et son déploiement "
+"sur les devices via le Core Kubernetes. Pour écrire le code du workload, "
+"voir [Développer un workload](workload)."
+msgstr ""
+
+#: ../../deploy.md:9
+msgid "Construire l'artefact OTA"
+msgstr ""
+
+#: ../../deploy.md:11
+msgid ""
+"L'artefact OTA est le binaire complet produit par `idf.py build` — "
+"firmware agent + workload statiquement liés. C'est exactement ce que le "
+"Core pousse via `PUT /ota/write`."
+msgstr ""
+
+#: ../../deploy.md:15
+msgid "Sélectionner le workload"
+msgstr ""
+
+#: ../../deploy.md:17
+msgid "Dans `main/CMakeLists.txt` :"
+msgstr ""
+
+#: ../../deploy.md:23
+msgid "Build de développement (non signé)"
+msgstr ""
+
+#: ../../deploy.md:34
+msgid "Build de production (signé Secure Boot v2)"
+msgstr ""
+
+#: ../../deploy.md:44
+msgid ""
+"Voir [Sécurité de production](embewi-prod-security) pour la gestion des "
+"clés de signature et la procédure de premier flash."
+msgstr ""
+
+#: ../../deploy.md:49
+msgid "Extraire taille et digest"
+msgstr ""
+
+#: ../../deploy.md:51
+msgid "Le Core a besoin de ces deux valeurs pour `POST /ota/prepare` :"
+msgstr ""
+
+#: ../../deploy.md:63
+msgid ""
+"Toujours calculer `size` et `digest` sur l'artefact **effectivement "
+"transmis** au Core. Le binaire signé est plus grand que le brut "
+"(signature RSA-3072 annexée) — leurs digests diffèrent."
+msgstr ""
+
+#: ../../deploy.md:67
+msgid "Corps de `POST /ota/prepare` :"
+msgstr ""
+
+#: ../../deploy.md:82
+msgid "McuConfigMap — préparer la configuration"
+msgstr ""
+
+#: ../../deploy.md:84
+msgid ""
+"Avant de déployer, créer (ou mettre à jour) le `McuConfigMap` avec les "
+"clés nécessaires au workload :"
+msgstr ""
+
+#: ../../deploy.md:97
+msgid "Le référencer dans le `McuDeployment` :"
+msgstr ""
+
+#: ../../deploy.md:108
+msgid ""
+"Le Core réconciliera automatiquement `McuConfigMap.data` contre l'état "
+"NVS du device via `POST /config`, puis déclenchera un reboot si "
+"nécessaire."
+msgstr ""
+
+#: ../../deploy.md:113
+msgid "Séquence complète Core → device"
+msgstr ""
+
+#: ../../deploy.md:131
+msgid ""
+"En cas d'interruption réseau entre les étapes, le Core reprend le "
+"reconcile depuis `GET /info` (`staged.state` + `staged.deployment_id`). "
+"Voir [API inbound](api) pour la logique de reprise `Content-Range`."
+msgstr ""
+
