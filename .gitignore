@@ -15,9 +15,16 @@ work/
 _old/
 artifacts/
 
+# Rust
+**/*.rs.bk
+*.pdb
+
 # IDE
 .vscode/
 .idea/
+.zed/
+.helix/
+.nvim.lua
 *.swp
 *.swo
 *~
