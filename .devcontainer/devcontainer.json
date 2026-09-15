@@ -1,5 +1,5 @@
 {
-    "name": "Embewi ESP32-S3 Rust",
+    "name": "Embewi ESP32 Rust",
 
     "build": {
         "dockerfile": "../docker/Dockerfile",

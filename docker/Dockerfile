@@ -45,7 +45,6 @@ RUN cargo install espup --locked
 
 RUN mkdir -p /opt/esp \
     && espup install \
-        --targets esp32s3 \
         --export-file /opt/esp/export-esp.sh
 
 # Make espup environment available in interactive shells.
@@ -67,6 +66,9 @@ RUN cargo install espflash --locked \
 # ---------------------------------------------------------------------------
 
 RUN npm install -g http-server
+
+# Installer Claude Code via npm
+RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /workspace
 
