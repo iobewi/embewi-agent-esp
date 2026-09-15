@@ -1,0 +1,31 @@
+# Build output
+/target/
+
+# Secrets / per-node config (ne jamais committer)
+nvs_*.csv
+*.pem
+*.key
+*.crt
+*.der
+
+# Temporary / local
+tmp/
+work/
+_old/
+artifacts/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+settings.local.json
+
+# Documentation build
+site/
+docs/_build/
+.venv-docs/
