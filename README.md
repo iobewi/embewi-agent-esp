@@ -18,3 +18,17 @@ vérité Core ↔ Agent, inchangée par la migration de langage.
 ## Build
 
 _À définir — toolchain et structure du projet Rust en cours de mise en place._
+
+## Installation firmware (ESP Web Tools)
+
+Le devcontainer sert `web/` — une page qui permet de flasher le firmware
+depuis le navigateur (Chrome/Edge, via Web Serial), sans toolchain côté
+client.
+
+- Servi automatiquement au démarrage du conteneur (`postStartCommand`) sur
+  le port `8080`, forwardé par le devcontainer sous le label
+  "ESP Web Tools".
+- Les images flashables (`web/firmware/<chip>/firmware.bin`) ne sont pas
+  commitées : à régénérer après chaque build avec `scripts/save-image.sh`.
+
+Détails dans [`web/README.md`](web/README.md).
