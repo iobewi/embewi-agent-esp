@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Embewi Agent — Installation</title>
+    <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 32rem;
+            margin: 3rem auto;
+            padding: 0 1rem;
+            color: #1a1a1a;
+        }
+        h1 { font-size: 1.4rem; }
+        p { line-height: 1.5; }
+        esp-web-install-button {
+            display: block;
+            margin: 1.5rem 0;
+        }
+        code {
+            background: #f0f0f0;
+            padding: 0.1rem 0.3rem;
+            border-radius: 0.2rem;
+        }
+    </style>
+</head>
+<body>
+    <h1>Embewi Agent</h1>
+    <p>
+        Flashe le firmware directement depuis le navigateur (Chrome / Edge,
+        via Web Serial) en connectant l'ESP32 en USB.
+    </p>
+
+    <esp-web-install-button manifest="manifest.json">
+        <button slot="activate">Installer le firmware</button>
+        <span slot="unsupported">
+            Ton navigateur ne supporte pas Web Serial — utilise Chrome ou Edge.
+        </span>
+        <span slot="not-allowed">
+            Cette page doit être servie en HTTPS (ou localhost) pour installer le firmware.
+        </span>
+    </esp-web-install-button>
+
+    <p>
+        Servi localement par le conteneur de dev via
+        <code>http-server web -p 8080</code>.
+    </p>
+</body>
+</html>

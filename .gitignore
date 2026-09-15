@@ -1,5 +1,6 @@
 # Build output
 /target/
+web/firmware/**/*.bin
 
 # Secrets / per-node config (ne jamais committer)
 nvs_*.csv
