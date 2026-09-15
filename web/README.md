@@ -17,13 +17,14 @@ chaque build.
 ## Générer une image flashable
 
 ```sh
-espflash save-image --chip esp32 --merge \
-    target/xtensa-esp32-none-elf/release/<bin> \
-    web/firmware/esp32/firmware.bin
+BIN_NAME=<nom-du-binaire> scripts/save-image.sh esp32
 ```
 
-Adapter `--chip` / le triple cible / le chemin de sortie pour `esp32c3` et
-`esp32s3`.
+Le script (`scripts/save-image.sh`, à la racine) déduit le triple cible
+(Xtensa vs RISC-V) à partir du chip demandé — une simple variable `CHIP` ne
+suffit pas, chaque famille de puce ayant un triple différent — et écrit le
+résultat dans `web/firmware/<chip>/firmware.bin`. Chips supportés :
+`esp32`, `esp32s2`, `esp32s3`, `esp32c2`, `esp32c3`, `esp32c6`, `esp32h2`.
 
 ## Servir la page en local
 
