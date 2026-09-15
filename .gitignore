@@ -37,3 +37,5 @@ settings.local.json
 site/
 docs/_build/
 .venv-docs/
+
+tmp/
