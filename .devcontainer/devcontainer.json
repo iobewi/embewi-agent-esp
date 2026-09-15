@@ -41,5 +41,7 @@
 
     "postCreateCommand": "bash -lc '. /opt/esp/export-esp.sh && rustc --version && cargo --version && espup --version && espflash --version && esp-generate --version'",
 
+    "postStartCommand": "bash -lc 'pkill -f \"http-server /workspace/web\" || true; nohup http-server /workspace/web -p 8080 -c-1 > /tmp/http-server.log 2>&1 & disown'",
+
     "remoteUser": "root"
 }
