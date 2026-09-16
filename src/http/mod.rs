@@ -53,32 +53,59 @@ struct HardwareForm {
     led_gpio: u8,
 }
 
-fn page(current: Option<u8>, message: Option<(&str, bool)>) -> String {
+#[derive(serde::Deserialize)]
+struct IdentityForm {
+    node_id: String,
+    ctrl_url: String,
+    token: String,
+}
+
+/// Escapes `&`/`<`/`>`/`"` so `node_id`/`ctrl_url` -- admin-supplied,
+/// reflected back into `value="..."` attributes -- can't break out of the
+/// attribute or inject markup.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Wraps `text` in the same `<p class="message[ error]">` markup `page()`
+/// used to build inline -- factored out so `/identity`'s multi-paragraph
+/// token confirmation can reuse it too instead of duplicating the class
+/// names.
+fn message_html(text: &str, is_error: bool) -> String {
+    let class = if is_error { "message error" } else { "message" };
+    format!("<p class=\"{class}\">{text}</p>")
+}
+
+fn page(led_gpio: Option<u8>, node_id: &str, ctrl_url: &str, message: Option<&str>) -> String {
     let mut options = String::new();
     let _ = write!(
         options,
         "<option value=\"{LED_DISABLED}\"{}>D\u{e9}sactiv\u{e9}e</option>",
-        if current.is_none() { " selected" } else { "" }
+        if led_gpio.is_none() { " selected" } else { "" }
     );
     for gpio in 0..=MAX_GPIO {
         let _ = write!(
             options,
             "<option value=\"{gpio}\"{}>{gpio}</option>",
-            if current == Some(gpio) { " selected" } else { "" }
+            if led_gpio == Some(gpio) { " selected" } else { "" }
         );
     }
 
-    let message = match message {
-        Some((text, is_error)) => {
-            let class = if is_error { "message error" } else { "message" };
-            format!("<p class=\"{class}\">{text}</p>")
-        }
-        None => String::new(),
-    };
-
     INDEX_TEMPLATE
         .replace("{{OPTIONS}}", &options)
-        .replace("{{MESSAGE}}", &message)
+        .replace("{{MESSAGE}}", message.unwrap_or_default())
+        .replace("{{NODE_ID}}", &html_escape(node_id))
+        .replace("{{CTRL_URL}}", &html_escape(ctrl_url))
 }
 
 /// Gives the response time to actually reach the socket before resetting --
@@ -126,30 +153,70 @@ pub async fn run(
         .route(
             "/",
             get(move || async move {
-                let mut storage = storage.lock().await;
-                if storage.is_locked() {
+                let (locked, led_gpio) = {
+                    let mut storage = storage.lock().await;
+                    (storage.is_locked(), storage.load_led_gpio())
+                };
+                if locked {
                     return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
                         .with_content_type("text/html; charset=utf-8");
                 }
-                let current = storage.load_led_gpio();
-                Response::ok(page(current, None)).with_content_type("text/html; charset=utf-8")
+                let node_id = agent::node_id(storage).await;
+                let ctrl_url = agent::ctrl_url(storage).await;
+                Response::ok(page(led_gpio, &node_id, &ctrl_url, None))
+                    .with_content_type("text/html; charset=utf-8")
             })
             .post(move |Form(form): Form<HardwareForm>| async move {
-                let mut storage = storage.lock().await;
-                if storage.is_locked() {
+                let locked = {
+                    let mut guard = storage.lock().await;
+                    guard.is_locked()
+                };
+                if locked {
                     return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
                         .with_content_type("text/html; charset=utf-8");
                 }
+                let node_id = agent::node_id(storage).await;
+                let ctrl_url = agent::ctrl_url(storage).await;
                 let gpio = (form.led_gpio != LED_DISABLED).then_some(form.led_gpio);
                 if gpio.is_some_and(|gpio| gpio > MAX_GPIO) {
                     return Response::new(
                         StatusCode::BAD_REQUEST,
-                        page(None, Some(("Broche hors plage pour cette puce.", true))),
+                        page(
+                            None,
+                            &node_id,
+                            &ctrl_url,
+                            Some(&message_html("Broche hors plage pour cette puce.", true)),
+                        ),
                     )
                     .with_content_type("text/html; charset=utf-8");
                 }
-                storage.save_led_gpio(gpio);
-                Response::ok(page(gpio, Some(("Enregistr\u{e9}.", false))))
+                storage.lock().await.save_led_gpio(gpio);
+                Response::ok(page(gpio, &node_id, &ctrl_url, Some(&message_html("Enregistr\u{e9}.", false))))
+                    .with_content_type("text/html; charset=utf-8")
+            }),
+        )
+        .route(
+            "/identity",
+            picoserve::routing::post(move |Form(form): Form<IdentityForm>| async move {
+                let (locked, led_gpio) = {
+                    let mut guard = storage.lock().await;
+                    (guard.is_locked(), guard.load_led_gpio())
+                };
+                if locked {
+                    return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
+                        .with_content_type("text/html; charset=utf-8");
+                }
+                let fresh_token =
+                    agent::save_identity(storage, &form.node_id, &form.ctrl_url, &form.token).await;
+                let message = match &fresh_token {
+                    Some(token) => format!(
+                        "<p class=\"message\">Identit\u{e9} enregistr\u{e9}e. Token \
+                        (copie-le maintenant, il ne sera plus affich\u{e9}) :</p>\
+                        <p class=\"message\"><code>{token}</code></p>"
+                    ),
+                    None => message_html("Identit\u{e9} enregistr\u{e9}e.", false),
+                };
+                Response::ok(page(led_gpio, &form.node_id, &form.ctrl_url, Some(&message)))
                     .with_content_type("text/html; charset=utf-8")
             }),
         )

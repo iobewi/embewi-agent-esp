@@ -34,6 +34,24 @@
 
     <p class="hint">Un redémarrage est nécessaire pour appliquer un changement.</p>
 
+    <form class="card" method="post" action="/identity">
+      <label for="node_id">Identifiant du nœud (node_id)</label>
+      <input type="text" id="node_id" name="node_id" maxlength="63" required value="{{NODE_ID}}">
+
+      <label for="ctrl_url">URL du contrôleur Kubernetes</label>
+      <input type="text" id="ctrl_url" name="ctrl_url" maxlength="128" placeholder="http://192.168.1.10:8080" value="{{CTRL_URL}}">
+
+      <label for="token">Token (laisser vide pour conserver l'actuel, ou en générer un)</label>
+      <input type="text" id="token" name="token" maxlength="64" autocomplete="off" placeholder="auto">
+
+      <button class="primary" type="submit">Enregistrer l'identité</button>
+    </form>
+
+    <p class="hint">
+      Un token vide génère un nouveau token seulement s'il n'y en a pas
+      encore ; il ne sera affiché qu'une seule fois, à cet instant.
+    </p>
+
     <form
       class="card"
       method="post"

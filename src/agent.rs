@@ -10,6 +10,7 @@
 use alloc::format;
 use alloc::string::String;
 use core::convert::Infallible;
+use core::fmt::Write as _;
 
 use esp_nvs::Key;
 use picoserve::extract::FromRequestParts;
@@ -27,6 +28,7 @@ pub const FW_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const NAMESPACE: Key = Key::from_str("agent");
 const KEY_NODE_ID: Key = Key::from_str("node_id");
+const KEY_CTRL_URL: Key = Key::from_str("ctrl_url");
 const KEY_TOKEN: Key = Key::from_str("token");
 
 /// The device's `node_id` (contrat §1a): the NVS value if provisioned, else
@@ -39,6 +41,69 @@ pub async fn node_id(storage: &SharedStorage) -> String {
     let mac = esp_hal::efuse::base_mac_address();
     let mac = mac.as_bytes();
     format!("embewi-{:02x}{:02x}{:02x}", mac[3], mac[4], mac[5])
+}
+
+/// The Kubernetes controller URL (contrat §1a), empty if not yet
+/// provisioned. Outbound flows (heartbeat/logs, once built) should treat an
+/// empty `ctrl_url` as "nothing to talk to yet" and stay quiet, same as the
+/// reference implementation.
+pub async fn ctrl_url(storage: &SharedStorage) -> String {
+    storage
+        .lock()
+        .await
+        .get_string(&NAMESPACE, &KEY_CTRL_URL)
+        .unwrap_or_default()
+}
+
+/// Whether a token has been provisioned -- i.e. whether any inbound call
+/// could ever succeed (contrat §1a).
+pub async fn is_provisioned(storage: &SharedStorage) -> bool {
+    storage.lock().await.get_string(&NAMESPACE, &KEY_TOKEN).is_some()
+}
+
+/// 128-bit random token, hex-encoded (contrat §1a: "token vide → généré
+/// aléatoirement par le device"). True randomness needs the RF subsystem up
+/// (Wi-Fi) -- always the case here, since this is only ever called from the
+/// HTTP config page, itself only reachable once on Wi-Fi.
+fn generate_token() -> String {
+    let mut bytes = [0u8; 16];
+    esp_hal::rng::Rng::new().read(&mut bytes);
+    let mut token = String::with_capacity(32);
+    for b in bytes {
+        let _ = write!(token, "{b:02x}");
+    }
+    token
+}
+
+/// Saves `node_id`/`ctrl_url`. `presented_token` empty means "keep the
+/// existing token, or generate a fresh one if there isn't one yet" (contrat
+/// §1a) -- it never clears an existing token, matching `POST /token`'s own
+/// refusal of an empty value (§4: "on ne désactive pas l'auth par
+/// rotation"). Returns the effective token *only* when this call just
+/// generated or changed it, so the caller can display it once (contrat:
+/// "token affiché UNE SEULE FOIS") -- `None` for an unrelated save (e.g.
+/// just editing `ctrl_url`) that shouldn't re-display an already-known
+/// token.
+pub async fn save_identity(
+    storage: &SharedStorage,
+    node_id: &str,
+    ctrl_url: &str,
+    presented_token: &str,
+) -> Option<String> {
+    let mut storage = storage.lock().await;
+    storage.set_string(&NAMESPACE, &KEY_NODE_ID, node_id);
+    storage.set_string(&NAMESPACE, &KEY_CTRL_URL, ctrl_url);
+
+    if !presented_token.is_empty() {
+        storage.set_string(&NAMESPACE, &KEY_TOKEN, presented_token);
+        return Some(String::from(presented_token));
+    }
+    if storage.get_string(&NAMESPACE, &KEY_TOKEN).is_none() {
+        let token = generate_token();
+        storage.set_string(&NAMESPACE, &KEY_TOKEN, &token);
+        return Some(token);
+    }
+    None
 }
 
 /// Extracts the raw Bearer token from the `Authorization` header, if any
