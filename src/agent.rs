@@ -1,12 +1,12 @@
 //! Embewi contract v1alpha1 -- inbound API surface (Core -> ESP), §4.
 //!
-//! Only `GET /v1alpha1/info` is implemented so far. Fields that depend on
-//! subsystems not built yet (OTA A/B -- `staged`, `active_slot`,
-//! `firmware.digest`; McuConfigMap -- `config_generation`) are honest
-//! placeholders, not guesses: `staged.state` really is `"none"` because no
-//! OTA write has ever happened, `config_generation` really is `0` because
-//! nothing has ever bumped it. They'll become real once those phases land.
+//! OTA A/B isn't built yet: `Info::staged`/`active_slot`/`firmware.digest`
+//! are honest placeholders, not guesses -- `staged.state` really is
+//! `"none"` because no OTA write has ever happened. `config_generation`
+//! and `app_port`, by contrast, are real now (McuConfigMap and the app
+//! port are both just NVS-backed, no OTA subsystem needed).
 
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use core::convert::Infallible;
@@ -15,7 +15,7 @@ use core::fmt::Write as _;
 use esp_nvs::Key;
 use picoserve::extract::FromRequestParts;
 use picoserve::request::RequestParts;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 use crate::storage::SharedStorage;
@@ -136,11 +136,90 @@ pub async fn is_authorized(storage: &SharedStorage, presented: &str) -> bool {
     token.as_bytes().ct_eq(presented.as_bytes()).into()
 }
 
-// No OTA/self-check/McuConfigMap subsystems yet -- shared with `health()`
-// below so both endpoints agree, instead of two independently-guessed
-// literals drifting apart later.
+/// Why a `POST /v1alpha1/token` call was refused (contrat §4).
+pub enum RotateTokenError {
+    /// Not the contract's stable vocabulary (§4b lists no named code for
+    /// this one) -- the endpoint's own doc just says 400 + this message.
+    InvalidLength,
+    /// Contrat §4b: `nvs_write_failed`, HTTP 500. The commit is verified by
+    /// reading the value straight back -- `Storage::set_string` itself is
+    /// fire-and-forget, this is the only signal available that it actually
+    /// landed, and the contract requires knowing before responding "rotated"
+    /// ("l'écriture NVS est commitée avant la réponse").
+    WriteFailed,
+}
+
+/// Rotates the Bearer token (contrat §4). Authorization (checking the
+/// *current* token) is the caller's job, same as every other endpoint --
+/// see [`is_authorized`]. An empty token is refused up front: rotation
+/// never doubles as a way to disable auth (§4: "on ne désactive pas l'auth
+/// par rotation").
+pub async fn rotate_token(storage: &SharedStorage, new_token: &str) -> Result<(), RotateTokenError> {
+    if !(8..=64).contains(&new_token.len()) {
+        return Err(RotateTokenError::InvalidLength);
+    }
+    let mut storage = storage.lock().await;
+    storage.set_string(&NAMESPACE, &KEY_TOKEN, new_token);
+    if storage.get_string(&NAMESPACE, &KEY_TOKEN).as_deref() == Some(new_token) {
+        Ok(())
+    } else {
+        Err(RotateTokenError::WriteFailed)
+    }
+}
+
+/// The app service's TCP port (contrat §4, `POST /app/port`) -- see
+/// `Storage::load_app_port`'s doc comment for the default.
+pub async fn app_port(storage: &SharedStorage) -> u16 {
+    storage.lock().await.load_app_port()
+}
+
+/// `GET /v1alpha1/config` response body (contrat §4a).
+#[derive(Serialize)]
+pub struct Config {
+    generation: u32,
+    active_generation: u32,
+    active: BTreeMap<String, String>,
+    nvs: BTreeMap<String, String>,
+}
+
+pub async fn config(storage: &SharedStorage) -> Config {
+    let mut storage = storage.lock().await;
+    Config {
+        generation: storage.cfg_generation(),
+        active_generation: storage.active_cfg_generation(),
+        active: storage.active_cfg().clone(),
+        nvs: storage.cfg_entries(),
+    }
+}
+
+/// `POST /v1alpha1/config` request body (contrat §4a): merge-on-key, an
+/// empty value erases that key back to its build default.
+#[derive(Deserialize)]
+pub struct ConfigPush {
+    data: BTreeMap<String, String>,
+}
+
+/// Applies a McuConfigMap push. `None` if `data` was empty or every key in
+/// it was rejected (internal `_`-prefixed or malformed) -- a true no-op,
+/// so the generation isn't bumped for nothing (contrat: bumped "à chaque
+/// `POST /config`", but an all-rejected push saved nothing to bump for).
+pub async fn push_config(storage: &SharedStorage, push: &ConfigPush) -> Option<u32> {
+    let mut storage = storage.lock().await;
+    let mut changed = false;
+    for (key, value) in &push.data {
+        if key.starts_with('_') {
+            continue; // internal keys stay opaque, never admin-writable
+        }
+        storage.cfg_set(key, value);
+        changed = true;
+    }
+    changed.then(|| storage.cfg_bump_generation())
+}
+
+// No OTA/self-check subsystem yet -- shared with `health()` below so both
+// endpoints agree, instead of two independently-guessed literals drifting
+// apart later.
 const STATE: &str = "running";
-const CONFIG_GENERATION: u32 = 0;
 
 #[derive(Serialize)]
 struct Firmware {
@@ -169,6 +248,10 @@ pub struct Info {
 }
 
 pub async fn info(storage: &SharedStorage) -> Info {
+    let (config_generation, app_port) = {
+        let mut storage = storage.lock().await;
+        (storage.cfg_generation(), storage.load_app_port())
+    };
     Info {
         node_id: node_id(storage).await,
         api_versions: API_VERSIONS,
@@ -178,10 +261,8 @@ pub async fn info(storage: &SharedStorage) -> Info {
         // until a write actually lands on the inactive slot.
         staged: Staged { state: "none" },
         state: STATE,
-        config_generation: CONFIG_GENERATION,
-        // This HTTP server *is* the app service for now (single binary,
-        // no separate workload process) -- 80, matching http/mod.rs.
-        app_port: 80,
+        config_generation,
+        app_port,
     }
 }
 

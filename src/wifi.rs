@@ -229,8 +229,12 @@ impl WifiManager {
         let stack = radio.stack;
 
         if let Some(lpwr) = self.lpwr.take() {
+            // contrat §4, `POST /app/port`: whatever was last saved (80 if
+            // never touched) -- fetched here rather than threaded in from
+            // main.rs, since `connect` already has `storage` in hand.
+            let port = crate::agent::app_port(storage).await;
             self.spawner
-                .spawn(crate::http::run(stack, storage, self.spawner, lpwr).unwrap());
+                .spawn(crate::http::run(stack, storage, self.spawner, lpwr, port).unwrap());
             // SNTP (contrat §5): starts as soon as the network is up, same
             // one-shot guard as the HTTP server above.
             self.spawner.spawn(crate::time::sync_task(stack).unwrap());

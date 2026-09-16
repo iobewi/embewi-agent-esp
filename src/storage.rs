@@ -5,7 +5,9 @@
 //! pointed at the same partition (one per feature that wants to persist
 //! something) would each have a stale view of the other's writes.
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -33,12 +35,31 @@ const KEY_LED_GPIO: Key = Key::from_str("led_gpio");
 
 const SYSTEM_NAMESPACE: Key = Key::from_str("system");
 const KEY_LOCKED: Key = Key::from_str("locked");
+const KEY_APP_PORT: Key = Key::from_str("app_port");
+
+/// McuConfigMap (contrat §4a/§7a): arbitrary admin-defined key/value pairs,
+/// opaque to the agent. Internal keys here are prefixed `_` (currently just
+/// the generation counter), excluded from what admins can write or see
+/// dumped back -- same convention the C reference uses.
+const CFG_NAMESPACE: Key = Key::from_str("cfg");
+const KEY_CFG_GENERATION: Key = Key::from_str("_gen");
+/// NVS keys are capped at 15 bytes (`esp_nvs::MAX_KEY_LENGTH`); admin-
+/// supplied config keys need checking against that *before* `Key::from_str`,
+/// which panics past it rather than erroring.
+const MAX_CFG_KEY_LEN: usize = 15;
 
 pub struct Storage {
     /// `None` if the partition couldn't be opened (logged when that
     /// happens); reads then return `None` and writes are silently dropped,
     /// same as an empty/never-written store.
     nvs: Option<Nvs<FlashStorage<'static>>>,
+    /// McuConfigMap snapshot taken once, right here at construction (which
+    /// only ever happens once, at boot) -- contrat §4a: "L'agent lit la
+    /// config NVS une seule fois au boot." Stays frozen even if `POST
+    /// /config` changes the live NVS values afterward; `GET /config`
+    /// reports both, so the Core can tell "saved" apart from "active".
+    active_cfg: BTreeMap<String, String>,
+    active_cfg_generation: u32,
 }
 
 impl Storage {
@@ -50,7 +71,10 @@ impl Storage {
                 None
             }
         };
-        Self { nvs }
+        let mut storage = Self { nvs, active_cfg: BTreeMap::new(), active_cfg_generation: 0 };
+        storage.active_cfg_generation = storage.cfg_generation();
+        storage.active_cfg = storage.cfg_entries();
+        storage
     }
 
     pub fn get_string(&mut self, namespace: &Key, key: &Key) -> Option<String> {
@@ -74,6 +98,22 @@ impl Storage {
     }
 
     pub fn set_bool(&mut self, namespace: &Key, key: &Key, value: bool) {
+        self.set(namespace, key, value);
+    }
+
+    pub fn get_u16(&mut self, namespace: &Key, key: &Key) -> Option<u16> {
+        self.get(namespace, key)
+    }
+
+    pub fn set_u16(&mut self, namespace: &Key, key: &Key, value: u16) {
+        self.set(namespace, key, value);
+    }
+
+    pub fn get_u32(&mut self, namespace: &Key, key: &Key) -> Option<u32> {
+        self.get(namespace, key)
+    }
+
+    pub fn set_u32(&mut self, namespace: &Key, key: &Key, value: u32) {
         self.set(namespace, key, value);
     }
 
@@ -114,6 +154,80 @@ impl Storage {
             Some(gpio) => self.set_u8(&HW_NAMESPACE, &KEY_LED_GPIO, gpio),
             None => self.delete(&HW_NAMESPACE, &KEY_LED_GPIO),
         }
+    }
+
+    /// The app service's TCP port (contrat §4, `POST /app/port`). `80` if
+    /// never set -- matches what this agent has always bound to, since
+    /// there's no separate workload process here for the default to differ
+    /// from (see `agent.rs`'s doc comment on `Info::app_port`).
+    pub fn load_app_port(&mut self) -> u16 {
+        self.get_u16(&SYSTEM_NAMESPACE, &KEY_APP_PORT).unwrap_or(80)
+    }
+
+    pub fn save_app_port(&mut self, port: u16) {
+        self.set_u16(&SYSTEM_NAMESPACE, &KEY_APP_PORT, port);
+    }
+
+    /// Current McuConfigMap generation in NVS (contrat §4a) -- distinct
+    /// from `active_cfg_generation()`, which is what this boot actually
+    /// loaded and stays fixed until the next reboot.
+    pub fn cfg_generation(&mut self) -> u32 {
+        self.get_u32(&CFG_NAMESPACE, &KEY_CFG_GENERATION).unwrap_or(0)
+    }
+
+    pub fn active_cfg_generation(&self) -> u32 {
+        self.active_cfg_generation
+    }
+
+    pub fn active_cfg(&self) -> &BTreeMap<String, String> {
+        &self.active_cfg
+    }
+
+    /// Sets one McuConfigMap key (contrat §4a). An empty `value` erases the
+    /// key (reset to the build default) -- the empty string is otherwise
+    /// reserved, never a legitimate stored value. Rejects keys that can't
+    /// exist here at all (empty, too long for NVS, or `_`-prefixed/internal)
+    /// by silently doing nothing, rather than risking a panic from
+    /// `Key::from_str` on an oversized admin-supplied key. Doesn't bump the
+    /// generation -- call [`Self::cfg_bump_generation`] once after a batch.
+    pub fn cfg_set(&mut self, key: &str, value: &str) {
+        if key.is_empty() || key.len() > MAX_CFG_KEY_LEN || key.starts_with('_') {
+            return;
+        }
+        let key = Key::from_str(key);
+        if value.is_empty() {
+            self.delete(&CFG_NAMESPACE, &key);
+        } else {
+            self.set_string(&CFG_NAMESPACE, &key, value);
+        }
+    }
+
+    pub fn cfg_bump_generation(&mut self) -> u32 {
+        let next = self.cfg_generation().wrapping_add(1);
+        self.set_u32(&CFG_NAMESPACE, &KEY_CFG_GENERATION, next);
+        next
+    }
+
+    /// Every user-defined McuConfigMap key currently in NVS (namespace
+    /// `"cfg"`), excluding the internal `_gen` counter. `nvs.keys()`
+    /// borrows the whole `Nvs` for its iterator's lifetime, so results are
+    /// collected into an owned `Vec` first -- otherwise the per-key
+    /// `nvs.get()` calls below couldn't borrow it again to read values.
+    pub fn cfg_entries(&mut self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let Some(nvs) = self.nvs.as_mut() else {
+            return out;
+        };
+        let keys: Vec<(Key, Key)> = nvs.keys().filter_map(Result::ok).collect();
+        for (namespace, key) in keys {
+            if namespace.as_str() != CFG_NAMESPACE.as_str() || key.as_str().starts_with('_') {
+                continue;
+            }
+            if let Ok(value) = nvs.get::<String>(&namespace, &key) {
+                out.insert(String::from(key.as_str()), value);
+            }
+        }
+        out
     }
 
     pub fn delete(&mut self, namespace: &Key, key: &Key) {

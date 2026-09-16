@@ -35,8 +35,8 @@ use esp_hal::rtc_cntl::{Rtc, RwdtStage, RwdtStageAction};
 use log::warn;
 use picoserve::extract::Form;
 use picoserve::io::Socket;
-use picoserve::response::{File, Response, StatusCode};
-use picoserve::routing::{PathRouter, get, get_service};
+use picoserve::response::{ContentBody, ContentHeaders, File, Response, StatusCode};
+use picoserve::routing::{PathRouter, get, get_service, post};
 use static_cell::StaticCell;
 
 use crate::agent;
@@ -85,6 +85,27 @@ fn html_escape(s: &str) -> String {
 fn message_html(text: &str, is_error: bool) -> String {
     let class = if is_error { "message error" } else { "message" };
     format!("<p class=\"{class}\">{text}</p>")
+}
+
+/// Named explicitly (not `impl IntoResponse`): every `/v1alpha1/*` handler
+/// branches between this and [`json_error`]/[`unauthorized`], and separate
+/// `impl Trait` return sites never unify even when the concrete type
+/// matches -- picoserve's own `Response::ok`/`::new` already resolve to
+/// this same `Response<ContentHeaders, ContentBody<String>>` either way.
+type JsonResponse = Response<ContentHeaders, ContentBody<String>>;
+
+fn json_ok(body: String) -> JsonResponse {
+    Response::ok(body).with_content_type("application/json")
+}
+
+fn json_error(status: StatusCode, body: &str) -> JsonResponse {
+    Response::new(status, String::from(body)).with_content_type("application/json")
+}
+
+/// Shared by every `/v1alpha1/*` handler (contrat §4b: `401
+/// {"error":"unauthorized"}`).
+fn unauthorized() -> JsonResponse {
+    json_error(StatusCode::UNAUTHORIZED, "{\"error\":\"unauthorized\"}")
 }
 
 fn page(led_gpio: Option<u8>, node_id: &str, ctrl_url: &str, message: Option<&str>) -> String {
@@ -140,6 +161,7 @@ pub async fn run(
     storage: &'static SharedStorage,
     spawner: Spawner,
     lpwr: LPWR<'static>,
+    port: u16,
 ) -> ! {
     // `lpwr` (a non-`Copy` owned peripheral) must move into
     // `reboot_after_delay` exactly once, but the `/reboot` handler closure
@@ -212,34 +234,111 @@ pub async fn run(
                     .with_content_type("text/html; charset=utf-8")
             }),
         )
-        // Embewi contract v1alpha1 (contrat §4) -- the inbound API grows
-        // under this same prefix as more of it gets built.
+        // Embewi contract v1alpha1 (contrat §4).
         .route(
             "/v1alpha1/info",
             get(move |agent::Bearer(token): agent::Bearer| async move {
                 if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
-                    return Response::new(
-                        StatusCode::UNAUTHORIZED,
-                        String::from("{\"error\":\"unauthorized\"}"),
-                    )
-                    .with_content_type("application/json");
+                    return unauthorized();
                 }
-                let body = serde_json::to_string(&agent::info(storage).await).unwrap_or_default();
-                Response::ok(body).with_content_type("application/json")
+                json_ok(serde_json::to_string(&agent::info(storage).await).unwrap_or_default())
             }),
         )
         .route(
             "/v1alpha1/health",
             get(move |agent::Bearer(token): agent::Bearer| async move {
                 if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
-                    return Response::new(
-                        StatusCode::UNAUTHORIZED,
-                        String::from("{\"error\":\"unauthorized\"}"),
-                    )
-                    .with_content_type("application/json");
+                    return unauthorized();
                 }
-                let body = serde_json::to_string(&agent::health(storage).await).unwrap_or_default();
-                Response::ok(body).with_content_type("application/json")
+                json_ok(serde_json::to_string(&agent::health(storage).await).unwrap_or_default())
+            }),
+        )
+        .route(
+            "/v1alpha1/config",
+            get(move |agent::Bearer(token): agent::Bearer| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                json_ok(serde_json::to_string(&agent::config(storage).await).unwrap_or_default())
+            })
+            .post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                let Ok(push) = serde_json::from_str::<agent::ConfigPush>(&body) else {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_data_field\"}");
+                };
+                agent::push_config(storage, &push).await;
+                let generation = storage.lock().await.cfg_generation();
+                json_ok(format!(
+                    "{{\"status\":\"saved\",\"generation\":{generation},\"note\":\"effective_after_reboot\"}}"
+                ))
+            }),
+        )
+        .route(
+            "/v1alpha1/token",
+            post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                #[derive(serde::Deserialize)]
+                struct TokenBody {
+                    token: String,
+                }
+                let Ok(req) = serde_json::from_str::<TokenBody>(&body) else {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_token\"}");
+                };
+                match agent::rotate_token(storage, &req.token).await {
+                    Ok(()) => json_ok(String::from("{\"status\":\"rotated\"}")),
+                    Err(agent::RotateTokenError::InvalidLength) => {
+                        json_error(StatusCode::BAD_REQUEST, "{\"error\":\"token must be 8-64 chars\"}")
+                    }
+                    Err(agent::RotateTokenError::WriteFailed) => json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "{\"error\":\"nvs_write_failed\"}",
+                    ),
+                }
+            }),
+        )
+        .route(
+            "/v1alpha1/reboot",
+            post(move |agent::Bearer(token): agent::Bearer| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                // Same one-shot `lpwr_cell` as the config page's reboot
+                // above -- whichever fires first (this endpoint or the
+                // page) gets to actually reboot the device; there's only
+                // one `lpwr` to hand out either way.
+                if let Some(lpwr) = lpwr_cell.lock().await.take()
+                    && let Ok(spawn_token) = reboot_after_delay(lpwr)
+                {
+                    spawner.spawn(spawn_token);
+                }
+                json_ok(String::from("{\"status\":\"rebooting\"}"))
+            }),
+        )
+        .route(
+            "/v1alpha1/app/port",
+            post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                #[derive(serde::Deserialize)]
+                struct AppPortBody {
+                    port: u32,
+                }
+                let Ok(req) = serde_json::from_str::<AppPortBody>(&body) else {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_port\"}");
+                };
+                if !(1024..=65535).contains(&req.port) {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"port must be 1024-65535\"}");
+                }
+                storage.lock().await.save_app_port(req.port as u16);
+                json_ok(format!(
+                    "{{\"status\":\"saved\",\"port\":{}}}",
+                    req.port
+                ))
             }),
         );
 
@@ -257,7 +356,7 @@ pub async fn run(
     // handlers above has to change.
     loop {
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        if let Err(e) = socket.accept(80).await {
+        if let Err(e) = socket.accept(port).await {
             warn!("HTTP: accept failed: {e:?}");
             continue;
         }
