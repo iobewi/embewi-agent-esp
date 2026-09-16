@@ -19,14 +19,17 @@ use core::fmt::Write as _;
 
 use embassy_executor::Spawner;
 use embassy_net::Stack;
+use embassy_net::tcp::TcpSocket;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use esp_hal::peripherals::LPWR;
 use esp_hal::rtc_cntl::{Rtc, RwdtStage, RwdtStageAction};
+use log::warn;
 use picoserve::extract::Form;
+use picoserve::io::Socket;
 use picoserve::response::{File, Response, StatusCode};
-use picoserve::routing::{get, get_service};
+use picoserve::routing::{PathRouter, get, get_service};
 use static_cell::StaticCell;
 
 use crate::storage::SharedStorage;
@@ -175,8 +178,41 @@ pub async fn run(
     let mut tx_buffer = [0u8; 1024];
     let mut http_buffer = [0u8; 2048];
 
-    picoserve::Server::new(&router, &config, &mut http_buffer)
-        .listen_and_serve(0usize, stack, 80, &mut rx_buffer, &mut tx_buffer)
+    // Accepts the raw TCP connection ourselves instead of calling picoserve's
+    // `listen_and_serve` (which is hardcoded to `embassy_net::tcp::TcpSocket`
+    // internally). `serve_connection` below only needs a
+    // `picoserve::io::Socket`, so this is the one place a TLS layer will
+    // plug in later -- wrap `socket` in a `Socket`-implementing TLS stream
+    // before handing it to `serve_connection`, and nothing in the router or
+    // handlers above has to change.
+    loop {
+        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+        if let Err(e) = socket.accept(80).await {
+            warn!("HTTP: accept failed: {e:?}");
+            continue;
+        }
+        socket.set_keep_alive(Some(Duration::from_secs(30)));
+        socket.set_timeout(Some(Duration::from_secs(45)));
+
+        if let Err(e) = serve_connection(&router, &config, &mut http_buffer, socket).await {
+            warn!("HTTP: connection error: {e:?}");
+        }
+    }
+}
+
+/// Serves one already-connected socket to completion. Generic over
+/// [`picoserve::io::Socket`] rather than a concrete transport, so plugging in
+/// TLS later is a matter of handing this a TLS-wrapped socket instead of a
+/// bare [`TcpSocket`] -- the router and every handler above are unaware of
+/// the transport either way.
+async fn serve_connection<S: Socket<picoserve::EmbassyRuntime>>(
+    router: &picoserve::Router<impl PathRouter>,
+    config: &picoserve::Config,
+    http_buffer: &mut [u8],
+    socket: S,
+) -> Result<picoserve::DisconnectionInfo<picoserve::NoGracefulShutdown>, picoserve::Error<S::Error>>
+{
+    picoserve::Server::new(router, config, http_buffer)
+        .serve(socket)
         .await
-        .into_never()
 }
