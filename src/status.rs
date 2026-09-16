@@ -12,7 +12,8 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use embassy_time::{Duration, Timer};
-use esp_hal::peripherals::{GPIO10, RMT};
+use esp_hal::gpio::AnyPin;
+use esp_hal::peripherals::RMT;
 use esp_hal::rmt::Rmt;
 use esp_hal::time::Rate;
 use esp_hal_smartled::{RmtSmartLeds, Timing, buffer_size, color_order};
@@ -89,8 +90,10 @@ async fn park() -> ! {
 
 /// Drives the LED to match [`set`]. Never panics: without the LED the rest of
 /// the firmware still works, so a driver failure only costs the display.
+/// Only spawn this when a status LED GPIO is configured (see
+/// `Storage::load_led_gpio` and `src/bin/main.rs`).
 #[embassy_executor::task]
-pub async fn led_task(rmt: RMT<'static>, pin: GPIO10<'static>) -> ! {
+pub async fn led_task(rmt: RMT<'static>, pin: AnyPin<'static>) -> ! {
     let rmt = match Rmt::new(rmt, Rate::from_mhz(80)) {
         Ok(rmt) => rmt,
         Err(e) => {

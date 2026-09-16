@@ -5,47 +5,43 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Embewi Agent — Installation</title>
     <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
-    <style>
-        body {
-            font-family: system-ui, sans-serif;
-            max-width: 32rem;
-            margin: 3rem auto;
-            padding: 0 1rem;
-            color: #1a1a1a;
-        }
-        h1 { font-size: 1.4rem; }
-        p { line-height: 1.5; }
-        esp-web-install-button {
-            display: block;
-            margin: 1.5rem 0;
-        }
-        code {
-            background: #f0f0f0;
-            padding: 0.1rem 0.3rem;
-            border-radius: 0.2rem;
-        }
-    </style>
+    <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-    <h1>Embewi Agent</h1>
-    <p>
-        Flashe le firmware directement depuis le navigateur (Chrome / Edge,
-        via Web Serial) en connectant l'ESP32 en USB.
-    </p>
+    <main>
+        <header>
+            <h1>Embewi Agent</h1>
+            <p class="subtitle">Installation du firmware</p>
+        </header>
 
-    <esp-web-install-button manifest="manifest.json">
-        <button slot="activate">Installer le firmware</button>
-        <span slot="unsupported">
-            Ton navigateur ne supporte pas Web Serial — utilise Chrome ou Edge.
-        </span>
-        <span slot="not-allowed">
-            Cette page doit être servie en HTTPS (ou localhost) pour installer le firmware.
-        </span>
-    </esp-web-install-button>
+        <div class="card">
+            <p>
+                Flashe le firmware directement depuis le navigateur (Chrome / Edge,
+                via Web Serial) en connectant l'ESP32 en USB.
+            </p>
 
-    <p>
-        Servi localement par le conteneur de dev via
-        <code>http-server web -p 8080</code>.
-    </p>
+            <esp-web-install-button manifest="manifest.json">
+                <button class="primary" slot="activate">Installer le firmware</button>
+                <span slot="unsupported">
+                    Ton navigateur ne supporte pas Web Serial — utilise Chrome ou Edge.
+                </span>
+                <span slot="not-allowed">
+                    Cette page doit être servie en HTTPS (ou localhost) pour installer le firmware.
+                </span>
+            </esp-web-install-button>
+        </div>
+
+        <p class="message">
+            Une fois le Wi-Fi configuré, un bouton « Visit Device » apparaît dans
+            la fenêtre d'installation : il ouvre la page de configuration
+            matérielle (broche de la LED de statut) servie directement par
+            l'appareil sur son réseau local.
+        </p>
+
+        <p class="hint">
+            Servi localement par le conteneur de dev via
+            <code>http-server web -p 8080</code>.
+        </p>
+    </main>
 </body>
 </html>

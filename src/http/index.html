@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embewi Agent</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Embewi Agent</h1>
+      <p class="subtitle">Configuration matérielle</p>
+    </header>
+
+    {{MESSAGE}}
+
+    <form class="card" method="post">
+      <label for="led_gpio">Broche GPIO de la LED de statut</label>
+      <select id="led_gpio" name="led_gpio">
+        {{OPTIONS}}
+      </select>
+      <button class="primary" type="submit">Enregistrer</button>
+    </form>
+
+    <div class="actions-row">
+      <form method="get">
+        <button class="secondary" type="submit">Lire la valeur actuelle</button>
+      </form>
+      <form method="post" action="/reboot">
+        <button class="danger" type="submit">Redémarrer maintenant</button>
+      </form>
+    </div>
+
+    <p class="hint">Un redémarrage est nécessaire pour appliquer un changement.</p>
+
+    <form
+      class="card"
+      method="post"
+      action="/lock"
+      onsubmit="return confirm('Verrouiller la configuration ? Cette page ne sera plus accessible tant que l\'appareil n\'aura pas été réinstallé avec effacement complet (ESP Web Tools).')"
+    >
+      <p class="hint">
+        Une fois la configuration terminée, tu peux verrouiller cette page.
+        Seul un effacement complet depuis ESP Web Tools permet de la
+        déverrouiller.
+      </p>
+      <button class="danger" type="submit">Verrouiller la configuration</button>
+    </form>
+  </main>
+</body>
+</html>

@@ -33,3 +33,11 @@ http-server web -p 8080
 ```
 
 Puis ouvrir `http://localhost:8080` dans Chrome ou Edge (Web Serial requis).
+
+## Configuration matérielle (après le Wi-Fi)
+
+La broche GPIO de la LED de statut n'est pas figée dans le firmware : elle
+se règle depuis une page servie par l'appareil lui-même une fois sur le
+Wi-Fi (voir `src/http/`), pas depuis cette page statique. Après une
+connexion Wi-Fi réussie via Improv, un bouton « Visit Device » apparaît
+directement dans la fenêtre d'ESP Web Tools et y mène.

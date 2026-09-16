@@ -2,7 +2,13 @@
 runner = "espflash flash --monitor --chip esp32c3"
 
 [env]
-ESP_LOG="info"
+# "info" alone would apply to every crate, including smoltcp/embassy-net/
+# esp-radio, which are otherwise noisy at that level -- interleaved on the
+# same USB-Serial-JTAG wire Improv Serial uses, that log traffic was a
+# suspected contributor to Improv responses missing the browser's tight
+# reconnect timeout once Wi-Fi/HTTP started running. Only main.rs (which
+# calls init_logger_from_env, not init_logger) actually reads this filter.
+ESP_LOG="warn,embewi_agent_esp=info"
 
 [build]
 rustflags = [
