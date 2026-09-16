@@ -55,10 +55,16 @@ pub async fn ctrl_url(storage: &SharedStorage) -> String {
         .unwrap_or_default()
 }
 
-/// Whether a token has been provisioned -- i.e. whether any inbound call
-/// could ever succeed (contrat §1a).
-pub async fn is_provisioned(storage: &SharedStorage) -> bool {
-    storage.lock().await.get_string(&NAMESPACE, &KEY_TOKEN).is_some()
+/// The current Bearer token, empty if none has been provisioned yet.
+/// Deliberately readable, not just comparable: `http/mod.rs`'s save flow
+/// shows it once, on the confirmation page served right before the device
+/// locks and reboots.
+pub async fn token(storage: &SharedStorage) -> String {
+    storage
+        .lock()
+        .await
+        .get_string(&NAMESPACE, &KEY_TOKEN)
+        .unwrap_or_default()
 }
 
 /// 128-bit random token, hex-encoded (contrat §1a: "token vide → généré
@@ -79,31 +85,21 @@ fn generate_token() -> String {
 /// existing token, or generate a fresh one if there isn't one yet" (contrat
 /// §1a) -- it never clears an existing token, matching `POST /token`'s own
 /// refusal of an empty value (§4: "on ne désactive pas l'auth par
-/// rotation"). Returns the effective token *only* when this call just
-/// generated or changed it, so the caller can display it once (contrat:
-/// "token affiché UNE SEULE FOIS") -- `None` for an unrelated save (e.g.
-/// just editing `ctrl_url`) that shouldn't re-display an already-known
-/// token.
-pub async fn save_identity(
-    storage: &SharedStorage,
-    node_id: &str,
-    ctrl_url: &str,
-    presented_token: &str,
-) -> Option<String> {
+/// rotation"). `http/mod.rs`'s save flow always calls this with an empty
+/// `presented_token` (the form has no token field at all -- it's a
+/// one-shot save, there's nothing to rotate to yet), so in practice this
+/// only ever generates on first provisioning.
+pub async fn save_identity(storage: &SharedStorage, node_id: &str, ctrl_url: &str, presented_token: &str) {
     let mut storage = storage.lock().await;
     storage.set_string(&NAMESPACE, &KEY_NODE_ID, node_id);
     storage.set_string(&NAMESPACE, &KEY_CTRL_URL, ctrl_url);
 
     if !presented_token.is_empty() {
         storage.set_string(&NAMESPACE, &KEY_TOKEN, presented_token);
-        return Some(String::from(presented_token));
-    }
-    if storage.get_string(&NAMESPACE, &KEY_TOKEN).is_none() {
+    } else if storage.get_string(&NAMESPACE, &KEY_TOKEN).is_none() {
         let token = generate_token();
         storage.set_string(&NAMESPACE, &KEY_TOKEN, &token);
-        return Some(token);
     }
-    None
 }
 
 /// Extracts the raw Bearer token from the `Authorization` header, if any

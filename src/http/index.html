@@ -8,63 +8,41 @@
 </head>
 <body>
   <main>
-    <header>
-      <h1>Embewi Agent</h1>
-      <p class="subtitle">Configuration matérielle</p>
+    <header class="page-header">
+      <div>
+        <h1>Embewi Agent</h1>
+        <p class="subtitle">Configuration</p>
+      </div>
+      <a class="button-link" href="/">Actualiser</a>
     </header>
 
     {{MESSAGE}}
 
-    <form class="card" method="post">
+    <form
+      class="card"
+      method="post"
+      onsubmit="return confirm('Enregistrer, verrouiller la configuration et redémarrer l\'appareil ? Cette page ne sera plus accessible tant que l\'appareil n\'aura pas été réinstallé avec effacement complet (ESP Web Tools).')"
+    >
       <label for="led_gpio">Broche GPIO de la LED de statut</label>
       <select id="led_gpio" name="led_gpio">
         {{OPTIONS}}
       </select>
-      <button class="primary" type="submit">Enregistrer</button>
-    </form>
 
-    <div class="actions-row">
-      <form method="get">
-        <button class="secondary" type="submit">Lire la valeur actuelle</button>
-      </form>
-      <form method="post" action="/reboot">
-        <button class="danger" type="submit">Redémarrer maintenant</button>
-      </form>
-    </div>
-
-    <p class="hint">Un redémarrage est nécessaire pour appliquer un changement.</p>
-
-    <form class="card" method="post" action="/identity">
       <label for="node_id">Identifiant du nœud (node_id)</label>
       <input type="text" id="node_id" name="node_id" maxlength="63" required value="{{NODE_ID}}">
 
       <label for="ctrl_url">URL du contrôleur Kubernetes</label>
       <input type="text" id="ctrl_url" name="ctrl_url" maxlength="128" placeholder="http://192.168.1.10:8080" value="{{CTRL_URL}}">
 
-      <label for="token">Token (laisser vide pour conserver l'actuel, ou en générer un)</label>
-      <input type="text" id="token" name="token" maxlength="64" autocomplete="off" placeholder="auto">
-
-      <button class="primary" type="submit">Enregistrer l'identité</button>
+      <button class="primary" type="submit">Enregistrer</button>
     </form>
 
     <p class="hint">
-      Un token vide génère un nouveau token seulement s'il n'y en a pas
-      encore ; il ne sera affiché qu'une seule fois, à cet instant.
+      Enregistrer verrouille définitivement cette page et redémarre
+      l'appareil. Le token d'authentification est généré automatiquement et
+      affiché une seule fois, sur la page suivante -- copie-le à ce
+      moment-là.
     </p>
-
-    <form
-      class="card"
-      method="post"
-      action="/lock"
-      onsubmit="return confirm('Verrouiller la configuration ? Cette page ne sera plus accessible tant que l\'appareil n\'aura pas été réinstallé avec effacement complet (ESP Web Tools).')"
-    >
-      <p class="hint">
-        Une fois la configuration terminée, tu peux verrouiller cette page.
-        Seul un effacement complet depuis ESP Web Tools permet de la
-        déverrouiller.
-      </p>
-      <button class="danger" type="submit">Verrouiller la configuration</button>
-    </form>
   </main>
 </body>
 </html>

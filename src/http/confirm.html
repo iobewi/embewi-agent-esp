@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embewi Agent</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <main>
+    <header class="brand">
+      <div>
+        <div class="brand-name">Embewi Agent</div>
+        <div class="brand-subtitle">Configuration de l'appareil</div>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="status">
+        <span class="status-dot"></span>
+
+        <div>
+          <h1>Configuration enregistrée</h1>
+          <p class="subtitle">
+            L'appareil va redémarrer avec sa nouvelle configuration.
+          </p>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="notice">
+        <strong>Configuration verrouillée</strong>
+        <p>
+          Une fois redémarré, cet appareil ne pourra plus être
+          reconfiguré depuis cette interface.
+        </p>
+      </div>
+
+      <div class="token-section">
+        <div class="token-header">
+          <span>Token d'authentification</span>
+          <span class="badge">affiché une seule fois</span>
+        </div>
+
+        <code class="token">{{TOKEN}}</code>
+
+        <p class="token-warning">
+          Copie et conserve ce token maintenant. Il ne pourra plus
+          être affiché après le redémarrage.
+        </p>
+      </div>
+    </section>
+
+    <p class="reset-hint">
+      Pour reconfigurer l'appareil, effectue un effacement complet
+      avec <strong>ESP Web Tools</strong>.
+    </p>
+  </main>
+</body>
+</html>

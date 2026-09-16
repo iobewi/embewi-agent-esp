@@ -2,8 +2,15 @@
 //! "Visit Device" link ESP Web Tools shows after Improv Wi-Fi provisioning
 //! succeeds (`src/provisioning.rs`). Built with `picoserve`, an async
 //! no_std HTTP server for `embassy-net`. Markup lives alongside this file
-//! (`index.html`, `reboot.html`, `locked.html`); styling is `web/style.css`,
-//! shared with the flashing page (see the `STYLE_CSS` constant below).
+//! (`index.html`, `confirm.html`, `locked.html`); styling is
+//! `web/style.css`, shared with the flashing page (see the `STYLE_CSS`
+//! constant below).
+//!
+//! One-shot by design: the single form (GPIO + identity) always locks and
+//! reboots on a successful save -- there's no "save without locking"
+//! anymore. A device only ever needs this page once; after that, `POST
+//! /v1alpha1/token` (contrat §4) is the intended way to rotate credentials,
+//! not revisiting this UI (which the lock makes impossible anyway).
 //!
 //! Deliberately doesn't use picoserve's `AppBuilder`/`State` extractor
 //! machinery: that's for routers whose *type* needs to be nameable (passed
@@ -36,7 +43,7 @@ use crate::agent;
 use crate::storage::SharedStorage;
 
 const INDEX_TEMPLATE: &str = include_str!("index.html");
-const REBOOT_PAGE: &str = include_str!("reboot.html");
+const CONFIRM_TEMPLATE: &str = include_str!("confirm.html");
 const LOCKED_PAGE: &str = include_str!("locked.html");
 // Shared with web/index.html (the flashing page), so both look consistent
 // -- one canonical file instead of a copy that could drift.
@@ -49,15 +56,10 @@ const MAX_GPIO: u8 = 21;
 const LED_DISABLED: u8 = 255;
 
 #[derive(serde::Deserialize)]
-struct HardwareForm {
+struct ConfigForm {
     led_gpio: u8,
-}
-
-#[derive(serde::Deserialize)]
-struct IdentityForm {
     node_id: String,
     ctrl_url: String,
-    token: String,
 }
 
 /// Escapes `&`/`<`/`>`/`"` so `node_id`/`ctrl_url` -- admin-supplied,
@@ -77,10 +79,9 @@ fn html_escape(s: &str) -> String {
     out
 }
 
-/// Wraps `text` in the same `<p class="message[ error]">` markup `page()`
-/// used to build inline -- factored out so `/identity`'s multi-paragraph
-/// token confirmation can reuse it too instead of duplicating the class
-/// names.
+/// Wraps `text` in the same `<p class="message[ error]">` markup used
+/// inline in `page()` -- factored out so handlers building their own
+/// (success/error) message reuse the same class names.
 fn message_html(text: &str, is_error: bool) -> String {
     let class = if is_error { "message error" } else { "message" };
     format!("<p class=\"{class}\">{text}</p>")
@@ -166,7 +167,11 @@ pub async fn run(
                 Response::ok(page(led_gpio, &node_id, &ctrl_url, None))
                     .with_content_type("text/html; charset=utf-8")
             })
-            .post(move |Form(form): Form<HardwareForm>| async move {
+            // Single, one-shot save: on success this always locks and
+            // reboots (the confirm() dialog in index.html warns about
+            // that) -- a validation error re-serves the editable form
+            // instead, so a typo doesn't lock the device out over nothing.
+            .post(move |Form(form): Form<ConfigForm>| async move {
                 let locked = {
                     let mut guard = storage.lock().await;
                     guard.is_locked()
@@ -175,69 +180,36 @@ pub async fn run(
                     return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
                         .with_content_type("text/html; charset=utf-8");
                 }
-                let node_id = agent::node_id(storage).await;
-                let ctrl_url = agent::ctrl_url(storage).await;
                 let gpio = (form.led_gpio != LED_DISABLED).then_some(form.led_gpio);
                 if gpio.is_some_and(|gpio| gpio > MAX_GPIO) {
                     return Response::new(
                         StatusCode::BAD_REQUEST,
                         page(
                             None,
-                            &node_id,
-                            &ctrl_url,
+                            &form.node_id,
+                            &form.ctrl_url,
                             Some(&message_html("Broche hors plage pour cette puce.", true)),
                         ),
                     )
                     .with_content_type("text/html; charset=utf-8");
                 }
+
                 storage.lock().await.save_led_gpio(gpio);
-                Response::ok(page(gpio, &node_id, &ctrl_url, Some(&message_html("Enregistr\u{e9}.", false))))
-                    .with_content_type("text/html; charset=utf-8")
-            }),
-        )
-        .route(
-            "/identity",
-            picoserve::routing::post(move |Form(form): Form<IdentityForm>| async move {
-                let (locked, led_gpio) = {
-                    let mut guard = storage.lock().await;
-                    (guard.is_locked(), guard.load_led_gpio())
-                };
-                if locked {
-                    return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
-                        .with_content_type("text/html; charset=utf-8");
-                }
-                let fresh_token =
-                    agent::save_identity(storage, &form.node_id, &form.ctrl_url, &form.token).await;
-                let message = match &fresh_token {
-                    Some(token) => format!(
-                        "<p class=\"message\">Identit\u{e9} enregistr\u{e9}e. Token \
-                        (copie-le maintenant, il ne sera plus affich\u{e9}) :</p>\
-                        <p class=\"message\"><code>{token}</code></p>"
-                    ),
-                    None => message_html("Identit\u{e9} enregistr\u{e9}e.", false),
-                };
-                Response::ok(page(led_gpio, &form.node_id, &form.ctrl_url, Some(&message)))
-                    .with_content_type("text/html; charset=utf-8")
-            }),
-        )
-        .route(
-            "/lock",
-            picoserve::routing::post(move || async move {
+                agent::save_identity(storage, &form.node_id, &form.ctrl_url, "").await;
+                let token = agent::token(storage).await;
                 storage.lock().await.lock();
-                Response::ok(LOCKED_PAGE).with_content_type("text/html; charset=utf-8")
-            }),
-        )
-        .route(
-            "/reboot",
-            picoserve::routing::post(move || async move {
-                // `take()`s `None` on a second concurrent hit -- one pending
-                // reboot is enough, and there's only one `lpwr` to give out.
+                // `take()`s `None` on a second concurrent hit -- one
+                // pending reboot is enough, and there's only one `lpwr` to
+                // give out. The task's own delay gives this response time
+                // to actually reach the client first.
                 if let Some(lpwr) = lpwr_cell.lock().await.take()
-                    && let Ok(token) = reboot_after_delay(lpwr)
+                    && let Ok(spawn_token) = reboot_after_delay(lpwr)
                 {
-                    spawner.spawn(token);
+                    spawner.spawn(spawn_token);
                 }
-                Response::ok(REBOOT_PAGE).with_content_type("text/html; charset=utf-8")
+
+                Response::ok(CONFIRM_TEMPLATE.replace("{{TOKEN}}", &html_escape(&token)))
+                    .with_content_type("text/html; charset=utf-8")
             }),
         )
         // Embewi contract v1alpha1 (contrat §4). First endpoint of the

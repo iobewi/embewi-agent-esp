@@ -1,26 +1,52 @@
 :root {
   color-scheme: light dark;
-  --bg: #f4f5f7;
+
+  --bg: #f5f6f8;
   --surface: #ffffff;
-  --text: #1a1d23;
-  --muted: #6b7280;
-  --border: #e2e4e9;
+  --surface-soft: #f8fafc;
+
+  --text: #181b20;
+  --muted: #667085;
+
+  --border: #dde1e7;
+
   --accent: #2563eb;
   --accent-text: #ffffff;
+  --accent-soft: #eff6ff;
+
+  --success: #15803d;
+  --success-soft: #f0fdf4;
+
+  --warning: #a16207;
+  --warning-soft: #fffbeb;
+
   --danger: #dc2626;
   --danger-surface: #fef2f2;
-  --radius: 0.75rem;
+
+  --radius: 0.9rem;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14161a;
-    --surface: #1d2026;
-    --text: #e7e9ee;
-    --muted: #9aa1ac;
-    --border: #2c3038;
-    --accent: #4f8cff;
+    --bg: #111318;
+    --surface: #1a1d23;
+    --surface-soft: #20242b;
+
+    --text: #eef0f4;
+    --muted: #9ca3af;
+
+    --border: #30343c;
+
+    --accent: #60a5fa;
     --accent-text: #0b1220;
+    --accent-soft: #172033;
+
+    --success: #4ade80;
+    --success-soft: #15251b;
+
+    --warning: #facc15;
+    --warning-soft: #29230f;
+
     --danger: #f87171;
     --danger-surface: #2a1616;
   }
@@ -32,7 +58,8 @@
 
 body {
   margin: 0;
-  padding: 2.5rem 1rem;
+  min-height: 100vh;
+  padding: 3.5rem 1.25rem;
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -40,20 +67,63 @@ body {
 }
 
 main {
-  max-width: 26rem;
+  width: 100%;
+  max-width: 32rem;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
 }
 
+/* Brand header, shared by every device-served page. */
+.brand {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.brand-name {
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.brand-subtitle {
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* Legacy header (web/index.html, the flashing page) and index.html's
+   "Actualiser" link -- kept distinct from .brand since those pages predate
+   the confirm/locked redesign and have their own layout needs. */
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.button-link {
+  flex-shrink: 0;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
 h1 {
-  font-size: 1.375rem;
   margin: 0;
+  font-size: 1.35rem;
+  line-height: 1.25;
 }
 
 .subtitle {
-  margin: 0.25rem 0 0;
+  margin: 0.35rem 0 0;
   color: var(--muted);
   font-size: 0.9rem;
 }
@@ -65,6 +135,115 @@ h1 {
   padding: 1.25rem;
 }
 
+/* Status/notice/token panel system (confirm.html, locked.html). */
+.panel {
+  padding: 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.04),
+    0 8px 24px rgb(0 0 0 / 0.04);
+}
+
+.status {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+}
+
+.status-dot {
+  flex: 0 0 auto;
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-top: 0.45rem;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 0.3rem var(--success-soft);
+}
+
+.status-dot--locked {
+  background: var(--muted);
+  box-shadow: 0 0 0 0.3rem var(--surface-soft);
+}
+
+.divider {
+  height: 1px;
+  margin: 1.5rem 0;
+  background: var(--border);
+}
+
+.notice {
+  padding: 1rem;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+}
+
+.notice strong {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.notice p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.token-section {
+  margin-top: 1.5rem;
+}
+
+.token-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.65rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.badge {
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.token {
+  display: block;
+  width: 100%;
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  user-select: all;
+}
+
+.token-warning {
+  margin: 0.6rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.reset-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+/* Form controls (index.html, web/index.html). */
 label {
   display: block;
   font-size: 0.85rem;
@@ -77,8 +256,7 @@ label:first-child {
 }
 
 select,
-input[type="text"],
-input[type="password"] {
+input[type="text"] {
   width: 100%;
   padding: 0.55rem 0.6rem;
   font-size: 1rem;
@@ -103,27 +281,6 @@ button.primary {
   background: var(--accent);
   color: var(--accent-text);
   margin-top: 1rem;
-}
-
-button.secondary {
-  background: transparent;
-  border-color: var(--border);
-  color: var(--text);
-}
-
-button.danger {
-  background: var(--danger-surface);
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.actions-row {
-  display: flex;
-  gap: 0.75rem;
-}
-
-.actions-row form {
-  flex: 1;
 }
 
 .message {

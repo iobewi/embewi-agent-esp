@@ -6,18 +6,43 @@
   <title>Embewi Agent</title>
   <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
   <main>
-    <h1>Configuration verrouillée</h1>
-    <p class="card">
-      La configuration matérielle de cet appareil a été verrouillée et ne
-      peut plus être modifiée depuis cette page.
-    </p>
-    <p class="message">
-      Pour la déverrouiller, réinstalle le firmware avec l'option
-      « Erase » dans ESP Web Tools : cela efface toute la mémoire de
-      l'appareil, y compris les identifiants Wi-Fi, et lève le
-      verrouillage.
+    <header class="brand">
+      <div>
+        <div class="brand-name">Embewi Agent</div>
+        <div class="brand-subtitle">Configuration de l'appareil</div>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="status">
+        <span class="status-dot status-dot--locked"></span>
+
+        <div>
+          <h1>Configuration verrouillée</h1>
+          <p class="subtitle">
+            Cette page n'est plus accessible en écriture.
+          </p>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="notice">
+        <strong>Pourquoi ?</strong>
+        <p>
+          La configuration matérielle de cet appareil a été verrouillée
+          volontairement après son premier enregistrement.
+        </p>
+      </div>
+    </section>
+
+    <p class="reset-hint">
+      Pour reconfigurer l'appareil, effectue un effacement complet avec
+      <strong>ESP Web Tools</strong> -- cela efface aussi le Wi-Fi et le
+      token d'authentification.
     </p>
   </main>
 </body>
