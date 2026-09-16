@@ -582,14 +582,19 @@ dependencies = [
  "embassy-time",
  "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
+ "embedded-storage",
  "esp-alloc",
  "esp-backtrace",
  "esp-bootloader-esp-idf",
  "esp-hal",
+ "esp-hal-smartled2",
+ "esp-nvs",
  "esp-println",
  "esp-radio",
  "esp-rtos",
+ "esp-storage",
  "log",
+ "smart-leds",
  "smoltcp",
  "static_cell",
 ]
@@ -753,10 +758,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "esp-hal-smartled2"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e166cce2f6ce276612e4b3b62ff155cc9e6f84b3fd8a8250c8b698f1416e9fe2"
+dependencies = [
+ "esp-hal",
+ "num-traits",
+ "smart-leds-trait",
+]
+
+[[package]]
 name = "esp-metadata-generated"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42c2ee95b945a4780796e4359e72c033aed3b45073880e8029458f538532db8a"
+
+[[package]]
+name = "esp-nvs"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b61bade3acc39e566697bd215068384afba840999fcd8e9366702f267034c7c0"
+dependencies = [
+ "embedded-storage",
+ "esp-hal",
+ "esp-storage",
+ "strum",
+ "thiserror",
+]
 
 [[package]]
 name = "esp-phy"
@@ -890,6 +919,21 @@ dependencies = [
  "portable-atomic",
  "riscv",
  "xtensa-lx",
+]
+
+[[package]]
+name = "esp-storage"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cf2b3f00c9f94b27c62a4f5296b19470c3a083c687c8146e554a459f9bee596"
+dependencies = [
+ "document-features",
+ "embedded-storage",
+ "esp-hal",
+ "esp-hal-procmacros",
+ "esp-metadata-generated",
+ "esp-rom-sys",
+ "esp-sync",
 ]
 
 [[package]]
@@ -1462,6 +1506,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "rgb"
+version = "0.8.53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
+
+[[package]]
 name = "riscv"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1613,6 +1663,24 @@ name = "smallvec"
 version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
+
+[[package]]
+name = "smart-leds"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66df34e571fa9993fa6f99131a374d58ca3d694b75f9baac93458fe0d6057bf0"
+dependencies = [
+ "smart-leds-trait",
+]
+
+[[package]]
+name = "smart-leds-trait"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7f4441a131924d58da6b83a7ad765c460e64630cce504376c3a87a2558c487f"
+dependencies = [
+ "rgb",
+]
 
 [[package]]
 name = "smoltcp"

@@ -8,6 +8,7 @@ use esp_hal::usb_serial_jtag::{UsbSerialJtagRx, UsbSerialJtagTx};
 use log::{info, warn};
 
 use crate::improv::{self, Command, ImprovError, ParsedCommand, Parser, State};
+use crate::status::{self, Status};
 use crate::wifi::WifiManager;
 
 const NAME: &str = "embewi-agent-esp";
@@ -19,10 +20,15 @@ type Tx = UsbSerialJtagTx<'static, Async>;
 /// Serves Improv Serial forever.
 pub async fn run(mut rx: Rx, mut tx: Tx, mut wifi: WifiManager) -> ! {
     let mut parser = Parser::new();
-    let mut state = State::Authorized;
+    let mut state = if wifi.is_online() {
+        State::Provisioned
+    } else {
+        State::Authorized
+    };
     let mut buffer = [0u8; 64];
 
     info!("Improv: listening on USB-Serial-JTAG");
+    status::set(idle_status(&wifi));
 
     loop {
         let read = match rx.read(&mut buffer).await {
@@ -37,6 +43,15 @@ pub async fn run(mut rx: Rx, mut tx: Tx, mut wifi: WifiManager) -> ! {
                 handle(command, &mut tx, &mut state, &mut wifi).await;
             }
         }
+    }
+}
+
+/// What the LED shows once a transient action (a scan) is over.
+fn idle_status(wifi: &WifiManager) -> Status {
+    if wifi.is_online() {
+        Status::Online
+    } else {
+        Status::Ready
     }
 }
 
@@ -67,6 +82,7 @@ async fn handle(
             send(tx, &frame).await;
         }
         ParsedCommand::GetWifiNetworks => {
+            status::set(Status::Scanning);
             for network in wifi.scan().await {
                 let signal_strength = alloc::format!("{}", network.signal_strength);
                 let secured: &[u8] = if network.secured { b"YES" } else { b"NO" };
@@ -78,6 +94,7 @@ async fn handle(
             }
             // An empty entry terminates the list.
             send(tx, &improv::rpc_response_frame(Command::GetWifiNetworks, &[])).await;
+            status::set(idle_status(wifi));
         }
         ParsedCommand::GetNetworkState => {
             let mut flags: u8 = 0x02; // supports Wi-Fi
@@ -94,14 +111,17 @@ async fn handle(
         ParsedCommand::WifiSettings(settings) => {
             info!("Improv: connecting to SSID={}", settings.ssid);
             *state = State::Provisioning;
+            status::set(Status::Connecting);
             send(tx, &improv::state_frame(*state)).await;
 
-            if wifi.connect(&settings.ssid, settings.password).await {
+            if wifi.provision(&settings.ssid, settings.password).await {
                 *state = State::Provisioned;
+                status::set(Status::Online);
                 send(tx, &improv::state_frame(*state)).await;
                 send(tx, &improv::rpc_response_frame(Command::WifiSettings, &[])).await;
             } else {
                 *state = State::Authorized;
+                status::set(Status::Failed);
                 send(tx, &improv::error_frame(ImprovError::UnableToConnect)).await;
                 send(tx, &improv::state_frame(*state)).await;
             }

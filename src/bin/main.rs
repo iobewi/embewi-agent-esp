@@ -13,8 +13,9 @@ use esp_hal::clock::CpuClock;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::usb_serial_jtag::UsbSerialJtag;
 
-use embewi_agent_esp::provisioning;
+use embewi_agent_esp::status;
 use embewi_agent_esp::wifi::WifiManager;
+use embewi_agent_esp::provisioning;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -35,8 +36,11 @@ async fn main(spawner: Spawner) -> ! {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
+    spawner.spawn(status::led_task(peripherals.RMT, peripherals.GPIO10).unwrap());
+
     let (rx, tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
-    let wifi = WifiManager::new(peripherals.WIFI, spawner);
+    let mut wifi = WifiManager::new(peripherals.WIFI, peripherals.FLASH, spawner);
+    wifi.reconnect_saved().await;
 
     provisioning::run(rx, tx, wifi).await
 }
