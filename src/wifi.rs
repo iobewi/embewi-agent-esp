@@ -118,7 +118,13 @@ impl WifiManager {
                 return None;
             }
 
-            static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+            // DHCP (1) + HTTP server's TcpSocket (1) + SNTP's UdpSocket (1)
+            // + a transient socket for `Stack::dns_query` (1, used by SNTP's
+            // hostname lookup) -- 3 was enough before SNTP, panicked
+            // ("adding a socket to a full SocketSet") once it needed a 4th
+            // concurrently. +1 headroom for the next thing that opens one
+            // (WebSocket log streaming is next on the roadmap).
+            static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
             let seed = esp_hal::time::Instant::now().duration_since_epoch().as_micros() as u64;
             let (stack, runner) = embassy_net::new(
                 interfaces.station,
@@ -225,6 +231,9 @@ impl WifiManager {
         if let Some(lpwr) = self.lpwr.take() {
             self.spawner
                 .spawn(crate::http::run(stack, storage, self.spawner, lpwr).unwrap());
+            // SNTP (contrat §5): starts as soon as the network is up, same
+            // one-shot guard as the HTTP server above.
+            self.spawner.spawn(crate::time::sync_task(stack).unwrap());
         }
 
         true

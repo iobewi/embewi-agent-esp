@@ -24,6 +24,7 @@ log                    = "0.4.27"
 
 embassy-net = { version = "0.9.1", features = [
   "dhcpv4",
+  "dns",
   "log",
   "medium-ethernet",
   "tcp",
@@ -79,6 +80,16 @@ esp-metadata-generated = "0.4.0"
 embassy-sync = "0.8.0"
 picoserve    = { version = "0.20.0", features = ["embassy", "alloc"] }
 serde        = { version = "1", default-features = false, features = ["derive"] }
+serde_json   = { version = "1", default-features = false, features = ["alloc"] }
+# Constant-time Bearer token comparison (contrat §1).
+subtle       = { version = "2", default-features = false }
+
+# SNTP (contrat §5) -- split into three crates upstream (core protocol,
+# embassy-net UDP adapter, embassy-time timestamp generator) so each can be
+# versioned independently of the others.
+sntpc              = { version = "0.11", default-features = false, features = ["log"] }
+sntpc-net-embassy  = { version = "0.11", default-features = false, features = ["log"] }
+sntpc-time-embassy = "0.6"
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]

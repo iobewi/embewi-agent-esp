@@ -32,6 +32,7 @@ use picoserve::response::{File, Response, StatusCode};
 use picoserve::routing::{PathRouter, get, get_service};
 use static_cell::StaticCell;
 
+use crate::agent;
 use crate::storage::SharedStorage;
 
 const INDEX_TEMPLATE: &str = include_str!("index.html");
@@ -170,6 +171,22 @@ pub async fn run(
                     spawner.spawn(token);
                 }
                 Response::ok(REBOOT_PAGE).with_content_type("text/html; charset=utf-8")
+            }),
+        )
+        // Embewi contract v1alpha1 (contrat §4). First endpoint of the
+        // inbound API; more will grow alongside it under this same prefix.
+        .route(
+            "/v1alpha1/info",
+            get(move |agent::Bearer(token): agent::Bearer| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return Response::new(
+                        StatusCode::UNAUTHORIZED,
+                        String::from("{\"error\":\"unauthorized\"}"),
+                    )
+                    .with_content_type("application/json");
+                }
+                let body = serde_json::to_string(&agent::info(storage).await).unwrap_or_default();
+                Response::ok(body).with_content_type("application/json")
             }),
         );
 
