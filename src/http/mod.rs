@@ -212,8 +212,8 @@ pub async fn run(
                     .with_content_type("text/html; charset=utf-8")
             }),
         )
-        // Embewi contract v1alpha1 (contrat §4). First endpoint of the
-        // inbound API; more will grow alongside it under this same prefix.
+        // Embewi contract v1alpha1 (contrat §4) -- the inbound API grows
+        // under this same prefix as more of it gets built.
         .route(
             "/v1alpha1/info",
             get(move |agent::Bearer(token): agent::Bearer| async move {
@@ -225,6 +225,20 @@ pub async fn run(
                     .with_content_type("application/json");
                 }
                 let body = serde_json::to_string(&agent::info(storage).await).unwrap_or_default();
+                Response::ok(body).with_content_type("application/json")
+            }),
+        )
+        .route(
+            "/v1alpha1/health",
+            get(move |agent::Bearer(token): agent::Bearer| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return Response::new(
+                        StatusCode::UNAUTHORIZED,
+                        String::from("{\"error\":\"unauthorized\"}"),
+                    )
+                    .with_content_type("application/json");
+                }
+                let body = serde_json::to_string(&agent::health(storage).await).unwrap_or_default();
                 Response::ok(body).with_content_type("application/json")
             }),
         );

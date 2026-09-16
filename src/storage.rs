@@ -90,6 +90,20 @@ impl Storage {
         self.set_bool(&SYSTEM_NAMESPACE, &KEY_LOCKED, true);
     }
 
+    /// Round-trips a canary value through NVS (write, read back, erase).
+    /// Used by `GET /v1alpha1/health`'s `storage` check (contrat §4): all
+    /// the agent's critical state (staged OTA, token, config) lives in
+    /// NVS, so if it's corrupted or full the device should say so, not
+    /// silently claim to be healthy.
+    pub fn self_check(&mut self) -> bool {
+        const CANARY: Key = Key::from_str("canary");
+        const VALUE: u8 = 0xA5;
+        self.set_u8(&SYSTEM_NAMESPACE, &CANARY, VALUE);
+        let ok = self.get_u8(&SYSTEM_NAMESPACE, &CANARY) == Some(VALUE);
+        self.delete(&SYSTEM_NAMESPACE, &CANARY);
+        ok
+    }
+
     /// `None` if no status LED is configured.
     pub fn load_led_gpio(&mut self) -> Option<u8> {
         self.get_u8(&HW_NAMESPACE, &KEY_LED_GPIO)

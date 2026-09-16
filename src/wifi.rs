@@ -119,12 +119,12 @@ impl WifiManager {
             }
 
             // DHCP (1) + HTTP server's TcpSocket (1) + SNTP's UdpSocket (1)
-            // + a transient socket for `Stack::dns_query` (1, used by SNTP's
-            // hostname lookup) -- 3 was enough before SNTP, panicked
-            // ("adding a socket to a full SocketSet") once it needed a 4th
-            // concurrently. +1 headroom for the next thing that opens one
-            // (WebSocket log streaming is next on the roadmap).
-            static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
+            // + a transient socket for `Stack::dns_query`/reqwless's DNS
+            // lookups (1) + the heartbeat's own TcpClient pool (1) -- 3 was
+            // enough before SNTP, panicked ("adding a socket to a full
+            // SocketSet") once it needed a 4th concurrently. +2 headroom for
+            // what's next on the roadmap (WebSocket log streaming, OTA).
+            static RESOURCES: StaticCell<StackResources<7>> = StaticCell::new();
             let seed = esp_hal::time::Instant::now().duration_since_epoch().as_micros() as u64;
             let (stack, runner) = embassy_net::new(
                 interfaces.station,
@@ -234,6 +234,10 @@ impl WifiManager {
             // SNTP (contrat §5): starts as soon as the network is up, same
             // one-shot guard as the HTTP server above.
             self.spawner.spawn(crate::time::sync_task(stack).unwrap());
+            // Heartbeat (contrat §5): same guard, silent on its own until
+            // ctrl_url is provisioned.
+            self.spawner
+                .spawn(crate::heartbeat::run(stack, storage).unwrap());
         }
 
         true

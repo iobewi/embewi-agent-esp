@@ -2,6 +2,7 @@
 extern crate alloc;
 
 pub mod agent;
+pub mod heartbeat;
 pub mod http;
 pub mod improv;
 pub mod provisioning;

@@ -136,6 +136,12 @@ pub async fn is_authorized(storage: &SharedStorage, presented: &str) -> bool {
     token.as_bytes().ct_eq(presented.as_bytes()).into()
 }
 
+// No OTA/self-check/McuConfigMap subsystems yet -- shared with `health()`
+// below so both endpoints agree, instead of two independently-guessed
+// literals drifting apart later.
+const STATE: &str = "running";
+const CONFIG_GENERATION: u32 = 0;
+
 #[derive(Serialize)]
 struct Firmware {
     name: &'static str,
@@ -171,11 +177,49 @@ pub async fn info(storage: &SharedStorage) -> Info {
         // No OTA subsystem yet (roadmap: after WebSocket) -- always "none"
         // until a write actually lands on the inactive slot.
         staged: Staged { state: "none" },
-        state: "running",
-        // No McuConfigMap subsystem yet -- never bumped, so genuinely 0.
-        config_generation: 0,
+        state: STATE,
+        config_generation: CONFIG_GENERATION,
         // This HTTP server *is* the app service for now (single binary,
         // no separate workload process) -- 80, matching http/mod.rs.
         app_port: 80,
+    }
+}
+
+#[derive(Serialize)]
+struct Checks {
+    app: &'static str,
+    sensors: &'static str,
+    storage: &'static str,
+}
+
+/// `GET /v1alpha1/health` response body (contrat §4) -- local health, not
+/// just network reachability.
+#[derive(Serialize)]
+pub struct Health {
+    status: &'static str,
+    state: &'static str,
+    checks: Checks,
+}
+
+pub async fn health(storage: &SharedStorage) -> Health {
+    // Real check: NVS actually round-trips a write (contrat's own C
+    // reference does the same canary test, for the same reason -- staged
+    // OTA state, the token and McuConfigMap all live there).
+    let storage_ok = storage.lock().await.self_check();
+    // No separate workload process or sensors on this agent (single
+    // binary) -- vacuously true, same reasoning the reference
+    // implementation uses for its demo apps that have no sensors either.
+    let app_ok = true;
+    let sensors_ok = true;
+
+    let ok = |b: bool| if b { "ok" } else { "fail" };
+    Health {
+        status: ok(storage_ok && app_ok && sensors_ok),
+        state: STATE,
+        checks: Checks {
+            app: ok(app_ok),
+            sensors: ok(sensors_ok),
+            storage: ok(storage_ok),
+        },
     }
 }
