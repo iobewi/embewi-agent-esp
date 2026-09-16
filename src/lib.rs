@@ -5,6 +5,7 @@ pub mod agent;
 pub mod heartbeat;
 pub mod http;
 pub mod improv;
+pub mod log_stream;
 pub mod provisioning;
 pub mod status;
 pub mod storage;

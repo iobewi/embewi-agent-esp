@@ -28,14 +28,17 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    // `init_logger` (not `_from_env`) applies one flat level to every crate,
-    // ignoring ESP_LOG's per-module syntax entirely. That meant smoltcp,
-    // embassy-net and esp-radio were all logging at "info" on the same USB
-    // wire Improv uses, real bytes possibly queued behind that chatter --
-    // suspected contributor to Improv responses missing the browser's tight
-    // reconnect timeout once Wi-Fi/HTTP started running concurrently. See
-    // .cargo/config.toml's ESP_LOG for the actual per-crate levels now used.
-    esp_println::logger::init_logger_from_env();
+    // `log_stream::install()` replaces `esp_println::logger::init_logger_from_env()`:
+    // it still prints locally at the same filter level (`.cargo/config.toml`'s
+    // ESP_LOG, now hardcoded there instead of re-parsed -- see log_stream.rs's
+    // doc comment for why), but also captures every line for the outbound
+    // WebSocket log stream (contrat §5). `init_logger` (not `_from_env`, the
+    // reason the old call used the latter) applies one flat level to every
+    // crate, ignoring ESP_LOG's per-module syntax entirely -- that meant
+    // smoltcp, embassy-net and esp-radio were all logging at "info" on the
+    // same USB wire Improv uses, real bytes possibly queued behind that
+    // chatter, a suspected contributor to an earlier Improv bug.
+    embewi_agent_esp::log_stream::install();
 
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
 
