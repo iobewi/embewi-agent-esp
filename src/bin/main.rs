@@ -120,8 +120,14 @@ async fn main(spawner: Spawner) -> ! {
     // must run regardless of network state.
     embewi_agent_esp::ota::on_boot(storage, spawner).await;
 
+    // Admin server TLS: one global MbedTLS instance for the whole program
+    // (see `tls::init`'s doc comment). `http::run` reads whatever cert/key
+    // was last pushed via `POST /v1alpha1/tls/cert` straight from NVS on
+    // each connection, falling back to plain HTTP until one exists.
+    let tls = embewi_agent_esp::tls::init();
+
     let (rx, tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
-    let mut wifi = WifiManager::new(peripherals.WIFI, peripherals.LPWR, spawner);
+    let mut wifi = WifiManager::new(peripherals.WIFI, peripherals.LPWR, tls, spawner);
     wifi.reconnect_saved(storage).await;
 
     provisioning::run(rx, tx, wifi, storage).await

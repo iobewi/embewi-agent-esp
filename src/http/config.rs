@@ -1,0 +1,167 @@
+//! One-shot HTTP provisioning UI -- not part of contrat v1alpha1's JSON API
+//! (that's [`super::api`]). `http::run` calls [`serve`] instead of
+//! [`super::api::serve`] only when the device isn't locked yet; once the
+//! form is saved successfully the device locks and reboots, and every
+//! future boot calls [`super::api::serve`] instead. This router, its
+//! handlers, and the templates they hold are then *structurally*
+//! unreachable -- see `http/mod.rs`'s module doc for why that split exists.
+//!
+//! One-shot by design: the single form (GPIO + identity) always locks and
+//! reboots on a successful save -- there's no "save without locking". A
+//! device only ever needs this page once; after that, `POST
+//! /v1alpha1/token` (contrat §4) is the intended way to rotate credentials.
+
+use alloc::format;
+use alloc::string::String;
+use core::fmt::Write as _;
+
+use embassy_executor::Spawner;
+use embassy_net::Stack;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
+use esp_hal::peripherals::LPWR;
+use picoserve::extract::Form;
+use picoserve::response::{File, Response, StatusCode};
+use picoserve::routing::{get, get_service};
+use static_cell::StaticCell;
+
+use crate::agent;
+use crate::storage::SharedStorage;
+
+use super::{STYLE_CSS, html_escape, reboot_after_delay};
+
+const INDEX_TEMPLATE: &str = include_str!("index.html");
+const CONFIRM_TEMPLATE: &str = include_str!("confirm.html");
+const LOCKED_PAGE: &str = include_str!("locked.html");
+
+/// Highest usable GPIO number on this chip. Update when this firmware
+/// targets a chip other than ESP32-C3.
+const MAX_GPIO: u8 = 21;
+/// Sent by the form in place of a real pin number to mean "no status LED".
+const LED_DISABLED: u8 = 255;
+
+#[derive(serde::Deserialize)]
+struct ConfigForm {
+    led_gpio: u8,
+    node_id: String,
+    ctrl_url: String,
+}
+
+/// Wraps `text` in the same `<p class="message[ error]">` markup used
+/// inline in `page()` -- factored out so the handler building its own
+/// (success/error) message reuses the same class names.
+fn message_html(text: &str, is_error: bool) -> String {
+    let class = if is_error { "message error" } else { "message" };
+    format!("<p class=\"{class}\">{text}</p>")
+}
+
+fn page(led_gpio: Option<u8>, node_id: &str, ctrl_url: &str, message: Option<&str>) -> String {
+    let mut options = String::new();
+    let _ = write!(
+        options,
+        "<option value=\"{LED_DISABLED}\"{}>D\u{e9}sactiv\u{e9}e</option>",
+        if led_gpio.is_none() { " selected" } else { "" }
+    );
+    for gpio in 0..=MAX_GPIO {
+        let _ = write!(
+            options,
+            "<option value=\"{gpio}\"{}>{gpio}</option>",
+            if led_gpio == Some(gpio) { " selected" } else { "" }
+        );
+    }
+
+    INDEX_TEMPLATE
+        .replace("{{OPTIONS}}", &options)
+        .replace("{{MESSAGE}}", message.unwrap_or_default())
+        .replace("{{NODE_ID}}", &html_escape(node_id))
+        .replace("{{CTRL_URL}}", &html_escape(ctrl_url))
+}
+
+/// Plain `async fn`, not `#[embassy_executor::task]`: called from inside
+/// `http::run`'s own `if is_locked() {...} else {...}` (see that module's
+/// doc comment) rather than spawned as an independent task, so its
+/// `Future`'s storage shares space with [`super::api::serve`]'s instead of
+/// both being reserved simultaneously and permanently.
+pub async fn serve(
+    stack: Stack<'static>,
+    storage: &'static SharedStorage,
+    spawner: Spawner,
+    lpwr: LPWR<'static>,
+    tls: crate::tls::TlsReferenceStatic,
+) -> ! {
+    // `lpwr` (a non-`Copy` owned peripheral) must move into
+    // `reboot_after_delay` exactly once, but the `POST /` handler closure
+    // below is an `Fn` (picoserve may call it more than once across
+    // requests) -- parking it behind a lock it can `take()` from is simpler
+    // than trying to move it directly. Only one real consumer here (unlike
+    // `api::run`, which shares the same pattern across two endpoints).
+    static LPWR_CELL: StaticCell<Mutex<CriticalSectionRawMutex, Option<LPWR<'static>>>> =
+        StaticCell::new();
+    let lpwr_cell = &*LPWR_CELL.init(Mutex::new(Some(lpwr)));
+
+    let router = picoserve::Router::new()
+        .route("/style.css", get_service(File::css(STYLE_CSS)))
+        .route(
+            "/",
+            get(move || async move {
+                let (locked, led_gpio) = {
+                    let mut storage = storage.lock().await;
+                    (storage.is_locked(), storage.load_led_gpio())
+                };
+                if locked {
+                    return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
+                        .with_content_type("text/html; charset=utf-8");
+                }
+                let node_id = agent::node_id(storage).await;
+                let ctrl_url = agent::ctrl_url(storage).await;
+                Response::ok(page(led_gpio, &node_id, &ctrl_url, None))
+                    .with_content_type("text/html; charset=utf-8")
+            })
+            // Single, one-shot save: on success this always locks and
+            // reboots (the confirm() dialog in index.html warns about
+            // that) -- a validation error re-serves the editable form
+            // instead, so a typo doesn't lock the device out over nothing.
+            .post(move |Form(form): Form<ConfigForm>| async move {
+                let locked = {
+                    let mut guard = storage.lock().await;
+                    guard.is_locked()
+                };
+                if locked {
+                    return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
+                        .with_content_type("text/html; charset=utf-8");
+                }
+                let gpio = (form.led_gpio != LED_DISABLED).then_some(form.led_gpio);
+                if gpio.is_some_and(|gpio| gpio > MAX_GPIO) {
+                    return Response::new(
+                        StatusCode::BAD_REQUEST,
+                        page(
+                            None,
+                            &form.node_id,
+                            &form.ctrl_url,
+                            Some(&message_html("Broche hors plage pour cette puce.", true)),
+                        ),
+                    )
+                    .with_content_type("text/html; charset=utf-8");
+                }
+
+                storage.lock().await.save_led_gpio(gpio);
+                agent::save_identity(storage, &form.node_id, &form.ctrl_url, "").await;
+                let token = agent::token(storage).await;
+                storage.lock().await.lock();
+                // `take()`s `None` on a second concurrent hit -- one
+                // pending reboot is enough, and there's only one `lpwr` to
+                // give out. The task's own delay gives this response time
+                // to actually reach the client first.
+                if let Some(lpwr) = lpwr_cell.lock().await.take()
+                    && let Ok(spawn_token) = reboot_after_delay(lpwr)
+                {
+                    spawner.spawn(spawn_token);
+                }
+
+                Response::ok(CONFIRM_TEMPLATE.replace("{{TOKEN}}", &html_escape(&token)))
+                    .with_content_type("text/html; charset=utf-8")
+            }),
+        );
+
+    super::serve(stack, storage, tls, &router).await
+}

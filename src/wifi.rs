@@ -38,6 +38,10 @@ pub struct WifiManager {
     /// instead of `esp_hal::system::software_reset()` -- see
     /// `http::reboot_after_delay` for why that matters for native USB.
     lpwr: Option<LPWR<'static>>,
+    /// The global MbedTLS instance (`tls::init`, called once in
+    /// `src/bin/main.rs`), handed to the admin server so it can wrap
+    /// incoming connections in TLS once a certificate is configured.
+    tls: crate::tls::TlsReferenceStatic,
     spawner: Spawner,
     radio: Option<Radio>,
     /// Strongest BSSID seen per SSID in the last [`Self::scan`], so
@@ -48,10 +52,16 @@ pub struct WifiManager {
 }
 
 impl WifiManager {
-    pub fn new(peripheral: WIFI<'static>, lpwr: LPWR<'static>, spawner: Spawner) -> Self {
+    pub fn new(
+        peripheral: WIFI<'static>,
+        lpwr: LPWR<'static>,
+        tls: crate::tls::TlsReferenceStatic,
+        spawner: Spawner,
+    ) -> Self {
         Self {
             peripheral: Some(peripheral),
             lpwr: Some(lpwr),
+            tls,
             spawner,
             radio: None,
             strongest_bssid: Vec::new(),
@@ -118,12 +128,14 @@ impl WifiManager {
                 return None;
             }
 
-            // DHCP (1) + HTTP server's TcpSocket (1) + SNTP's UdpSocket (1)
-            // + a transient socket for `Stack::dns_query`/reqwless's DNS
-            // lookups (1) + the heartbeat's TcpClient pool (1) + the log
-            // stream's long-lived WS TcpConnect pool (1) -- 3 was enough
-            // before SNTP, panicked ("adding a socket to a full SocketSet")
-            // once it needed a 4th concurrently. +1 headroom for OTA next.
+            // DHCP (1) + HTTP/HTTPS server's TcpSocket (1) + SNTP's
+            // UdpSocket (1) + a transient socket for each outbound DNS
+            // query (heartbeat/log stream resolving `ctrl_url`'s host,
+            // `embassy_net::dns::DnsSocket`, 1) + the heartbeat's own
+            // TcpSocket (1) + the log stream's long-lived WS TcpSocket (1)
+            // -- 3 was enough before SNTP, panicked ("adding a socket to a
+            // full SocketSet") once it needed a 4th concurrently. +1
+            // headroom for OTA.
             static RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();
             let seed = esp_hal::time::Instant::now().duration_since_epoch().as_micros() as u64;
             let (stack, runner) = embassy_net::new(
@@ -229,22 +241,26 @@ impl WifiManager {
         let stack = radio.stack;
 
         if let Some(lpwr) = self.lpwr.take() {
-            // contrat §4, `POST /app/port`: whatever was last saved (80 if
-            // never touched) -- fetched here rather than threaded in from
-            // main.rs, since `connect` already has `storage` in hand.
-            let port = crate::agent::app_port(storage).await;
+            // `http::run` picks the one-shot provisioning UI or the
+            // `/v1alpha1/*` JSON API internally, based on whether the
+            // device is locked yet (see that module's doc comment for why
+            // it's one task branching internally, not two tasks). Always
+            // on the fixed admin port, never `agent::app_port` -- contrat
+            // §4's `app_port`/`POST /app/port` is the TCP port of a
+            // *separate* business-layer service, not this admin/Kube-facing
+            // server.
             self.spawner
-                .spawn(crate::http::run(stack, storage, self.spawner, lpwr, port).unwrap());
+                .spawn(crate::http::run(stack, storage, self.spawner, lpwr, self.tls).unwrap());
             // SNTP (contrat §5): starts as soon as the network is up, same
             // one-shot guard as the HTTP server above.
             self.spawner.spawn(crate::time::sync_task(stack).unwrap());
             // Heartbeat (contrat §5): same guard, silent on its own until
             // ctrl_url is provisioned.
             self.spawner
-                .spawn(crate::heartbeat::run(stack, storage).unwrap());
+                .spawn(crate::heartbeat::run(stack, storage, self.tls).unwrap());
             // ESP_LOGx streaming (contrat §5): same guard.
             self.spawner
-                .spawn(crate::log_stream::run(stack, storage).unwrap());
+                .spawn(crate::log_stream::run(stack, storage, self.tls).unwrap());
         }
 
         true

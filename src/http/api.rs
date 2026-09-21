@@ -1,0 +1,239 @@
+//! Contrat v1alpha1 JSON API (`/v1alpha1/*`) -- not the provisioning UI
+//! (that's [`super::config`]). `http::run` calls [`serve`] instead of
+//! [`super::config::serve`] once the device is locked (i.e. on every boot
+//! after the first successful provisioning); see `http/mod.rs`'s module
+//! doc for why they're two plain functions sharing one task's `Future`
+//! storage, not two separate `#[embassy_executor::task]`s.
+
+use alloc::format;
+use alloc::string::String;
+
+use embassy_executor::Spawner;
+use embassy_net::Stack;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
+use esp_hal::peripherals::LPWR;
+use picoserve::response::StatusCode;
+use picoserve::routing::{get, post, put_service};
+use static_cell::StaticCell;
+
+use crate::agent;
+use crate::ota;
+use crate::storage::SharedStorage;
+
+use super::{json_error, json_ok, reboot_after_delay, unauthorized};
+
+mod ota_write;
+use ota_write::OtaWrite;
+
+/// Plain `async fn`, not `#[embassy_executor::task]`: called from inside
+/// `http::run`'s own `if is_locked() {...} else {...}` (see that module's
+/// doc comment) rather than spawned as an independent task, so its
+/// `Future`'s storage shares space with [`super::config::serve`]'s instead
+/// of both being reserved simultaneously and permanently.
+pub async fn serve(
+    stack: Stack<'static>,
+    storage: &'static SharedStorage,
+    spawner: Spawner,
+    lpwr: LPWR<'static>,
+    tls: crate::tls::TlsReferenceStatic,
+) -> ! {
+    // `lpwr` (a non-`Copy` owned peripheral) must move into
+    // `reboot_after_delay` exactly once, but both `/reboot` and
+    // `/ota/activate` can trigger it -- parking it behind a lock either can
+    // `take()` from is simpler than trying to move it into two closures.
+    static LPWR_CELL: StaticCell<Mutex<CriticalSectionRawMutex, Option<LPWR<'static>>>> =
+        StaticCell::new();
+    let lpwr_cell = &*LPWR_CELL.init(Mutex::new(Some(lpwr)));
+
+    let router = picoserve::Router::new()
+        .route(
+            "/v1alpha1/info",
+            get(move |agent::Bearer(token): agent::Bearer| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                json_ok(serde_json::to_string(&agent::info(storage).await).unwrap_or_default())
+            }),
+        )
+        .route(
+            "/v1alpha1/health",
+            get(move |agent::Bearer(token): agent::Bearer| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                json_ok(serde_json::to_string(&agent::health(storage).await).unwrap_or_default())
+            }),
+        )
+        .route(
+            "/v1alpha1/config",
+            get(move |agent::Bearer(token): agent::Bearer| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                json_ok(serde_json::to_string(&agent::config(storage).await).unwrap_or_default())
+            })
+            .post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                let Ok(push) = serde_json::from_str::<agent::ConfigPush>(&body) else {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_data_field\"}");
+                };
+                agent::push_config(storage, &push).await;
+                let generation = storage.lock().await.cfg_generation();
+                json_ok(format!(
+                    "{{\"status\":\"saved\",\"generation\":{generation},\"note\":\"effective_after_reboot\"}}"
+                ))
+            }),
+        )
+        .route(
+            "/v1alpha1/token",
+            post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                #[derive(serde::Deserialize)]
+                struct TokenBody {
+                    token: String,
+                }
+                let Ok(req) = serde_json::from_str::<TokenBody>(&body) else {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_token\"}");
+                };
+                match agent::rotate_token(storage, &req.token).await {
+                    Ok(()) => json_ok(String::from("{\"status\":\"rotated\"}")),
+                    Err(agent::RotateTokenError::InvalidLength) => {
+                        json_error(StatusCode::BAD_REQUEST, "{\"error\":\"token must be 8-64 chars\"}")
+                    }
+                    Err(agent::RotateTokenError::WriteFailed) => json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "{\"error\":\"nvs_write_failed\"}",
+                    ),
+                }
+            }),
+        )
+        .route(
+            "/v1alpha1/reboot",
+            post(move |agent::Bearer(token): agent::Bearer| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                // Same one-shot `lpwr_cell` as `/ota/activate` below --
+                // whichever fires first gets to actually reboot the
+                // device; there's only one `lpwr` to hand out either way.
+                if let Some(lpwr) = lpwr_cell.lock().await.take()
+                    && let Ok(spawn_token) = reboot_after_delay(lpwr)
+                {
+                    spawner.spawn(spawn_token);
+                }
+                json_ok(String::from("{\"status\":\"rebooting\"}"))
+            }),
+        )
+        .route(
+            "/v1alpha1/app/port",
+            post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                #[derive(serde::Deserialize)]
+                struct AppPortBody {
+                    port: u32,
+                }
+                let Ok(req) = serde_json::from_str::<AppPortBody>(&body) else {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_port\"}");
+                };
+                if !(1024..=65535).contains(&req.port) {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"port must be 1024-65535\"}");
+                }
+                storage.lock().await.save_app_port(req.port as u16);
+                json_ok(format!(
+                    "{{\"status\":\"saved\",\"port\":{}}}",
+                    req.port
+                ))
+            }),
+        )
+        // OTA A/B (contrat §3/§4/§6) -- streaming write logic lives in
+        // `ota_write.rs`, everything else (`src/ota.rs`) is just called
+        // through like the routes above.
+        .route(
+            "/v1alpha1/ota/prepare",
+            post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                let Ok(req) = serde_json::from_str::<ota::PrepareRequest>(&body) else {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"bad_request\"}");
+                };
+                let resp = ota::prepare(storage, &req).await;
+                json_ok(serde_json::to_string(&resp).unwrap_or_default())
+            }),
+        )
+        .route("/v1alpha1/ota/write", put_service(OtaWrite { storage }))
+        .route(
+            "/v1alpha1/ota/activate",
+            post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                #[derive(serde::Deserialize)]
+                struct ActivateBody {
+                    deployment_id: String,
+                }
+                let Ok(req) = serde_json::from_str::<ActivateBody>(&body) else {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_deployment_id\"}");
+                };
+                let Some(target_slot) = ota::activate(storage, &req.deployment_id).await else {
+                    return json_error(StatusCode::CONFLICT, "{\"error\":\"not_staged\"}");
+                };
+                // Same one-shot `lpwr_cell` as `/reboot` above -- there's
+                // only one `lpwr` to hand out, whichever fires first wins.
+                if let Some(lpwr) = lpwr_cell.lock().await.take()
+                    && let Ok(spawn_token) = reboot_after_delay(lpwr)
+                {
+                    spawner.spawn(spawn_token);
+                }
+                json_ok(format!("{{\"status\":\"rebooting\",\"target_slot\":\"{target_slot}\"}}"))
+            }),
+        )
+        .route(
+            "/v1alpha1/tls/cert",
+            post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                #[derive(serde::Deserialize)]
+                struct CertBody {
+                    cert_pem: String,
+                    key_pem: String,
+                }
+                let Ok(req) = serde_json::from_str::<CertBody>(&body) else {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_cert_or_key\"}");
+                };
+                if !crate::tls::save_cert(storage, &req.cert_pem, &req.key_pem).await {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"invalid_certificate\"}");
+                }
+                json_ok(String::from("{\"status\":\"saved\"}"))
+            }),
+        )
+        .route(
+            "/v1alpha1/tls/ca",
+            post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
+                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                    return unauthorized();
+                }
+                #[derive(serde::Deserialize)]
+                struct CaBody {
+                    ca_pem: String,
+                }
+                let Ok(req) = serde_json::from_str::<CaBody>(&body) else {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_ca\"}");
+                };
+                if !crate::tls::save_ca(storage, &req.ca_pem).await {
+                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"invalid_certificate\"}");
+                }
+                json_ok(String::from("{\"status\":\"saved\"}"))
+            }),
+        );
+
+    super::serve(stack, storage, tls, &router).await
+}
