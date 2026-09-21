@@ -160,6 +160,12 @@ pub struct Storage {
     /// reports both, so the Core can tell "saved" apart from "active".
     active_cfg: BTreeMap<String, String>,
     active_cfg_generation: u32,
+    /// Last known NVS health, published by `GET /v1alpha1/health` without
+    /// touching flash. Set by [`Self::self_check`] (at boot, and during
+    /// `pending_verify`), and cleared by any NVS error seen afterwards --
+    /// a read or write failing at runtime is exactly what `/health` must
+    /// report. Only a passing `self_check` sets it again.
+    healthy: bool,
 }
 
 impl Storage {
@@ -170,6 +176,7 @@ impl Storage {
                 nvs: None,
                 active_cfg: BTreeMap::new(),
                 active_cfg_generation: 0,
+                healthy: true,
             };
         storage.active_cfg_generation = storage.cfg_generation();
         storage.active_cfg = storage.cfg_entries();
@@ -275,13 +282,24 @@ impl Storage {
     /// Any failed step (write, read-back mismatch, erase) fails the check:
     /// a stale canary left behind by a failed erase must never let the next
     /// round pass on a value it didn't itself write.
+    ///
+    /// Writes to flash: run it at boot and as the `pending_verify` gate,
+    /// never per request -- `/health` reads [`Self::is_healthy`] instead.
     pub fn self_check(&mut self) -> bool {
         const CANARY: Key = Key::from_str("canary");
         const VALUE: u8 = 0xA5;
         let written = self.set_u8(&SYSTEM_NAMESPACE, &CANARY, VALUE).is_ok();
         let read_back = self.get_u8(&SYSTEM_NAMESPACE, &CANARY) == Some(VALUE);
         let erased = self.delete(&SYSTEM_NAMESPACE, &CANARY).is_ok();
-        written && read_back && erased
+        let ok = written && read_back && erased;
+        self.healthy = ok;
+        ok
+    }
+
+    /// The last known NVS health (see the `healthy` field): RAM only, no
+    /// flash access.
+    pub fn is_healthy(&self) -> bool {
+        self.healthy
     }
 
     /// `None` if no status LED is configured.
@@ -387,6 +405,7 @@ impl Storage {
             Err(e) => {
                 warn!("Failed to delete {}: {e:?}", key.as_str());
                 self.nvs = None;
+                self.healthy = false;
                 Err(StorageError::Write)
             }
         }
@@ -403,6 +422,7 @@ impl Storage {
             Err(e) => {
                 warn!("Failed to read {}: {e:?}", key.as_str());
                 self.nvs = None;
+                self.healthy = false;
                 None
             }
         }
@@ -416,6 +436,7 @@ impl Storage {
         nvs.set(namespace, key, value).map_err(|e| {
             warn!("Failed to save {}: {e:?}", key.as_str());
             self.nvs = None;
+            self.healthy = false;
             StorageError::Write
         })
     }

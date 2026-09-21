@@ -370,10 +370,13 @@ pub struct Health {
 }
 
 pub async fn health(storage: &SharedStorage) -> Health {
-    // Real check: NVS actually round-trips a write (contrat's own C
-    // reference does the same canary test, for the same reason -- staged
-    // OTA state, the token and McuConfigMap all live there).
-    let storage_ok = storage.lock().await.self_check();
+    // Last known NVS health: the canary round-trip (contrat's own C
+    // reference does the same test, for the same reason -- staged OTA
+    // state, the token and McuConfigMap all live there) ran at boot and
+    // runs again as the `pending_verify` gate, and any NVS error since
+    // then has cleared it. A health probe never writes flash: polled at
+    // 1 Hz it would mean ~170k NVS mutations a day.
+    let storage_ok = storage.lock().await.is_healthy();
     // No separate workload process or sensors on this agent (single
     // binary) -- vacuously true, same reasoning the reference
     // implementation uses for its demo apps that have no sensors either.

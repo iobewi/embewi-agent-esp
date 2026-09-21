@@ -555,6 +555,11 @@ pub async fn on_boot(storage: &'static SharedStorage, spawner: Spawner) {
             spawner.spawn(token);
         }
     } else {
+        // The NVS canary round-trip `/health` reports on (during
+        // `pending_verify` the self-check task runs it instead).
+        if !storage.lock().await.self_check() {
+            warn!("ota: boot NVS self-check failed, /health will report storage=fail");
+        }
         agent::set_state(agent::State::Running);
         // A `written`/`activating` entry surviving from an interrupted
         // cycle (e.g. this device power-cycled before the bootloader ever
