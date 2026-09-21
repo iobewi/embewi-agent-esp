@@ -41,3 +41,26 @@ se règle depuis une page servie par l'appareil lui-même une fois sur le
 Wi-Fi (voir `src/http/`), pas depuis cette page statique. Après une
 connexion Wi-Fi réussie via Improv, un bouton « Visit Device » apparaît
 directement dans la fenêtre d'ESP Web Tools et y mène.
+
+## Image avec le bootloader Rust (`embewi-boot`)
+
+```sh
+scripts/build-boot.sh     # -> web/firmware/esp32c3/{firmware,app,otadata}.bin
+```
+
+`firmware.bin` est l'image mergée (embewi-boot + table de partitions + agent,
+`otadata` seedé) servie par `index.html` / `manifest.json`. `app.bin` et
+`otadata.bin` alimentent `recover.html`.
+
+## Récupération : `recover.html`
+
+`http://localhost:8080/recover.html` réécrit **uniquement** `ota_0` (`0x20000`)
+et `otadata` (`0xf000`), sans effacer la flash : bootloader, table de
+partitions et NVS (Wi-Fi, token) sont conservés. À utiliser quand une image
+applicative est corrompue mais que le bootloader démarre encore (`boot: FAILED
+bad image magic …`). Pas un flash complet : si le bootloader lui-même est en
+cause, utiliser `index.html` avec « Erase ».
+
+`otadata` est seedé (`seq=1`, VALID) parce que le bootloader Rust ne le gère
+pas encore : vierge, l'agent croirait que le slot courant est « Factory » et
+écrirait ses OTA dans le slot en cours d'exécution (voir `boot/README.md`).
