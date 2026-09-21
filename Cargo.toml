@@ -155,6 +155,9 @@ mbedtls-rs = { version = "0.3.0", default-features = false, features = [
   "kex-ecdhe-ecdsa",
   "drbg-ctr", "entropy",
   "tls-debug",
+  # X.509 notBefore/notAfter checks (off by default); needs the clock
+  # installed in `tls::init`, and brings `hook-timer` with it.
+  "hook-wall-clock",
   "ssl-in-content-len-2048", "ssl-out-content-len-2048",
 ] }
 # `EspCryptoRng` (src/tls.rs) implements this directly against

@@ -16,14 +16,13 @@
 //! Outbound TLS (`heartbeat.rs`/`log_stream.rs`, verifying the Core's
 //! certificate) is also here: `POST /v1alpha1/tls/ca` pushes the CA PEM to
 //! trust, and [`connect_client`] does the TCP connect + handshake against
-//! it. Contrat §5's `clock_unsynced` relaxed-validation channel ("chiffrement
-//! actif, chaîne/CN toujours vérifiés, seule la fenêtre de validité
-//! temporelle est suspendue") is this build's *unconditional* behavior
-//! right now, not something that tightens back up once SNTP syncs: date
-//! checking needs MbedTLS's `hook-wall-clock` feature plus installing a
-//! real wall clock (`crate::time`), neither of which is wired yet. Until
-//! then this is honestly "always relaxed on dates", not "relaxed only
-//! while unsynced".
+//! it. Certificate validity dates (`notBefore`/`notAfter`) are checked:
+//! `hook-wall-clock` is enabled and `crate::time` (SNTP) is installed as
+//! MbedTLS's wall clock in [`init`]. The peer is therefore never talked to
+//! before SNTP has converged ([`ClientTlsError::ClockUnsynced`]) -- this
+//! build fails closed there instead of implementing contrat §5's relaxed
+//! `clock_unsynced` channel (chain/CN verified, dates suspended), which
+//! would accept an expired certificate.
 
 use alloc::boxed::Box;
 use alloc::ffi::CString;
@@ -36,6 +35,9 @@ use embassy_sync::mutex::Mutex;
 use esp_nvs::Key;
 use log::warn;
 use mbedtls_rs::io::{ErrorType, Read};
+use mbedtls_rs::sys::hook::timer::{MbedtlsTimer, hook_timer};
+use mbedtls_rs::sys::hook::wall_clock::{MbedtlsWallClock, hook_wall_clock};
+use mbedtls_rs::sys::{mbedtls_ms_time_t, tm};
 use mbedtls_rs::{
     Certificate, ClientSessionConfig, Credentials, PrivateKey, ServerSessionConfig, Session, SessionConfig,
     SessionError, Tls, TlsReference, X509,
@@ -91,6 +93,62 @@ impl TryRng for EspCryptoRng {
 
 impl TryCryptoRng for EspCryptoRng {}
 
+/// MbedTLS's wall clock (X.509 validity dates), backed by SNTP. `None`
+/// before the first sync, which MbedTLS treats as "every certificate is
+/// invalid" -- fails closed even if a caller forgot the
+/// [`ClientTlsError::ClockUnsynced`] check.
+struct SntpWallClock;
+
+impl MbedtlsWallClock for SntpWallClock {
+    fn instant(&self) -> Option<tm> {
+        epoch_to_tm(crate::time::now()?)
+    }
+}
+
+/// Monotonic clock MbedTLS wants alongside the wall clock (timeouts).
+struct UptimeTimer;
+
+impl MbedtlsTimer for UptimeTimer {
+    fn now(&self) -> mbedtls_ms_time_t {
+        embassy_time::Instant::now().as_millis() as mbedtls_ms_time_t
+    }
+}
+
+/// Unix epoch seconds -> broken-down UTC time (Hinnant's civil-from-days).
+/// `None` past year 9999 (X.509's own range), never wraps.
+fn epoch_to_tm(epoch: u64) -> Option<tm> {
+    let days = i64::try_from(epoch / 86_400).ok()?;
+    let secs = (epoch % 86_400) as i32;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as i32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as i32; // 1..=12
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    if !(1970..=9999).contains(&year) {
+        return None;
+    }
+    let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    const CUMULATIVE: [i32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let yday = CUMULATIVE[(month - 1) as usize] + day - 1 + i32::from(is_leap && month > 2);
+    Some(tm {
+        tm_sec: secs % 60,
+        tm_min: secs / 60 % 60,
+        tm_hour: secs / 3_600,
+        tm_mday: day,
+        tm_mon: month - 1,
+        tm_year: (year - 1900) as i32,
+        tm_wday: ((days + 4).rem_euclid(7)) as i32, // 1970-01-01 was a Thursday
+        tm_yday: yday,
+        tm_isdst: 0,
+    })
+}
+
+static WALL_CLOCK: SntpWallClock = SntpWallClock;
+static TIMER: UptimeTimer = UptimeTimer;
 static RNG: StaticCell<EspCryptoRng> = StaticCell::new();
 static TLS: StaticCell<Tls<'static>> = StaticCell::new();
 
@@ -102,6 +160,12 @@ pub type TlsReferenceStatic = TlsReference<'static>;
 /// boot, before any `Session` is created -- see `Tls::new`'s own
 /// "only one active instance" invariant.
 pub fn init() -> TlsReference<'static> {
+    // SAFETY: called once at boot, before any MbedTLS X.509 use (documented
+    // requirement of both hooks); both statics are `'static` and stateless.
+    unsafe {
+        hook_timer(Some(&TIMER));
+        hook_wall_clock(Some(&WALL_CLOCK));
+    }
     let rng = RNG.init(EspCryptoRng(esp_hal::rng::Rng::new()));
     let tls = TLS.init(Tls::new(rng).expect("tls::init() called more than once"));
     tls.reference()
@@ -401,6 +465,9 @@ pub async fn save_ca(storage: &SharedStorage, ca_pem: &str) -> Result<(), SaveCe
 
 /// Why [`connect_client`] couldn't establish a connection.
 pub enum ClientTlsError {
+    /// SNTP hasn't converged yet, so certificate dates can't be checked:
+    /// not a handshake failure, and retrying once the clock is set works.
+    ClockUnsynced,
     /// No CA has been pushed via `POST /v1alpha1/tls/ca` yet.
     NoCa,
     /// The stored CA PEM no longer parses (shouldn't happen -- `save_ca`
@@ -414,6 +481,7 @@ pub enum ClientTlsError {
 impl core::fmt::Display for ClientTlsError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::ClockUnsynced => write!(f, "clock not synchronized yet (SNTP)"),
             Self::NoCa => write!(f, "no CA configured (POST /v1alpha1/tls/ca)"),
             Self::BadCa => write!(f, "stored CA failed to parse"),
             Self::Dns => write!(f, "DNS resolution failed"),
@@ -446,6 +514,9 @@ pub async fn connect_client<'h, 'buf>(
     host: &'h core::ffi::CStr,
     port: u16,
 ) -> Result<Session<'h, TcpSocket<'buf>>, ClientTlsError> {
+    if !crate::time::is_set() {
+        return Err(ClientTlsError::ClockUnsynced);
+    }
     let ca_pem = storage.lock().await.get_string(&NAMESPACE, &KEY_CA).ok_or(ClientTlsError::NoCa)?;
     let ca_c = CString::new(ca_pem).map_err(|_| ClientTlsError::BadCa)?;
     let ca_chain = Certificate::new(X509::PEM(&ca_c)).map_err(|_| ClientTlsError::BadCa)?;

@@ -126,13 +126,12 @@ async fn send(
     let node_id = agent::node_id(storage).await;
     let ip = stack.config_v4().map(|c| format!("{}", c.address.address())).unwrap_or_default();
 
-    // Canal de détresse (contrat §5): tant que SNTP n'a pas convergé, `ts`
-    // ne vaut que l'uptime et le heartbeat porte `reason: "clock_unsynced"`
-    // pour que le Core distingue ce cas d'un vrai silence.
-    let (ts, reason) = match crate::time::now() {
-        Some(ts) => (ts, None),
-        None => (Instant::now().as_secs(), Some("clock_unsynced")),
-    };
+    // `connect_client` refuses to connect before SNTP has converged (TLS
+    // date validation fails closed), so the clock is set by here and the
+    // contrat §5 `clock_unsynced` distress channel can no longer be sent:
+    // an unsynced device is silent, and the log below says why.
+    let ts = crate::time::now().unwrap_or_default();
+    let reason = None;
 
     let state = agent::state();
     let body = Heartbeat {
