@@ -14,6 +14,8 @@ use embassy_sync::mutex::Mutex;
 use esp_hal::peripherals::FLASH;
 use esp_nvs::error::Error as NvsError;
 use esp_nvs::{Get, Key, Nvs, Set};
+use embedded_storage::nor_flash::{ErrorType, MultiwriteNorFlash, NorFlash, ReadNorFlash};
+use esp_nvs::platform::Crc;
 use esp_storage::FlashStorage;
 use log::warn;
 
@@ -48,11 +50,85 @@ const KEY_CFG_GENERATION: Key = Key::from_str("_gen");
 /// which panics past it rather than erroring.
 const MAX_CFG_KEY_LEN: usize = 15;
 
+/// Handle to the one `FlashStorage`, cheap to copy, that the cached `Nvs`
+/// owns (a plain `&mut FlashStorage` can't be, since `Storage` itself owns
+/// the flash and `with_raw_flash` needs it too). Delegates everything to
+/// the pointee unchanged.
+#[derive(Clone, Copy)]
+pub struct SharedFlash(core::ptr::NonNull<FlashStorage<'static>>);
+
+// SAFETY: the pointee is the `'static` `FLASH` cell below and is only
+// dereferenced by (a) the one `Nvs` cached in `Storage` (behind `&mut
+// Storage`) or (b) `Storage::with_raw_flash()` -- never both at once (both
+// need `&mut Storage`), and never from two contexts at the same time.
+unsafe impl Send for SharedFlash {}
+
+impl SharedFlash {
+    fn flash(&mut self) -> &mut FlashStorage<'static> {
+        // SAFETY: see the `Send` impl above.
+        unsafe { self.0.as_mut() }
+    }
+}
+
+/// The one `FlashStorage` (its constructor panics if called twice).
+static FLASH: static_cell::StaticCell<FlashStorage<'static>> = static_cell::StaticCell::new();
+
+impl ErrorType for SharedFlash {
+    type Error = <FlashStorage<'static> as ErrorType>::Error;
+}
+
+impl ReadNorFlash for SharedFlash {
+    const READ_SIZE: usize = <FlashStorage<'static> as ReadNorFlash>::READ_SIZE;
+
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), Self::Error> {
+        self.flash().read(offset, bytes)
+    }
+
+    fn capacity(&self) -> usize {
+        // SAFETY: see the `Send` impl above.
+        unsafe { self.0.as_ref() }.capacity()
+    }
+}
+
+impl NorFlash for SharedFlash {
+    const WRITE_SIZE: usize = <FlashStorage<'static> as NorFlash>::WRITE_SIZE;
+    const ERASE_SIZE: usize = <FlashStorage<'static> as NorFlash>::ERASE_SIZE;
+
+    fn erase(&mut self, from: u32, to: u32) -> Result<(), Self::Error> {
+        self.flash().erase(from, to)
+    }
+
+    fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.flash().write(offset, bytes)
+    }
+}
+
+impl MultiwriteNorFlash for SharedFlash {}
+
+impl Crc for SharedFlash {
+    fn crc32(init: u32, data: &[u8]) -> u32 {
+        <FlashStorage<'static> as Crc>::crc32(init, data)
+    }
+}
+
 pub struct Storage {
-    /// `None` if the partition couldn't be opened (logged when that
-    /// happens); reads then return `None` and writes are silently dropped,
-    /// same as an empty/never-written store.
-    nvs: Option<Nvs<FlashStorage<'static>>>,
+    /// The raw flash chip -- `esp_storage::FlashStorage::new()` panics if
+    /// called a second time, so this is the *only* handle to it for the
+    /// whole firmware. `None` if it couldn't be constructed.
+    ///
+    /// OTA A/B (`src/ota.rs`) also needs raw access to the flash chip, to
+    /// read/write the `ota_0`/`ota_1`/`otadata` partitions -- see
+    /// [`Self::with_raw_flash`].
+    flash: Option<SharedFlash>,
+    /// The `Nvs` handle, built once (a full scan of the 24 KB partition) and
+    /// kept between calls. `esp-nvs` writes through immediately on every
+    /// `set()` (no `commit()` in its API), so a long-lived handle never
+    /// risks losing a write. Rebuilding it on every call used to cost six
+    /// 4 KiB flash reads (~0.8 ms each, with interrupts masked by
+    /// `esp-storage`) per `get`/`set` -- measurable jitter for anything
+    /// else running on the chip. Dropped (and so rebuilt on next use) after
+    /// an unexpected NVS error, in case its in-memory view went stale.
+    nvs: Option<Nvs<SharedFlash>>,
     /// McuConfigMap snapshot taken once, right here at construction (which
     /// only ever happens once, at boot) -- contrat §4a: "L'agent lit la
     /// config NVS une seule fois au boot." Stays frozen even if `POST
@@ -64,17 +140,53 @@ pub struct Storage {
 
 impl Storage {
     pub fn new(flash: FLASH<'static>) -> Self {
-        let nvs = match Nvs::new(PARTITION_OFFSET, PARTITION_SIZE, FlashStorage::new(flash)) {
-            Ok(nvs) => Some(nvs),
-            Err(e) => {
-                warn!("NVS unavailable, nothing will persist across reboots: {e:?}");
-                None
-            }
-        };
-        let mut storage = Self { nvs, active_cfg: BTreeMap::new(), active_cfg_generation: 0 };
+        let mut storage =
+            Self {
+                flash: Some(SharedFlash(core::ptr::NonNull::from(FLASH.init(FlashStorage::new(flash))))),
+                nvs: None,
+                active_cfg: BTreeMap::new(),
+                active_cfg_generation: 0,
+            };
         storage.active_cfg_generation = storage.cfg_generation();
         storage.active_cfg = storage.cfg_entries();
         storage
+    }
+
+    /// Bounded raw access to the flash chip, for `src/ota.rs` (to build an
+    /// `esp_bootloader_esp_idf::ota_updater::OtaUpdater` from, read the
+    /// partition table, ...): `f` runs with exclusive use of the one
+    /// `FlashStorage`, and the reference cannot escape it.
+    ///
+    /// Invariant: the flash controller has exactly one user at a time. `&mut
+    /// self` already guarantees no `Nvs` call (which needs `&mut self` too)
+    /// can run while `f` does; the cached `Nvs` only holds the flash
+    /// *pointer*, not a live reference, so it can stay alive across this
+    /// call. It is deliberately NOT dropped here (an earlier version did, and
+    /// every `GET /v1alpha1/info` -- `ota::active_slot` -> raw flash access --
+    /// then forced a full 6 x 4 KiB rescan of NVS on the next read, each
+    /// read masking interrupts for ~0.8 ms). That is sound only because the
+    /// OTA code reads/writes `otadata`/`ota_0`/`ota_1`, which do not overlap
+    /// the NVS partition (`PARTITION_OFFSET..+PARTITION_SIZE`), so the
+    /// cache can't go stale from them.
+    pub fn with_raw_flash<R>(&mut self, f: impl FnOnce(&mut FlashStorage<'static>) -> R) -> Option<R> {
+        let flash = self.flash?;
+        // SAFETY: see above -- `&mut self` is exclusive for the whole call.
+        Some(f(unsafe { &mut *flash.0.as_ptr() }))
+    }
+
+    /// The `Nvs` handle scoped to this NVS partition, built on first use.
+    /// See the `nvs` field's doc comment.
+    fn nvs(&mut self) -> Option<&mut Nvs<SharedFlash>> {
+        if self.nvs.is_none() {
+            match Nvs::new(PARTITION_OFFSET, PARTITION_SIZE, self.flash?) {
+                Ok(nvs) => self.nvs = Some(nvs),
+                Err(e) => {
+                    warn!("NVS unavailable: {e:?}");
+                    return None;
+                }
+            }
+        }
+        self.nvs.as_mut()
     }
 
     pub fn get_string(&mut self, namespace: &Key, key: &Key) -> Option<String> {
@@ -156,12 +268,16 @@ impl Storage {
         }
     }
 
-    /// The app service's TCP port (contrat §4, `POST /app/port`). `80` if
-    /// never set -- matches what this agent has always bound to, since
-    /// there's no separate workload process here for the default to differ
-    /// from (see `agent.rs`'s doc comment on `Info::app_port`).
+    /// The TCP port of the *business-layer* service (contrat §4, `POST
+    /// /app/port`) -- a separate concern from this agent's own admin
+    /// server, which always listens on `http::ADMIN_PORT` regardless of
+    /// this value (see that module's doc comment). No such business-layer
+    /// process exists in this single-binary agent yet, so this is purely
+    /// an NVS-stored value `GET /info` reports -- nothing actually binds
+    /// to it. `8080` if never set, matching the contract's own `GET
+    /// /info` example and its `1024-65535` range for `POST /app/port`.
     pub fn load_app_port(&mut self) -> u16 {
-        self.get_u16(&SYSTEM_NAMESPACE, &KEY_APP_PORT).unwrap_or(80)
+        self.get_u16(&SYSTEM_NAMESPACE, &KEY_APP_PORT).unwrap_or(8080)
     }
 
     pub fn save_app_port(&mut self, port: u16) {
@@ -215,7 +331,7 @@ impl Storage {
     /// `nvs.get()` calls below couldn't borrow it again to read values.
     pub fn cfg_entries(&mut self) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
-        let Some(nvs) = self.nvs.as_mut() else {
+        let Some(nvs) = self.nvs() else {
             return out;
         };
         let keys: Vec<(Key, Key)> = nvs.keys().filter_map(Result::ok).collect();
@@ -231,25 +347,29 @@ impl Storage {
     }
 
     pub fn delete(&mut self, namespace: &Key, key: &Key) {
-        let Some(nvs) = self.nvs.as_mut() else {
+        let Some(nvs) = self.nvs() else {
             return;
         };
         match nvs.delete(namespace, key) {
             Ok(()) | Err(NvsError::NamespaceNotFound | NvsError::KeyNotFound) => {}
-            Err(e) => warn!("Failed to delete {}: {e:?}", key.as_str()),
+            Err(e) => {
+                warn!("Failed to delete {}: {e:?}", key.as_str());
+                self.nvs = None;
+            }
         }
     }
 
     fn get<T>(&mut self, namespace: &Key, key: &Key) -> Option<T>
     where
-        Nvs<FlashStorage<'static>>: Get<T>,
+        Nvs<SharedFlash>: Get<T>,
     {
-        let nvs = self.nvs.as_mut()?;
+        let nvs = self.nvs()?;
         match nvs.get(namespace, key) {
             Ok(value) => Some(value),
             Err(NvsError::NamespaceNotFound | NvsError::KeyNotFound) => None,
             Err(e) => {
                 warn!("Failed to read {}: {e:?}", key.as_str());
+                self.nvs = None;
                 None
             }
         }
@@ -257,13 +377,14 @@ impl Storage {
 
     fn set<T>(&mut self, namespace: &Key, key: &Key, value: T)
     where
-        Nvs<FlashStorage<'static>>: Set<T>,
+        Nvs<SharedFlash>: Set<T>,
     {
-        let Some(nvs) = self.nvs.as_mut() else {
+        let Some(nvs) = self.nvs() else {
             return;
         };
         if let Err(e) = nvs.set(namespace, key, value) {
             warn!("Failed to save {}: {e:?}", key.as_str());
+            self.nvs = None;
         }
     }
 }
