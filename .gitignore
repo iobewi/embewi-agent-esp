@@ -39,3 +39,5 @@ docs/_build/
 .venv-docs/
 
 tmp/
+# Spike temps réel archivé : images binaires des expériences (~8 Mo)
+archive/rt-poc/images/
