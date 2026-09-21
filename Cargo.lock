@@ -983,6 +983,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "embewi-boot-core"
+version = "0.1.0"
+
+[[package]]
 name = "embuild"
 version = "0.33.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
