@@ -5,6 +5,8 @@
 # `cargo test` -- see that crate's own doc comment. The root package below
 # is implicitly a workspace member too.
 members = ["crates/ota-logic"]
+# `boot/` (embewi-boot) is a separate Cargo project with its own linker script.
+exclude = ["boot"]
 
 [package]
 edition      = "2024"

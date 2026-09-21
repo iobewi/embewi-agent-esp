@@ -1,5 +1,6 @@
 # Build output
 /target/
+/boot/target/
 web/firmware/**/*.bin
 
 # Secrets / per-node config (ne jamais committer)
