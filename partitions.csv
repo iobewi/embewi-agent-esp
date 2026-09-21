@@ -1,0 +1,14 @@
+# Embewi Agent -- table de partitions A/B (contrat §3/§6), 4 MB, sans factory.
+#
+# Le bootloader boote depuis `otadata`, qui pointe ota_0 ou ota_1 -- layout
+# standard ESP-IDF pour le rollback (`esp_ota_mark_app_invalid_rollback_and_reboot`
+# côté C, `esp_bootloader_esp_idf::ota` côté Rust). `nvs` reste au même
+# offset/taille que la table par défaut d'espflash pour ne rien casser dans
+# storage.rs (PARTITION_OFFSET/PARTITION_SIZE).
+#
+# Name,     Type, SubType,  Offset,    Size,      Flags
+nvs,        data, nvs,      0x9000,    0x6000,
+otadata,    data, ota,      0xf000,    0x2000,
+phy_init,   data, phy,      0x11000,   0x1000,
+ota_0,      app,  ota_0,    0x20000,   0x180000,
+ota_1,      app,  ota_1,    0x1a0000,  0x180000,

@@ -6,6 +6,7 @@ pub mod heartbeat;
 pub mod http;
 pub mod improv;
 pub mod log_stream;
+pub mod ota;
 pub mod provisioning;
 pub mod stack_usage;
 pub mod status;

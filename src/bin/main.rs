@@ -113,6 +113,13 @@ async fn main(spawner: Spawner) -> ! {
     static STORAGE: StaticCell<Mutex<CriticalSectionRawMutex, Storage>> = StaticCell::new();
     let storage = STORAGE.init(Mutex::new(boot_storage));
 
+    // contrat §3: detects whether the image that just booted is an
+    // unconfirmed OTA update (`PENDING_VERIFY`) and, if so, starts the
+    // bounded self-check that validates it or rolls it back -- before
+    // Wi-Fi/HTTP come up, since this is a purely local safety net that
+    // must run regardless of network state.
+    embewi_agent_esp::ota::on_boot(storage, spawner).await;
+
     let (rx, tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
     let mut wifi = WifiManager::new(peripherals.WIFI, peripherals.LPWR, spawner);
     wifi.reconnect_saved(storage).await;

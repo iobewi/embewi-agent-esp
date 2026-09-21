@@ -37,5 +37,5 @@ if [[ ! -f "$SRC" ]]; then
 fi
 
 mkdir -p "$(dirname "$DEST")"
-espflash save-image --chip "$CHIP" --merge --skip-padding "$SRC" "$DEST"
+espflash save-image --chip "$CHIP" --partition-table partitions.csv --merge --skip-padding "$SRC" "$DEST"
 echo "Image écrite: $DEST"

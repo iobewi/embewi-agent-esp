@@ -1,16 +1,15 @@
 //! Embewi contract v1alpha1 -- inbound API surface (Core -> ESP), §4.
 //!
-//! OTA A/B isn't built yet: `Info::staged`/`active_slot`/`firmware.digest`
-//! are honest placeholders, not guesses -- `staged.state` really is
-//! `"none"` because no OTA write has ever happened. `config_generation`
-//! and `app_port`, by contrast, are real now (McuConfigMap and the app
-//! port are both just NVS-backed, no OTA subsystem needed).
+//! `Info::staged`/`active_slot`/`firmware.digest`/`state` are backed by
+//! `src/ota.rs` (contrat §3/§6) -- this module just assembles the JSON
+//! shapes, `ota.rs` owns the actual OTA state machine.
 
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use core::convert::Infallible;
 use core::fmt::Write as _;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use esp_nvs::Key;
 use picoserve::extract::FromRequestParts;
@@ -216,22 +215,77 @@ pub async fn push_config(storage: &SharedStorage, push: &ConfigPush) -> Option<u
     changed.then(|| storage.cfg_bump_generation())
 }
 
-// No OTA/self-check subsystem yet -- shared with `health()` below so both
-// endpoints agree, instead of two independently-guessed literals drifting
-// apart later.
-const STATE: &str = "running";
+/// Contrat §2's device state machine. Drives both `GET /info`/`GET /health`
+/// and the heartbeat's `state`/`ota_validated` (contrat §3/§5) -- one
+/// source of truth instead of independently-guessed literals drifting
+/// apart. `Ordering::Relaxed` throughout: riscv32imc has no atomic
+/// read-modify-write (see `status.rs`'s identical pattern), and this value
+/// is only ever overwritten, never updated in place, so a plain
+/// store/load is enough.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum State {
+    Booting = 0,
+    PendingVerify = 1,
+    Running = 2,
+    Degraded = 3,
+    Rollback = 4,
+    Failed = 5,
+}
+
+impl State {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            State::Booting => "booting",
+            State::PendingVerify => "pending_verify",
+            State::Running => "running",
+            State::Degraded => "degraded",
+            State::Rollback => "rollback",
+            State::Failed => "failed",
+        }
+    }
+
+    fn from_byte(byte: u8) -> Self {
+        match byte {
+            1 => State::PendingVerify,
+            2 => State::Running,
+            3 => State::Degraded,
+            4 => State::Rollback,
+            5 => State::Failed,
+            _ => State::Booting,
+        }
+    }
+}
+
+static STATE: AtomicU8 = AtomicU8::new(State::Booting as u8);
+
+pub fn set_state(state: State) {
+    STATE.store(state as u8, Ordering::Relaxed);
+}
+
+pub fn state() -> State {
+    State::from_byte(STATE.load(Ordering::Relaxed))
+}
 
 #[derive(Serialize)]
 struct Firmware {
     name: &'static str,
     version: &'static str,
-    /// Real once OTA A/B (§3/§4) computes it from the running partition.
-    digest: &'static str,
+    digest: String,
 }
 
+/// Contrat §4's `staged` object: `{"state":"none"}` alone when nothing's
+/// staged (`slot`/`digest`/`deployment_id` omitted, not sent empty), the
+/// full object once `/ota/write` has landed something.
 #[derive(Serialize)]
-struct Staged {
+struct StagedInfo {
     state: &'static str,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    slot: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    digest: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    deployment_id: String,
 }
 
 /// `GET /v1alpha1/info` response body (contrat §4).
@@ -240,8 +294,16 @@ pub struct Info {
     node_id: String,
     api_versions: &'static [&'static str],
     chip: &'static str,
+    /// Total DRAM available on this chip, in bytes -- a hardware constant
+    /// (`esp_metadata_generated`'s linker-derived memory map), not this
+    /// firmware's own heap size (`heartbeat.rs`'s `heap_free` already
+    /// covers that, and is a much smaller, firmware-configured subset of
+    /// this).
+    ram_size: u32,
+    partition_layout: &'static str,
+    active_slot: String,
     firmware: Firmware,
-    staged: Staged,
+    staged: StagedInfo,
     state: &'static str,
     config_generation: u32,
     app_port: u16,
@@ -252,15 +314,27 @@ pub async fn info(storage: &SharedStorage) -> Info {
         let mut storage = storage.lock().await;
         (storage.cfg_generation(), storage.load_app_port())
     };
+    let staged = crate::ota::staged(storage).await;
+    let dram = esp_metadata_generated::memory_range!("DRAM");
     Info {
         node_id: node_id(storage).await,
         api_versions: API_VERSIONS,
         chip: esp_metadata_generated::chip_pretty!(),
-        firmware: Firmware { name: FW_NAME, version: FW_VERSION, digest: "" },
-        // No OTA subsystem yet (roadmap: after WebSocket) -- always "none"
-        // until a write actually lands on the inactive slot.
-        staged: Staged { state: "none" },
-        state: STATE,
+        ram_size: (dram.end - dram.start) as u32,
+        partition_layout: crate::ota::PARTITION_LAYOUT,
+        active_slot: crate::ota::active_slot(storage).await,
+        firmware: Firmware {
+            name: FW_NAME,
+            version: FW_VERSION,
+            digest: crate::ota::active_digest(storage).await,
+        },
+        staged: StagedInfo {
+            state: staged.stage.as_str(),
+            slot: staged.slot,
+            digest: staged.digest,
+            deployment_id: staged.deployment_id,
+        },
+        state: state().as_str(),
         config_generation,
         app_port,
     }
@@ -296,7 +370,7 @@ pub async fn health(storage: &SharedStorage) -> Health {
     let ok = |b: bool| if b { "ok" } else { "fail" };
     Health {
         status: ok(storage_ok && app_ok && sensors_ok),
-        state: STATE,
+        state: state().as_str(),
         checks: Checks {
             app: ok(app_ok),
             sensors: ok(sensors_ok),
