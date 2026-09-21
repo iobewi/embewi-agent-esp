@@ -1,3 +1,11 @@
+[workspace]
+# `crates/ota-logic` isolates the OTA write-session's pure decision logic
+# (contrat §4's `Content-Range` resume protocol) from everything
+# `esp-hal`-dependent, specifically so it can be unit-tested with a plain
+# `cargo test` -- see that crate's own doc comment. The root package below
+# is implicitly a workspace member too.
+members = ["crates/ota-logic"]
+
 [package]
 edition      = "2024"
 name         = "embewi-agent-esp"
@@ -110,6 +118,55 @@ edge-nal-embassy = { version = "0.9", default-features = false, features = [
 edge-http = { version = "0.8", default-features = false, features = ["io"] }
 edge-ws   = { version = "0.8", default-features = false, features = ["io"] }
 heapless  = "0.9"
+# Parses the WS upgrade response once `log_stream.rs` hand-rolls the
+# handshake over a TLS session (see that module's doc comment for why it
+# no longer goes through `edge_http::io::client::Connection`). Already in
+# the dependency tree transitively (edge-http itself uses it) -- named
+# directly here just to be `use`-able.
+httparse = { version = "1", default-features = false }
+
+# OTA A/B (contrat §3/§4/§6). Streaming digest of the `.bin` as it's written
+# (no post-hoc flash re-read, per the contract) -- pure-Rust software
+# implementation, no hardware SHA peripheral binding needed.
+sha2 = { version = "0.10", default-features = false }
+# Races the self-check against contrat §3's bounded deadline.
+embassy-futures = "0.1"
+# Pure write-session decision logic (Content-Range resume), unit-tested on
+# host -- see crates/ota-logic's own doc comment.
+ota-logic = { path = "crates/ota-logic" }
+# MbedTLS's SSL record buffers default to 16 KiB *per direction* (32 KiB
+# total) -- fine on a desktop, but most of this device's ~100 KiB heap on
+# its own, and the reason a TLS 1.3 handshake (more state live at once than
+# 1.2) failed with `MBEDTLS_ERR_SSL_ALLOC_FAILED` while 1.2 didn't. Cut to
+# 4 KiB first (confirmed working, both versions), then to 2 KiB here --
+# still generous for this agent's small EC certs and JSON/HTML payloads (a
+# few hundred bytes to a few KiB at most); a handshake message or record
+# bigger than the buffer just fragments across more of them instead of
+# failing, so this is a throughput trade, not a correctness one.
+# `default-features = false` drops the "tls" bundle, which pulls in RSA,
+# DES, Camellia, ARIA, MD5, RIPEMD160, PKCS7, x509-*write*, every EC curve,
+# and every key-exchange mode MbedTLS supports -- ~314 KiB of C code for a
+# device that only ever does ECDSA/ECDHE over P-256 with our own small,
+# self-issued certs (never generates one on-device, hence no x509-write).
+# Kept AES/GCM/CBC alongside ChaCha20-Poly1305 (the cipher suite our own
+# handshakes actually negotiated) for compatibility margin rather than
+# trimming to the bare minimum on the first pass.
+mbedtls-rs = { version = "0.3.0", default-features = false, features = [
+  "tls-core", "tls-client", "tls-server",
+  "tls-proto-tls12", "tls-proto-tls13",
+  "x509-parse", "pk", "pem-parse", "base64",
+  "alg-sha256", "alg-sha512", "alg-hkdf",
+  "alg-ecp", "alg-ecdh", "alg-ecdsa", "curve-secp256r1",
+  "alg-gcm", "alg-chacha20", "alg-chachapoly", "alg-aes", "cipher-mode-cbc",
+  "kex-ecdhe-ecdsa",
+  "drbg-ctr", "entropy",
+  "tls-debug",
+  "ssl-in-content-len-2048", "ssl-out-content-len-2048",
+] }
+# `EspCryptoRng` (src/tls.rs) implements this directly against
+# `esp_hal::rng::Rng` -- named here so we can name the trait, not just a
+# transitive dependency of mbedtls-rs.
+rand_core = { version = "0.10.1", default-features = false }
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]
