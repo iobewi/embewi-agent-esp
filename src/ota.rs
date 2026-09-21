@@ -34,6 +34,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::agent;
+use ota_logic::{BootAction, BootImage, StagedKind, boot_action};
+
 use crate::storage::{SharedStorage, StorageError};
 
 /// Contrat §4: `POST /ota/prepare`'s `partition_layout` field must match
@@ -297,6 +299,21 @@ struct WriteSession {
     slot: AppPartitionSubType,
     written: u32,
     hasher: Sha256,
+    /// Frozen at the first PUT: what the image is (`deployment_id`,
+    /// `digest`) and how big (`total`). Every later PUT of the session must
+    /// repeat them exactly ([`write_params_match`]) and `write_finish`
+    /// uses these, never whatever the last request happened to carry.
+    params: SessionParams,
+}
+
+/// The identity of one write session, fixed by its first PUT.
+pub struct SessionParams {
+    pub deployment_id: String,
+    /// `sha256:<64 hex>`, as sent.
+    pub digest: String,
+    /// Full image size: `Content-Range`'s total, or `Content-Length` for a
+    /// monolithic PUT.
+    pub total: u32,
 }
 
 static WRITE_SESSION: Mutex<CriticalSectionRawMutex, Option<WriteSession>> = Mutex::new(None);
@@ -315,29 +332,49 @@ pub async fn write_written() -> u32 {
 /// pure enough to unit-test with a plain `cargo test`, no ESP32 hardware
 /// involved. Re-exported so callers keep writing `ota::Plan`/
 /// `ota::write_plan` as if it were still defined in this module.
-pub use ota_logic::{Plan, parse_content_range, write_is_final, write_plan};
+pub use ota_logic::{Plan, is_valid_digest, parse_content_range, range_len, write_is_final, write_plan};
+
+/// Whether a continuing PUT carries the same `deployment_id`, digest and
+/// total as the session it claims to resume.
+pub async fn write_params_match(params: &SessionParams) -> bool {
+    WRITE_SESSION.lock().await.as_ref().is_some_and(|s| {
+        s.params.deployment_id == params.deployment_id
+            && s.params.digest.eq_ignore_ascii_case(&params.digest)
+            && s.params.total == params.total
+    })
+}
+
+pub enum BeginError {
+    /// The next slot couldn't be resolved.
+    Busy,
+    /// The declared image doesn't fit the slot.
+    TooLarge,
+}
 
 /// Starts (or restarts) a write session against whichever slot the
 /// bootloader would currently hand out next. Always re-derived fresh here
 /// rather than cached from `/ota/prepare`: `firmware-c`'s `write_begin`
 /// does the same (see its own comment for why) -- prepare is a compat
 /// pre-check, not a reservation.
-pub async fn write_begin(storage: &SharedStorage) -> bool {
-    let slot = {
+pub async fn write_begin(storage: &SharedStorage, params: SessionParams) -> Result<(), BeginError> {
+    let (slot, capacity) = {
         let mut storage = storage.lock().await;
         let found = storage.with_raw_flash(|flash| {
             let mut buffer = table_buffer();
             let mut updater = OtaUpdater::new(flash, &mut buffer).ok()?;
-            let (_, slot) = updater.next_partition().ok()?;
-            Some(slot)
+            let (region, slot) = updater.next_partition().ok()?;
+            Some((slot, region.partition_size()))
         });
-        let Some(Some(slot)) = found else {
-            return false;
+        let Some(Some(found)) = found else {
+            return Err(BeginError::Busy);
         };
-        slot
+        found
     };
-    *WRITE_SESSION.lock().await = Some(WriteSession { slot, written: 0, hasher: Sha256::new() });
-    true
+    if params.total as usize > capacity {
+        return Err(BeginError::TooLarge);
+    }
+    *WRITE_SESSION.lock().await = Some(WriteSession { slot, written: 0, hasher: Sha256::new(), params });
+    Ok(())
 }
 
 pub async fn write_chunk(storage: &SharedStorage, data: &[u8]) -> bool {
@@ -345,6 +382,12 @@ pub async fn write_chunk(storage: &SharedStorage, data: &[u8]) -> bool {
     let Some(session) = session_guard.as_mut() else {
         return false;
     };
+
+    // Never write past the size the session declared.
+    if u32::try_from(data.len()).ok().and_then(|len| session.written.checked_add(len)).is_none_or(|end| end > session.params.total)
+    {
+        return false;
+    }
 
     let mut storage = storage.lock().await;
     let written = session.written;
@@ -384,22 +427,26 @@ pub struct WriteFinishOk {
 pub enum WriteFinishError {
     NotWriting,
     DigestMismatch,
+    /// The session ended short of its declared total.
+    Incomplete,
     /// The image was written and verified, but the staged record couldn't
     /// be persisted -- it must not be reported as `written`.
     Storage(StorageError),
 }
 
 /// Closes the write session: compares the digest computed *while writing*
-/// (never a post-hoc flash re-read, per contrat §4) against what the Core
-/// expects, and on a match persists the staged state (contrat §6).
-pub async fn write_finish(
-    storage: &SharedStorage,
-    expected_digest: &str,
-    deployment_id: &str,
-) -> Result<WriteFinishOk, WriteFinishError> {
+/// (never a post-hoc flash re-read, per contrat §4) against the one the
+/// session was opened with, and on a match persists the staged state
+/// (contrat §6). Both the expected digest and the `deployment_id` come
+/// from the session -- fixed by its first PUT, not by the last request.
+pub async fn write_finish(storage: &SharedStorage) -> Result<WriteFinishOk, WriteFinishError> {
     let Some(session) = WRITE_SESSION.lock().await.take() else {
         return Err(WriteFinishError::NotWriting);
     };
+    if session.written != session.params.total {
+        warn!("ota: session ended at {} of {} octets", session.written, session.params.total);
+        return Err(WriteFinishError::Incomplete);
+    }
 
     let digest_bytes = session.hasher.finalize();
     let mut digest = String::from("sha256:");
@@ -407,14 +454,21 @@ pub async fn write_finish(
         let _ = write!(digest, "{b:02x}");
     }
 
-    if !expected_digest.is_empty() && !digest.eq_ignore_ascii_case(expected_digest) {
-        warn!("ota: digest mismatch, attendu={expected_digest} calculé={digest}");
+    if !digest.eq_ignore_ascii_case(&session.params.digest) {
+        warn!("ota: digest mismatch, attendu={} calculé={digest}", session.params.digest);
         return Err(WriteFinishError::DigestMismatch);
     }
 
-    save_staged(storage, Stage::Written, slot_name(session.slot), &digest, deployment_id, session.written)
-        .await
-        .map_err(WriteFinishError::Storage)?;
+    save_staged(
+        storage,
+        Stage::Written,
+        slot_name(session.slot),
+        &digest,
+        &session.params.deployment_id,
+        session.written,
+    )
+    .await
+    .map_err(WriteFinishError::Storage)?;
     info!("ota: write OK {} octets slot={} -> staged=written", session.written, slot_name(session.slot));
     Ok(WriteFinishOk { written: session.written, digest })
 }
@@ -431,12 +485,17 @@ pub async fn activate(storage: &SharedStorage, deployment_id: &str) -> Result<&'
     if staged.stage != Stage::Written {
         return Err(ActivateError::NotStaged);
     }
+    // Activate exactly what was staged: the request names a deployment, it
+    // doesn't get to rename the staged one.
+    if staged.deployment_id != deployment_id {
+        return Err(ActivateError::DeploymentMismatch);
+    }
     let target = slot_from_name(&staged.slot).ok_or(ActivateError::NotStaged)?;
 
     // Record the intent first: if NVS refuses it, nothing has changed yet
     // and the caller gets an error instead of a reboot into a slot whose
     // staged record disagrees with `otadata`.
-    save_staged(storage, Stage::Activating, &staged.slot, &staged.digest, deployment_id, staged.size)
+    save_staged(storage, Stage::Activating, &staged.slot, &staged.digest, &staged.deployment_id, staged.size)
         .await
         .map_err(ActivateError::Storage)?;
 
@@ -474,14 +533,44 @@ pub enum ActivateError {
     /// Nothing staged, or `otadata` couldn't be updated (`409 not_staged`,
     /// as before).
     NotStaged,
+    /// The staged image belongs to another deployment (`409`).
+    DeploymentMismatch,
     /// The staged record couldn't be persisted; nothing was activated.
     Storage(StorageError),
 }
 
-/// Promotes the just-validated staged image to "active" and cancels the
-/// bootloader's pending rollback. Only ever called after every self-check
-/// passes (contrat §3: "mark_valid n'est appelé QUE si tous les checks
-/// passent").
+/// Records the validated image's digest and `deployment_id` as the active
+/// ones. Idempotent, so an interrupted validation can be finished at the
+/// next boot ([`BootAction::FinishInterruptedValidation`]).
+async fn promote_staged(storage: &SharedStorage, staged: &Staged) -> Result<(), StorageError> {
+    let mut storage = storage.lock().await;
+    storage.set_string(&NAMESPACE, &KEY_ACTIVE_DIGEST, &staged.digest)?;
+    storage.set_string(&NAMESPACE, &KEY_ACTIVE_DEPLOYMENT_ID, &staged.deployment_id)
+}
+
+/// Promotes the staged record once the image is confirmed, then forgets it.
+/// If a write fails the `activating` record is kept and the agent goes
+/// `Degraded`: the image is valid and stays so (never rolled back over
+/// bookkeeping), and the next boot -- bootloader `Valid`, same slot, still
+/// `activating` -- completes this promotion.
+async fn finish_validation(storage: &SharedStorage, staged: &Staged) {
+    if promote_staged(storage, staged).await.is_err() {
+        warn!("ota: validated image's digest/deployment_id couldn't be persisted, will retry at next boot");
+        agent::set_state(agent::State::Degraded);
+        return;
+    }
+    if clear_staged(storage).await.is_err() {
+        warn!("ota: staged record couldn't be cleared after validation, will retry at next boot");
+        agent::set_state(agent::State::Degraded);
+        return;
+    }
+    agent::set_state(agent::State::Running);
+    info!("ota: validation done (deployment_id={})", staged.deployment_id);
+}
+
+/// Confirms the just-self-checked image with the bootloader and cancels its
+/// pending rollback. Only ever called after every self-check passes
+/// (contrat §3: "mark_valid n'est appelé QUE si tous les checks passent").
 async fn mark_valid(storage: &'static SharedStorage) {
     let staged = staged(storage).await;
     if !set_current_ota_state(storage, OtaImageState::Valid).await {
@@ -489,23 +578,7 @@ async fn mark_valid(storage: &'static SharedStorage) {
         // image the bootloader doesn't agree is confirmed.
         mark_invalid_and_reboot(storage).await;
     }
-
-    // The bootloader already considers the image valid at this point, so a
-    // failed bookkeeping write can't be turned into a rollback -- it's
-    // logged loudly instead of being silently lost.
-    {
-        let mut storage = storage.lock().await;
-        if storage.set_string(&NAMESPACE, &KEY_ACTIVE_DIGEST, &staged.digest).is_err()
-            || storage.set_string(&NAMESPACE, &KEY_ACTIVE_DEPLOYMENT_ID, &staged.deployment_id).is_err()
-        {
-            warn!("ota: validated image's digest/deployment_id couldn't be persisted");
-        }
-    }
-    if clear_staged(storage).await.is_err() {
-        warn!("ota: staged record couldn't be cleared after mark_valid");
-    }
-    agent::set_state(agent::State::Running);
-    info!("ota: self-check OK, mark_valid done (deployment_id={})", staged.deployment_id);
+    finish_validation(storage, &staged).await;
 }
 
 /// The rollback path (contrat §3): marks the image invalid and resets.
@@ -543,31 +616,65 @@ async fn selfcheck_task(storage: &'static SharedStorage) {
     }
 }
 
-/// Called once at boot (`src/bin/main.rs`): detects whether the image that
-/// just booted is unconfirmed (contrat §3's "cœur dur du projet") and, if
-/// so, starts the bounded self-check that will either validate it or roll
-/// it back. This is the only place `agent::State` is driven from `Booting`.
+/// Called once at boot (`src/bin/main.rs`): reconciles the persisted staged
+/// record with what the bootloader actually booted (contrat §3's "cœur dur
+/// du projet"). The decision itself is [`ota_logic::boot_action`], a pure
+/// table unit-tested on the host; this only gathers its inputs and applies
+/// the outcome. This is the only place `agent::State` is driven from
+/// `Booting`.
 pub async fn on_boot(storage: &'static SharedStorage, spawner: Spawner) {
-    if current_ota_state(storage).await == Some(OtaImageState::PendingVerify) {
-        agent::set_state(agent::State::PendingVerify);
-        warn!("ota: image is PENDING_VERIFY, starting bounded self-check (deadline {SELFCHECK_DEADLINE:?})");
-        if let Ok(token) = selfcheck_task(storage) {
-            spawner.spawn(token);
+    let staged = staged(storage).await;
+    let image = match current_ota_state(storage).await {
+        Some(OtaImageState::PendingVerify) => BootImage::PendingVerify,
+        Some(OtaImageState::Valid) => BootImage::Valid,
+        _ => BootImage::Other,
+    };
+    let booted = active_slot(storage).await;
+    let booted_is_staged = (!booted.is_empty()).then(|| booted == staged.slot);
+    let kind = match staged.stage {
+        Stage::None => StagedKind::None,
+        Stage::Written => StagedKind::Written,
+        Stage::Activating => StagedKind::Activating,
+    };
+    let action = boot_action(kind, image, booted_is_staged);
+    info!("ota: boot slot={booted:?} staged={} image={image:?} -> {action:?}", staged.stage.as_str());
+
+    match action {
+        BootAction::SelfCheck => {
+            agent::set_state(agent::State::PendingVerify);
+            warn!("ota: image is PENDING_VERIFY, starting bounded self-check (deadline {SELFCHECK_DEADLINE:?})");
+            if let Ok(token) = selfcheck_task(storage) {
+                spawner.spawn(token);
+            }
+            return;
         }
-    } else {
-        // The NVS canary round-trip `/health` reports on (during
-        // `pending_verify` the self-check task runs it instead).
-        if !storage.lock().await.self_check() {
-            warn!("ota: boot NVS self-check failed, /health will report storage=fail");
+        BootAction::RollbackUnaccounted => {
+            warn!("ota: PENDING_VERIFY image not accounted for by the staged record, rolling back");
+            agent::set_state(agent::State::Rollback);
+            mark_invalid_and_reboot(storage).await;
         }
-        agent::set_state(agent::State::Running);
-        // A `written`/`activating` entry surviving from an interrupted
-        // cycle (e.g. this device power-cycled before the bootloader ever
-        // flipped the image to `PendingVerify`) no longer describes
-        // anything real -- clear it so `GET /info` doesn't report a slot
-        // that isn't actually staged for anything anymore.
-        if clear_staged(storage).await.is_err() {
-            warn!("ota: stale staged record couldn't be cleared at boot");
+        BootAction::Nothing | BootAction::KeepWritten => {}
+        BootAction::ClearStale => {
+            warn!("ota: stale staged record ({}), clearing", staged.stage.as_str());
+            if clear_staged(storage).await.is_err() {
+                warn!("ota: stale staged record couldn't be cleared");
+            }
+        }
+        BootAction::FinishInterruptedValidation => {
+            warn!("ota: finishing a validation interrupted before its bookkeeping");
+            // Runs the same path as a live validation; `Degraded` (set by
+            // it on failure) must not be overwritten below.
+            finish_validation(storage, &staged).await;
+            if agent::state() == agent::State::Degraded {
+                return;
+            }
         }
     }
+
+    // The NVS canary round-trip `/health` reports on (during
+    // `pending_verify` the self-check task runs it instead).
+    if !storage.lock().await.self_check() {
+        warn!("ota: boot NVS self-check failed, /health will report storage=fail");
+    }
+    agent::set_state(agent::State::Running);
 }

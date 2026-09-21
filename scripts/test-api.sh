@@ -122,7 +122,7 @@ run_safe() {
 
     echo "== PUT /v1alpha1/ota/write (digest volontairement faux) =="
     local bad; bad=$(curl -s -m 15 -X PUT -H "Authorization: Bearer $TOKEN" \
-        -H "X-Embewi-Deployment-Id: test-api-sh-bad" -H "X-Embewi-Digest: sha256:0000000000000000000000000000000000000000000000000000000000000" \
+        -H "X-Embewi-Deployment-Id: test-api-sh-bad" -H "X-Embewi-Digest: sha256:0000000000000000000000000000000000000000000000000000000000000000" \
         --data-binary @"$tmp" "$URL/v1alpha1/ota/write")
     check "digest_mismatch" "$(jget "$bad" status)" "digest_mismatch"
     local after; after=$(auth_get /v1alpha1/info)
@@ -152,23 +152,66 @@ run_safe() {
     echo "== PUT /v1alpha1/ota/write (resync sur mauvais offset) =="
     local resync; resync=$(curl -s -m 15 -o /tmp/resync_body.json -w "%{http_code}" -X PUT \
         -H "Authorization: Bearer $TOKEN" -H "X-Embewi-Deployment-Id: test-api-sh-resync" \
-        -H "Content-Range: bytes 999-1010/2000" --data-binary @"$tmp.part1" "$URL/v1alpha1/ota/write")
+        -H "X-Embewi-Digest: $expected_cr" \
+        -H "Content-Range: bytes 999-$((999 + half - 1))/2000" --data-binary @"$tmp.part1" "$URL/v1alpha1/ota/write")
     check "offset erroné -> 416" "$resync" "416"
     check "erreur == range_mismatch" "$(jget "$(cat /tmp/resync_body.json)" error)" "range_mismatch"
 
     echo "== PUT /v1alpha1/ota/write (Content-Range malformé) =="
     local malformed; malformed=$(curl -s -o /tmp/malformed_body.json -w "%{http_code}" -m 10 -X PUT \
-        -H "Authorization: Bearer $TOKEN" -H "Content-Range: n'importe-quoi" \
+        -H "Authorization: Bearer $TOKEN" -H "X-Embewi-Deployment-Id: test-api-sh-malformed" \
+        -H "X-Embewi-Digest: $expected_cr" -H "Content-Range: n'importe-quoi" \
         --data-binary @"$tmp.part1" "$URL/v1alpha1/ota/write")
     check "header invalide -> 400" "$malformed" "400"
     check "erreur == bad_content_range" "$(jget "$(cat /tmp/malformed_body.json)" error)" "bad_content_range"
 
-    rm -f "$tmp" "$tmp.part1" "$tmp.part2" /tmp/resync_body.json /tmp/malformed_body.json
+    # Protocole durci : chaque refus se fait avant de toucher la session.
+    put_write() { # put_write <fichier> <dep-id> <digest> [Content-Range] -> "<code> <corps>"
+        local file="$1" dep="$2" dig="$3" range="${4:-}"
+        local args=(-s -m 15 -o /tmp/put_body.json -w "%{http_code}" -X PUT -H "Authorization: Bearer $TOKEN")
+        [[ -n "$dep" ]] && args+=(-H "X-Embewi-Deployment-Id: $dep")
+        [[ -n "$dig" ]] && args+=(-H "X-Embewi-Digest: $dig")
+        [[ -n "$range" ]] && args+=(-H "Content-Range: $range")
+        local code; code=$(curl "${args[@]}" --data-binary @"$file" "$URL/v1alpha1/ota/write")
+        echo "$code $(jget "$(cat /tmp/put_body.json)" error)"
+    }
+    echo "== PUT /v1alpha1/ota/write (validation des en-têtes) =="
+    check "sans deployment_id -> 400" "$(put_write "$tmp.part1" "" "$expected_cr")" "400 missing_deployment_id"
+    check "sans digest -> 400" "$(put_write "$tmp.part1" dep "")" "400 bad_digest"
+    check "digest mal formé -> 400" "$(put_write "$tmp.part1" dep "sha256:abc")" "400 bad_digest"
+    check "Content-Length != plage -> 400" \
+        "$(put_write "$tmp.part1" dep "$expected_cr" "bytes 0-1/$total")" "400 content_length_mismatch"
+    check "plage inversée -> 400" \
+        "$(put_write "$tmp.part1" dep "$expected_cr" "bytes 10-5/$total")" "400 bad_content_range"
+    check "fin >= total -> 400" \
+        "$(put_write "$tmp.part1" dep "$expected_cr" "bytes 0-$((half - 1))/$((half - 1))")" "400 bad_content_range"
+    check "total = 0 -> 400" \
+        "$(put_write "$tmp.part1" dep "$expected_cr" "bytes 0-$((half - 1))/0")" "400 bad_content_range"
+
+    echo "== PUT /v1alpha1/ota/write (session figée : deployment_id / digest / total) =="
+    check "1er chunk -> 200" "$(put_write "$tmp.part1" test-api-sh-sm "$expected_cr" "bytes 0-$((half - 1))/$total" | cut -d' ' -f1)" "200"
+    check "autre deployment_id -> 409" \
+        "$(put_write "$tmp.part2" other-dep "$expected_cr" "bytes $half-$((total - 1))/$total")" "409 session_mismatch"
+    check "autre digest -> 409" \
+        "$(put_write "$tmp.part2" test-api-sh-sm "sha256:$(printf '1%.0s' $(seq 64))" "bytes $half-$((total - 1))/$total")" "409 session_mismatch"
+    check "autre total -> 409" \
+        "$(put_write "$tmp.part2" test-api-sh-sm "$expected_cr" "bytes $half-$((total - 1))/$((total + 1))")" "409 session_mismatch"
+    check "chunk final avec les bons paramètres -> 200" \
+        "$(put_write "$tmp.part2" test-api-sh-sm "$expected_cr" "bytes $half-$((total - 1))/$total" | cut -d' ' -f1)" "200"
+
+    echo "== POST /v1alpha1/ota/activate (deployment_id différent) =="
+    local act; act=$(curl -s -m 10 -o /tmp/act_body.json -w "%{http_code}" -X POST -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" -d '{"deployment_id":"pas-le-bon"}' "$URL/v1alpha1/ota/activate")
+    check "activate d'un autre deployment -> 409 deployment_mismatch" \
+        "$act $(jget "$(cat /tmp/act_body.json)" error)" "409 deployment_mismatch"
+    check "staged.deployment_id inchangé" "$(jget "$(auth_get /v1alpha1/info)" staged.deployment_id)" "test-api-sh-sm"
+
+    rm -f /tmp/put_body.json /tmp/act_body.json "$tmp" "$tmp.part1" "$tmp.part2" /tmp/resync_body.json /tmp/malformed_body.json
 
     echo
     echo "-- $PASS OK / $FAIL FAIL --"
     echo "Note : GET /info->staged pointe maintenant vers le faux binaire de ce" \
-         "test (deployment_id=test-api-sh-cr) jusqu'au prochain vrai cycle OTA" \
+         "test (deployment_id=test-api-sh-sm) jusqu'au prochain vrai cycle OTA" \
          "(prepare+write+activate) -- ce n'est pas dangereux, juste cosmétique."
     [[ $FAIL -eq 0 ]]
 }

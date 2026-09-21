@@ -45,31 +45,75 @@ impl RequestHandlerService for OtaWrite {
         }
 
         let deployment_id = headers.get("x-embewi-deployment-id").and_then(|v| v.as_str().ok()).unwrap_or("");
-        let expected_digest = headers.get("x-embewi-digest").and_then(|v| v.as_str().ok()).unwrap_or("");
+        let digest = headers.get("x-embewi-digest").and_then(|v| v.as_str().ok()).unwrap_or("");
         let content_range = headers.get("content-range").and_then(|v| v.as_str().ok());
+        let content_length = request.body_connection.content_length();
+
+        // Refuse before touching the session: an invalid PUT must not
+        // disturb one in progress. What a session is (deployment, digest,
+        // total) is fixed by its first PUT and must be repeated verbatim.
+        let bad_request = |error: &'static str| json_error(StatusCode::BAD_REQUEST, error);
+        let invalid = if deployment_id.is_empty() {
+            Some("{\"error\":\"missing_deployment_id\"}")
+        } else if !ota::is_valid_digest(digest) {
+            Some("{\"error\":\"bad_digest\"}")
+        } else {
+            None
+        };
+        if let Some(error) = invalid {
+            return bad_request(error)
+                .write_to(request.body_connection.finalize().await?, response_writer)
+                .await;
+        }
 
         let (has_range, start, end, total) = match content_range {
-            None => (false, 0u32, 0u32, 0u32),
-            Some(value) => match parse_content_range(value) {
-                Some((s, e, t)) => (true, s, e, t),
+            // Monolithic PUT: the body is the whole image.
+            None => match u32::try_from(content_length).ok().filter(|len| *len > 0) {
+                Some(len) => (false, 0u32, len - 1, len),
                 None => {
-                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"bad_content_range\"}")
+                    return bad_request("{\"error\":\"empty_body\"}")
+                        .write_to(request.body_connection.finalize().await?, response_writer)
+                        .await;
+                }
+            },
+            Some(value) => match parse_content_range(value) {
+                Some((s, e, t)) if ota::range_len(s, e).is_some_and(|len| len as usize == content_length) => {
+                    (true, s, e, t)
+                }
+                Some(_) => {
+                    return bad_request("{\"error\":\"content_length_mismatch\"}")
+                        .write_to(request.body_connection.finalize().await?, response_writer)
+                        .await;
+                }
+                None => {
+                    return bad_request("{\"error\":\"bad_content_range\"}")
                         .write_to(request.body_connection.finalize().await?, response_writer)
                         .await;
                 }
             },
         };
+        let params = ota::SessionParams {
+            deployment_id: String::from(deployment_id),
+            digest: String::from(digest),
+            total,
+        };
 
         let in_progress = ota::write_in_progress().await;
         let written_so_far = ota::write_written().await;
         match ota::write_plan(has_range, start, in_progress, written_so_far) {
-            ota::Plan::Begin => {
-                if !ota::write_begin(self.storage).await {
+            ota::Plan::Begin => match ota::write_begin(self.storage, params).await {
+                Ok(()) => {}
+                Err(ota::BeginError::TooLarge) => {
+                    return json_error(StatusCode::PAYLOAD_TOO_LARGE, "{\"error\":\"size_too_large\"}")
+                        .write_to(request.body_connection.finalize().await?, response_writer)
+                        .await;
+                }
+                Err(ota::BeginError::Busy) => {
                     return json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"status\":\"ota_begin_failed\"}")
                         .write_to(request.body_connection.finalize().await?, response_writer)
                         .await;
                 }
-            }
+            },
             ota::Plan::Resync => {
                 let written = ota::write_written().await;
                 return json_error(
@@ -79,10 +123,15 @@ impl RequestHandlerService for OtaWrite {
                 .write_to(request.body_connection.finalize().await?, response_writer)
                 .await;
             }
-            ota::Plan::Continue => {}
+            ota::Plan::Continue => {
+                if !ota::write_params_match(&params).await {
+                    return json_error(StatusCode::CONFLICT, "{\"error\":\"session_mismatch\"}")
+                        .write_to(request.body_connection.finalize().await?, response_writer)
+                        .await;
+                }
+            }
         }
 
-        let content_length = request.body_connection.content_length();
         let mut buf = [0u8; 1024];
         let mut remaining = content_length;
         let mut chunk_error = false;
@@ -116,7 +165,7 @@ impl RequestHandlerService for OtaWrite {
                 .await;
         }
 
-        let response: JsonResponse = match ota::write_finish(self.storage, expected_digest, deployment_id).await {
+        let response: JsonResponse = match ota::write_finish(self.storage).await {
             Ok(result) => json_ok(format!(
                 "{{\"written\":{},\"digest\":\"{}\",\"status\":\"written\"}}",
                 result.written, result.digest
@@ -125,7 +174,7 @@ impl RequestHandlerService for OtaWrite {
             Err(ota::WriteFinishError::Storage(_)) => {
                 json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"status\":\"nvs_write_failed\"}")
             }
-            Err(ota::WriteFinishError::NotWriting) => {
+            Err(ota::WriteFinishError::NotWriting | ota::WriteFinishError::Incomplete) => {
                 json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"status\":\"write_failed\"}")
             }
         };

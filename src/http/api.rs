@@ -188,6 +188,9 @@ pub async fn serve(
                 };
                 let target_slot = match ota::activate(storage, &req.deployment_id).await {
                     Ok(slot) => slot,
+                    Err(ota::ActivateError::DeploymentMismatch) => {
+                        return json_error(StatusCode::CONFLICT, "{\"error\":\"deployment_mismatch\"}");
+                    }
                     Err(ota::ActivateError::NotStaged) => {
                         return json_error(StatusCode::CONFLICT, "{\"error\":\"not_staged\"}");
                     }
