@@ -25,7 +25,9 @@
 //! then this is honestly "always relaxed on dates", not "relaxed only
 //! while unsynced".
 
+use alloc::boxed::Box;
 use alloc::ffi::CString;
+use alloc::string::String;
 use core::convert::Infallible;
 
 use embassy_net::tcp::TcpSocket;
@@ -42,12 +44,22 @@ use picoserve::mem::BorrowedBuffer;
 use rand_core::{TryCryptoRng, TryRng};
 use static_cell::StaticCell;
 
-use crate::storage::SharedStorage;
+use crate::storage::{SharedStorage, Storage};
 
 const NAMESPACE: Key = Key::from_str("tls");
-const KEY_CERT: Key = Key::from_str("cert");
-const KEY_KEY: Key = Key::from_str("key");
 const KEY_CA: Key = Key::from_str("ca");
+
+/// The server cert/key pair lives in one of two NVS banks, A (0) and B (1);
+/// `KEY_SLOT` says which one is live. Installing a new pair writes the
+/// *inactive* bank completely, reads it back, and only then flips `KEY_SLOT`
+/// with a single write -- so at every instant either the old pair or the
+/// new one is fully usable, whatever fails or loses power in between.
+const KEY_SLOT: Key = Key::from_str("slot");
+const PAIR_KEYS: [(Key, Key); 2] =
+    [(Key::from_str("cert_a"), Key::from_str("key_a")), (Key::from_str("cert_b"), Key::from_str("key_b"))];
+/// Pre-A/B storage: a single pair, used as the live one until the first
+/// `save_cert` on a device flashed before banks existed (then deleted).
+const LEGACY_KEYS: (Key, Key) = (Key::from_str("cert"), Key::from_str("key"));
 
 /// Wraps `esp_hal::rng::Rng` to assert the `CryptoRng` marker mbedtls-rs
 /// requires -- esp-hal itself only implements the plain, non-crypto `TryRng`
@@ -95,25 +107,135 @@ pub fn init() -> TlsReference<'static> {
     tls.reference()
 }
 
-/// Why [`save_cert`]/[`save_ca`] refused or failed.
+/// Why [`save_cert`] refused or failed.
 pub enum SaveCertError {
     /// A PEM couldn't be parsed.
     Invalid,
-    /// NVS refused a write.
+    /// Both parse, but the private key isn't the certificate's.
+    Mismatch,
+    /// NVS refused a write (or what it stored doesn't read back). The
+    /// previously active pair is untouched.
     Storage,
 }
 
-/// Validates and persists a new cert/key pair (contrat, `POST
-/// /v1alpha1/tls/cert`). `Invalid` if a PEM couldn't be parsed -- nothing is
-/// saved in that case, so a bad push can't silently break a previously
-/// working certificate. An NVS failure is reported, not swallowed.
+/// Validates and installs a new cert/key pair (contrat, `POST
+/// /v1alpha1/tls/cert`), transactionally: the pair must parse *and* match,
+/// then it goes to the inactive bank, is read back byte for byte, and only
+/// then does one write of `KEY_SLOT` make it live. On any error the pair
+/// that was working before keeps working.
 pub async fn save_cert(storage: &SharedStorage, cert_pem: &str, key_pem: &str) -> Result<(), SaveCertError> {
+    check_pair(cert_pem, key_pem)?;
     if build_server_config(cert_pem, key_pem).is_err() {
         return Err(SaveCertError::Invalid);
     }
+
     let mut storage = storage.lock().await;
-    storage.set_string(&NAMESPACE, &KEY_CERT, cert_pem).map_err(|_| SaveCertError::Storage)?;
-    storage.set_string(&NAMESPACE, &KEY_KEY, key_pem).map_err(|_| SaveCertError::Storage)
+    let active = storage.get_u8(&NAMESPACE, &KEY_SLOT).filter(|slot| usize::from(*slot) < PAIR_KEYS.len());
+    let target = active.map_or(0, |slot| 1 - slot);
+    let (cert_key, key_key) = &PAIR_KEYS[usize::from(target)];
+
+    storage.set_string(&NAMESPACE, cert_key, cert_pem).map_err(|_| SaveCertError::Storage)?;
+    storage.set_string(&NAMESPACE, key_key, key_pem).map_err(|_| SaveCertError::Storage)?;
+    // Byte-identical to what was just validated, hence valid too.
+    if storage.get_string(&NAMESPACE, cert_key).as_deref() != Some(cert_pem)
+        || storage.get_string(&NAMESPACE, key_key).as_deref() != Some(key_pem)
+    {
+        warn!("tls: candidate bank doesn't read back identical, keeping the active pair");
+        return Err(SaveCertError::Storage);
+    }
+
+    // The commit point.
+    storage.set_u8(&NAMESPACE, &KEY_SLOT, target).map_err(|_| SaveCertError::Storage)?;
+    if storage.get_u8(&NAMESPACE, &KEY_SLOT) != Some(target) {
+        return Err(SaveCertError::Storage);
+    }
+
+    // Reclaim the pre-A/B pair's space; harmless if this fails.
+    let _ = storage.delete(&NAMESPACE, &LEGACY_KEYS.0);
+    let _ = storage.delete(&NAMESPACE, &LEGACY_KEYS.1);
+    Ok(())
+}
+
+/// The live pair: the bank `KEY_SLOT` names, or the legacy single pair on a
+/// device that never ran `save_cert` since banks were introduced.
+fn load_active_pair(storage: &mut Storage) -> Option<(String, String)> {
+    let (cert_key, key_key) = match storage.get_u8(&NAMESPACE, &KEY_SLOT) {
+        Some(slot) if usize::from(slot) < PAIR_KEYS.len() => &PAIR_KEYS[usize::from(slot)],
+        _ => &LEGACY_KEYS,
+    };
+    Some((storage.get_string(&NAMESPACE, cert_key)?, storage.get_string(&NAMESPACE, key_key)?))
+}
+
+/// RNG callback handed to MbedTLS's key checks (`mbedtls_pk_check_pair`
+/// requires one); same hardware source as [`EspCryptoRng`].
+unsafe extern "C" fn mbedtls_rng(_ctx: *mut core::ffi::c_void, out: *mut u8, len: usize) -> core::ffi::c_int {
+    // SAFETY: MbedTLS passes a writable buffer of `len` bytes.
+    esp_hal::rng::Rng::new().read(unsafe { core::slice::from_raw_parts_mut(out, len) });
+    0
+}
+
+/// Checks that `key_pem` is the private key of the (first, i.e. leaf)
+/// certificate in `cert_pem`. `ServerSessionConfig::new` doesn't -- MbedTLS
+/// leaves it to the application (`mbedtls_pk_check_pair`) -- and a mismatched
+/// pair would otherwise install fine and then fail every handshake, locking
+/// the admin API out over HTTPS.
+fn check_pair(cert_pem: &str, key_pem: &str) -> Result<(), SaveCertError> {
+    use mbedtls_rs::sys::{
+        mbedtls_pk_check_pair, mbedtls_pk_context, mbedtls_pk_free, mbedtls_pk_init, mbedtls_pk_parse_key,
+        mbedtls_x509_crt, mbedtls_x509_crt_free, mbedtls_x509_crt_init, mbedtls_x509_crt_parse,
+    };
+
+    /// Frees the MbedTLS contexts on every exit path.
+    struct Contexts {
+        crt: Box<mbedtls_x509_crt>,
+        pk: Box<mbedtls_pk_context>,
+    }
+    impl Drop for Contexts {
+        fn drop(&mut self) {
+            // SAFETY: both were initialised in `check_pair` before any
+            // other use, and are freed exactly once, here.
+            unsafe {
+                mbedtls_x509_crt_free(&mut *self.crt);
+                mbedtls_pk_free(&mut *self.pk);
+            }
+        }
+    }
+
+    let cert_c = CString::new(cert_pem).map_err(|_| SaveCertError::Invalid)?;
+    let key_c = CString::new(key_pem).map_err(|_| SaveCertError::Invalid)?;
+
+    let mut ctx = Contexts { crt: Box::default(), pk: Box::default() };
+    // SAFETY: freshly allocated contexts; the PEM buffers are NUL-terminated
+    // and outlive the calls (length includes the NUL, as MbedTLS requires).
+    unsafe {
+        mbedtls_x509_crt_init(&mut *ctx.crt);
+        mbedtls_pk_init(&mut *ctx.pk);
+
+        let rc = mbedtls_x509_crt_parse(&mut *ctx.crt, cert_c.as_ptr().cast(), cert_c.count_bytes() + 1);
+        if rc != 0 {
+            warn!("tls: certificate parse failed: -0x{:04x}", -rc);
+            return Err(SaveCertError::Invalid);
+        }
+        let rc = mbedtls_pk_parse_key(
+            &mut *ctx.pk,
+            key_c.as_ptr().cast(),
+            key_c.count_bytes() + 1,
+            core::ptr::null(),
+            0,
+            Some(mbedtls_rng),
+            core::ptr::null_mut(),
+        );
+        if rc != 0 {
+            warn!("tls: private key parse failed: -0x{:04x}", -rc);
+            return Err(SaveCertError::Invalid);
+        }
+        let rc = mbedtls_pk_check_pair(&ctx.crt.pk, &*ctx.pk, Some(mbedtls_rng), core::ptr::null_mut());
+        if rc != 0 {
+            warn!("tls: private key doesn't match the certificate: -0x{:04x}", -rc);
+            return Err(SaveCertError::Mismatch);
+        }
+    }
+    Ok(())
 }
 
 /// Builds the server TLS config from whatever is currently stored in NVS,
@@ -126,11 +248,7 @@ pub async fn save_cert(storage: &SharedStorage, cert_pem: &str, key_pem: &str) -
 /// separate "load from NVS at boot" step: this *is* that load, just run
 /// lazily on first (and every) connection instead of once upfront.
 pub async fn server_config(storage: &SharedStorage) -> Option<SessionConfig<'static>> {
-    let (cert, key) = {
-        let mut storage = storage.lock().await;
-        (storage.get_string(&NAMESPACE, &KEY_CERT), storage.get_string(&NAMESPACE, &KEY_KEY))
-    };
-    let (cert, key) = (cert?, key?);
+    let (cert, key) = load_active_pair(&mut *storage.lock().await)?;
     build_server_config(&cert, &key).ok()
 }
 

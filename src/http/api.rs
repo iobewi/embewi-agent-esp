@@ -224,6 +224,9 @@ pub async fn serve(
                     Err(crate::tls::SaveCertError::Invalid) => {
                         json_error(StatusCode::BAD_REQUEST, "{\"error\":\"invalid_certificate\"}")
                     }
+                    Err(crate::tls::SaveCertError::Mismatch) => {
+                        json_error(StatusCode::BAD_REQUEST, "{\"error\":\"cert_key_mismatch\"}")
+                    }
                     Err(crate::tls::SaveCertError::Storage) => {
                         json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"error\":\"nvs_write_failed\"}")
                     }
