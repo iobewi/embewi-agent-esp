@@ -95,18 +95,25 @@ pub fn init() -> TlsReference<'static> {
     tls.reference()
 }
 
+/// Why [`save_cert`]/[`save_ca`] refused or failed.
+pub enum SaveCertError {
+    /// A PEM couldn't be parsed.
+    Invalid,
+    /// NVS refused a write.
+    Storage,
+}
+
 /// Validates and persists a new cert/key pair (contrat, `POST
-/// /v1alpha1/tls/cert`). `false` if the PEM couldn't be parsed -- nothing is
+/// /v1alpha1/tls/cert`). `Invalid` if a PEM couldn't be parsed -- nothing is
 /// saved in that case, so a bad push can't silently break a previously
-/// working certificate.
-pub async fn save_cert(storage: &SharedStorage, cert_pem: &str, key_pem: &str) -> bool {
+/// working certificate. An NVS failure is reported, not swallowed.
+pub async fn save_cert(storage: &SharedStorage, cert_pem: &str, key_pem: &str) -> Result<(), SaveCertError> {
     if build_server_config(cert_pem, key_pem).is_err() {
-        return false;
+        return Err(SaveCertError::Invalid);
     }
     let mut storage = storage.lock().await;
-    storage.set_string(&NAMESPACE, &KEY_CERT, cert_pem);
-    storage.set_string(&NAMESPACE, &KEY_KEY, key_pem);
-    true
+    storage.set_string(&NAMESPACE, &KEY_CERT, cert_pem).map_err(|_| SaveCertError::Storage)?;
+    storage.set_string(&NAMESPACE, &KEY_KEY, key_pem).map_err(|_| SaveCertError::Storage)
 }
 
 /// Builds the server TLS config from whatever is currently stored in NVS,
@@ -255,18 +262,23 @@ impl<'tls, 'buf> picoserve::io::Socket<picoserve::EmbassyRuntime> for TlsSocket<
 
 /// Validates and persists the CA to trust for outbound TLS connections
 /// (`heartbeat.rs`/`log_stream.rs`, contrat §5), pushed via `POST
-/// /v1alpha1/tls/ca`. `false` if the PEM couldn't be parsed -- same
-/// don't-break-a-working-CA-on-a-bad-push reasoning as `save_cert`.
-pub async fn save_ca(storage: &SharedStorage, ca_pem: &str) -> bool {
+/// /v1alpha1/tls/ca`. `Invalid` if the PEM couldn't be parsed -- same
+/// don't-break-a-working-CA-on-a-bad-push reasoning as `save_cert`; a single
+/// NVS entry is replaced atomically, so no A/B bank is needed here.
+pub async fn save_ca(storage: &SharedStorage, ca_pem: &str) -> Result<(), SaveCertError> {
     let Ok(ca_c) = CString::new(ca_pem) else {
-        return false;
+        return Err(SaveCertError::Invalid);
     };
     if let Err(e) = Certificate::new(X509::PEM(&ca_c)) {
         warn!("tls: CA parse failed: {e}");
-        return false;
+        return Err(SaveCertError::Invalid);
     }
-    storage.lock().await.set_string(&NAMESPACE, &KEY_CA, ca_pem);
-    true
+    let mut storage = storage.lock().await;
+    storage.set_string(&NAMESPACE, &KEY_CA, ca_pem).map_err(|_| SaveCertError::Storage)?;
+    if storage.get_string(&NAMESPACE, &KEY_CA).as_deref() != Some(ca_pem) {
+        return Err(SaveCertError::Storage);
+    }
+    Ok(())
 }
 
 /// Why [`connect_client`] couldn't establish a connection.

@@ -144,10 +144,38 @@ pub async fn serve(
                     .with_content_type("text/html; charset=utf-8");
                 }
 
-                storage.lock().await.save_led_gpio(gpio);
-                agent::save_identity(storage, &form.node_id, &form.ctrl_url, "").await;
+                // Nothing below may report success (nor reboot, nor lock the
+                // page for good) unless every write actually reached NVS.
+                let saved = async {
+                    storage.lock().await.save_led_gpio(gpio)?;
+                    agent::save_identity(storage, &form.node_id, &form.ctrl_url, "").await
+                }
+                .await;
+                if saved.is_err() {
+                    return Response::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        page(
+                            gpio,
+                            &form.node_id,
+                            &form.ctrl_url,
+                            Some(&message_html("\u{c9}chec de l'\u{e9}criture en m\u{e9}moire flash, r\u{e9}essayez.", true)),
+                        ),
+                    )
+                    .with_content_type("text/html; charset=utf-8");
+                }
                 let token = agent::token(storage).await;
-                storage.lock().await.lock();
+                if storage.lock().await.lock().is_err() {
+                    return Response::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        page(
+                            gpio,
+                            &form.node_id,
+                            &form.ctrl_url,
+                            Some(&message_html("\u{c9}chec du verrouillage de la configuration, r\u{e9}essayez.", true)),
+                        ),
+                    )
+                    .with_content_type("text/html; charset=utf-8");
+                }
                 // `take()`s `None` on a second concurrent hit -- one
                 // pending reboot is enough, and there's only one `lpwr` to
                 // give out. The task's own delay gives this response time

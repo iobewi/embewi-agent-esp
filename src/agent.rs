@@ -17,7 +17,7 @@ use picoserve::request::RequestParts;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
-use crate::storage::SharedStorage;
+use crate::storage::{ConfigSetResult, SharedStorage, StorageError};
 
 /// Versions of the `/v1alpha1`-style protocol this agent answers, highest
 /// first (contrat §4, "Découverte de version d'API").
@@ -88,16 +88,23 @@ fn generate_token() -> String {
 /// `presented_token` (the form has no token field at all -- it's a
 /// one-shot save, there's nothing to rotate to yet), so in practice this
 /// only ever generates on first provisioning.
-pub async fn save_identity(storage: &SharedStorage, node_id: &str, ctrl_url: &str, presented_token: &str) {
+pub async fn save_identity(
+    storage: &SharedStorage,
+    node_id: &str,
+    ctrl_url: &str,
+    presented_token: &str,
+) -> Result<(), StorageError> {
     let mut storage = storage.lock().await;
-    storage.set_string(&NAMESPACE, &KEY_NODE_ID, node_id);
-    storage.set_string(&NAMESPACE, &KEY_CTRL_URL, ctrl_url);
+    storage.set_string(&NAMESPACE, &KEY_NODE_ID, node_id)?;
+    storage.set_string(&NAMESPACE, &KEY_CTRL_URL, ctrl_url)?;
 
     if !presented_token.is_empty() {
-        storage.set_string(&NAMESPACE, &KEY_TOKEN, presented_token);
+        storage.set_string(&NAMESPACE, &KEY_TOKEN, presented_token)
     } else if storage.get_string(&NAMESPACE, &KEY_TOKEN).is_none() {
         let token = generate_token();
-        storage.set_string(&NAMESPACE, &KEY_TOKEN, &token);
+        storage.set_string(&NAMESPACE, &KEY_TOKEN, &token)
+    } else {
+        Ok(())
     }
 }
 
@@ -158,7 +165,9 @@ pub async fn rotate_token(storage: &SharedStorage, new_token: &str) -> Result<()
         return Err(RotateTokenError::InvalidLength);
     }
     let mut storage = storage.lock().await;
-    storage.set_string(&NAMESPACE, &KEY_TOKEN, new_token);
+    storage
+        .set_string(&NAMESPACE, &KEY_TOKEN, new_token)
+        .map_err(|_| RotateTokenError::WriteFailed)?;
     if storage.get_string(&NAMESPACE, &KEY_TOKEN).as_deref() == Some(new_token) {
         Ok(())
     } else {
@@ -198,21 +207,25 @@ pub struct ConfigPush {
     data: BTreeMap<String, String>,
 }
 
-/// Applies a McuConfigMap push. `None` if `data` was empty or every key in
-/// it was rejected (internal `_`-prefixed or malformed) -- a true no-op,
+/// Applies a McuConfigMap push. `Ok(None)` if `data` was empty or every key
+/// in it was rejected (internal `_`-prefixed or malformed) -- a true no-op,
 /// so the generation isn't bumped for nothing (contrat: bumped "à chaque
 /// `POST /config`", but an all-rejected push saved nothing to bump for).
-pub async fn push_config(storage: &SharedStorage, push: &ConfigPush) -> Option<u32> {
+///
+/// Stops at the first NVS failure and returns it, without bumping the
+/// generation: keys applied before the failure stay in NVS (the push isn't
+/// atomic), but the Core is told it failed and can simply retry it.
+pub async fn push_config(storage: &SharedStorage, push: &ConfigPush) -> Result<Option<u32>, StorageError> {
     let mut storage = storage.lock().await;
     let mut changed = false;
     for (key, value) in &push.data {
-        if key.starts_with('_') {
-            continue; // internal keys stay opaque, never admin-writable
+        // Internal (`_`-prefixed) and malformed keys come back `Rejected`.
+        match storage.cfg_set(key, value)? {
+            ConfigSetResult::Stored | ConfigSetResult::Deleted => changed = true,
+            ConfigSetResult::Rejected => {}
         }
-        storage.cfg_set(key, value);
-        changed = true;
     }
-    changed.then(|| storage.cfg_bump_generation())
+    if changed { storage.cfg_bump_generation().map(Some) } else { Ok(None) }
 }
 
 /// Contrat §2's device state machine. Drives both `GET /info`/`GET /health`

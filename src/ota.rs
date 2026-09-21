@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::agent;
-use crate::storage::SharedStorage;
+use crate::storage::{SharedStorage, StorageError};
 
 /// Contrat §4: `POST /ota/prepare`'s `partition_layout` field must match
 /// this exactly, or the write is refused before a single byte transfers.
@@ -129,17 +129,37 @@ pub async fn staged(storage: &SharedStorage) -> Staged {
     }
 }
 
-async fn save_staged(storage: &SharedStorage, stage: Stage, slot: &str, digest: &str, deployment_id: &str, size: u32) {
+/// Persists the staged-OTA record. Fails as soon as one field can't be
+/// written: the record is only trustworthy when this returns `Ok`.
+async fn save_staged(
+    storage: &SharedStorage,
+    stage: Stage,
+    slot: &str,
+    digest: &str,
+    deployment_id: &str,
+    size: u32,
+) -> Result<(), StorageError> {
     let mut storage = storage.lock().await;
-    storage.set_u8(&NAMESPACE, &KEY_STAGE, stage as u8);
-    storage.set_string(&NAMESPACE, &KEY_SLOT, slot);
-    storage.set_string(&NAMESPACE, &KEY_DIGEST, digest);
-    storage.set_string(&NAMESPACE, &KEY_DEPLOYMENT_ID, deployment_id);
-    storage.set_u32(&NAMESPACE, &KEY_SIZE, size);
+    // `stage` is what `staged()` consumers switch on. Clearing drops it
+    // first (a failure later leaves "nothing staged" beside stale details,
+    // which is harmless); any other stage is published last, so a failure
+    // never pairs a new stage with stale details.
+    let clearing = stage == Stage::None;
+    if clearing {
+        storage.set_u8(&NAMESPACE, &KEY_STAGE, stage as u8)?;
+    }
+    storage.set_string(&NAMESPACE, &KEY_SLOT, slot)?;
+    storage.set_string(&NAMESPACE, &KEY_DIGEST, digest)?;
+    storage.set_string(&NAMESPACE, &KEY_DEPLOYMENT_ID, deployment_id)?;
+    storage.set_u32(&NAMESPACE, &KEY_SIZE, size)?;
+    if !clearing {
+        storage.set_u8(&NAMESPACE, &KEY_STAGE, stage as u8)?;
+    }
+    Ok(())
 }
 
-pub async fn clear_staged(storage: &SharedStorage) {
-    save_staged(storage, Stage::None, "", "", "", 0).await;
+pub async fn clear_staged(storage: &SharedStorage) -> Result<(), StorageError> {
+    save_staged(storage, Stage::None, "", "", "", 0).await
 }
 
 /// Digest of the currently-running, validated firmware -- empty until the
@@ -364,6 +384,9 @@ pub struct WriteFinishOk {
 pub enum WriteFinishError {
     NotWriting,
     DigestMismatch,
+    /// The image was written and verified, but the staged record couldn't
+    /// be persisted -- it must not be reported as `written`.
+    Storage(StorageError),
 }
 
 /// Closes the write session: compares the digest computed *while writing*
@@ -389,7 +412,9 @@ pub async fn write_finish(
         return Err(WriteFinishError::DigestMismatch);
     }
 
-    save_staged(storage, Stage::Written, slot_name(session.slot), &digest, deployment_id, session.written).await;
+    save_staged(storage, Stage::Written, slot_name(session.slot), &digest, deployment_id, session.written)
+        .await
+        .map_err(WriteFinishError::Storage)?;
     info!("ota: write OK {} octets slot={} -> staged=written", session.written, slot_name(session.slot));
     Ok(WriteFinishOk { written: session.written, digest })
 }
@@ -401,12 +426,19 @@ pub async fn write_finish(
 /// own fallback ("Reprise après reboot de l'agent entre write et
 /// activate"), and works identically whether or not this device rebooted
 /// since `/ota/write` finished.
-pub async fn activate(storage: &SharedStorage, deployment_id: &str) -> Option<&'static str> {
+pub async fn activate(storage: &SharedStorage, deployment_id: &str) -> Result<&'static str, ActivateError> {
     let staged = staged(storage).await;
     if staged.stage != Stage::Written {
-        return None;
+        return Err(ActivateError::NotStaged);
     }
-    let target = slot_from_name(&staged.slot)?;
+    let target = slot_from_name(&staged.slot).ok_or(ActivateError::NotStaged)?;
+
+    // Record the intent first: if NVS refuses it, nothing has changed yet
+    // and the caller gets an error instead of a reboot into a slot whose
+    // staged record disagrees with `otadata`.
+    save_staged(storage, Stage::Activating, &staged.slot, &staged.digest, deployment_id, staged.size)
+        .await
+        .map_err(ActivateError::Storage)?;
 
     let ok = {
         let mut storage = storage.lock().await;
@@ -420,15 +452,30 @@ pub async fn activate(storage: &SharedStorage, deployment_id: &str) -> Option<&'
                         && ota_data.set_current_ota_state(OtaImageState::New).is_ok(),
                 )
             })
-            .flatten()?
+            .flatten()
+            .unwrap_or(false)
     };
     if !ok {
-        return None;
+        // Best effort: back to `Written` so a retry of `activate` is possible.
+        if save_staged(storage, Stage::Written, &staged.slot, &staged.digest, &staged.deployment_id, staged.size)
+            .await
+            .is_err()
+        {
+            warn!("ota: activate failed and the staged record couldn't be restored to `written`");
+        }
+        return Err(ActivateError::NotStaged);
     }
 
-    save_staged(storage, Stage::Activating, &staged.slot, &staged.digest, deployment_id, staged.size).await;
     info!("ota: activate dep={deployment_id} -> slot={} prêt, reboot imminent", staged.slot);
-    Some(slot_name(target))
+    Ok(slot_name(target))
+}
+
+pub enum ActivateError {
+    /// Nothing staged, or `otadata` couldn't be updated (`409 not_staged`,
+    /// as before).
+    NotStaged,
+    /// The staged record couldn't be persisted; nothing was activated.
+    Storage(StorageError),
 }
 
 /// Promotes the just-validated staged image to "active" and cancels the
@@ -443,12 +490,20 @@ async fn mark_valid(storage: &'static SharedStorage) {
         mark_invalid_and_reboot(storage).await;
     }
 
+    // The bootloader already considers the image valid at this point, so a
+    // failed bookkeeping write can't be turned into a rollback -- it's
+    // logged loudly instead of being silently lost.
     {
         let mut storage = storage.lock().await;
-        storage.set_string(&NAMESPACE, &KEY_ACTIVE_DIGEST, &staged.digest);
-        storage.set_string(&NAMESPACE, &KEY_ACTIVE_DEPLOYMENT_ID, &staged.deployment_id);
+        if storage.set_string(&NAMESPACE, &KEY_ACTIVE_DIGEST, &staged.digest).is_err()
+            || storage.set_string(&NAMESPACE, &KEY_ACTIVE_DEPLOYMENT_ID, &staged.deployment_id).is_err()
+        {
+            warn!("ota: validated image's digest/deployment_id couldn't be persisted");
+        }
     }
-    clear_staged(storage).await;
+    if clear_staged(storage).await.is_err() {
+        warn!("ota: staged record couldn't be cleared after mark_valid");
+    }
     agent::set_state(agent::State::Running);
     info!("ota: self-check OK, mark_valid done (deployment_id={})", staged.deployment_id);
 }
@@ -506,6 +561,8 @@ pub async fn on_boot(storage: &'static SharedStorage, spawner: Spawner) {
         // flipped the image to `PendingVerify`) no longer describes
         // anything real -- clear it so `GET /info` doesn't report a slot
         // that isn't actually staged for anything anymore.
-        clear_staged(storage).await;
+        if clear_staged(storage).await.is_err() {
+            warn!("ota: stale staged record couldn't be cleared at boot");
+        }
     }
 }

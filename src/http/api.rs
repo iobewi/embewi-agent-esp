@@ -80,7 +80,9 @@ pub async fn serve(
                 let Ok(push) = serde_json::from_str::<agent::ConfigPush>(&body) else {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_data_field\"}");
                 };
-                agent::push_config(storage, &push).await;
+                if agent::push_config(storage, &push).await.is_err() {
+                    return json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"error\":\"nvs_write_failed\"}");
+                }
                 let generation = storage.lock().await.cfg_generation();
                 json_ok(format!(
                     "{{\"status\":\"saved\",\"generation\":{generation},\"note\":\"effective_after_reboot\"}}"
@@ -145,7 +147,9 @@ pub async fn serve(
                 if !(1024..=65535).contains(&req.port) {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"port must be 1024-65535\"}");
                 }
-                storage.lock().await.save_app_port(req.port as u16);
+                if storage.lock().await.save_app_port(req.port as u16).is_err() {
+                    return json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"error\":\"nvs_write_failed\"}");
+                }
                 json_ok(format!(
                     "{{\"status\":\"saved\",\"port\":{}}}",
                     req.port
@@ -182,8 +186,14 @@ pub async fn serve(
                 let Ok(req) = serde_json::from_str::<ActivateBody>(&body) else {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_deployment_id\"}");
                 };
-                let Some(target_slot) = ota::activate(storage, &req.deployment_id).await else {
-                    return json_error(StatusCode::CONFLICT, "{\"error\":\"not_staged\"}");
+                let target_slot = match ota::activate(storage, &req.deployment_id).await {
+                    Ok(slot) => slot,
+                    Err(ota::ActivateError::NotStaged) => {
+                        return json_error(StatusCode::CONFLICT, "{\"error\":\"not_staged\"}");
+                    }
+                    Err(ota::ActivateError::Storage(_)) => {
+                        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"error\":\"nvs_write_failed\"}");
+                    }
                 };
                 // Same one-shot `lpwr_cell` as `/reboot` above -- there's
                 // only one `lpwr` to hand out, whichever fires first wins.
@@ -209,10 +219,15 @@ pub async fn serve(
                 let Ok(req) = serde_json::from_str::<CertBody>(&body) else {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_cert_or_key\"}");
                 };
-                if !crate::tls::save_cert(storage, &req.cert_pem, &req.key_pem).await {
-                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"invalid_certificate\"}");
+                match crate::tls::save_cert(storage, &req.cert_pem, &req.key_pem).await {
+                    Ok(()) => json_ok(String::from("{\"status\":\"saved\"}")),
+                    Err(crate::tls::SaveCertError::Invalid) => {
+                        json_error(StatusCode::BAD_REQUEST, "{\"error\":\"invalid_certificate\"}")
+                    }
+                    Err(crate::tls::SaveCertError::Storage) => {
+                        json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"error\":\"nvs_write_failed\"}")
+                    }
                 }
-                json_ok(String::from("{\"status\":\"saved\"}"))
             }),
         )
         .route(
@@ -228,10 +243,13 @@ pub async fn serve(
                 let Ok(req) = serde_json::from_str::<CaBody>(&body) else {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_ca\"}");
                 };
-                if !crate::tls::save_ca(storage, &req.ca_pem).await {
-                    return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"invalid_certificate\"}");
+                match crate::tls::save_ca(storage, &req.ca_pem).await {
+                    Ok(()) => json_ok(String::from("{\"status\":\"saved\"}")),
+                    Err(crate::tls::SaveCertError::Storage) => {
+                        json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"error\":\"nvs_write_failed\"}")
+                    }
+                    Err(_) => json_error(StatusCode::BAD_REQUEST, "{\"error\":\"invalid_certificate\"}"),
                 }
-                json_ok(String::from("{\"status\":\"saved\"}"))
             }),
         );
 

@@ -97,8 +97,13 @@ impl WifiManager {
     ) -> bool {
         if self.connect(storage, ssid, password.clone()).await {
             let mut storage = storage.lock().await;
-            storage.set_string(&NAMESPACE, &KEY_SSID, ssid);
-            storage.set_string(&NAMESPACE, &KEY_PASSWORD, &password);
+            // Connected either way; but if the credentials couldn't be
+            // saved they won't survive a reboot, which must not go unnoticed.
+            if storage.set_string(&NAMESPACE, &KEY_SSID, ssid).is_err()
+                || storage.set_string(&NAMESPACE, &KEY_PASSWORD, &password).is_err()
+            {
+                warn!("Wi-Fi: connected, but credentials could not be saved to NVS");
+            }
             true
         } else {
             false

@@ -122,6 +122,9 @@ impl RequestHandlerService for OtaWrite {
                 result.written, result.digest
             )),
             Err(ota::WriteFinishError::DigestMismatch) => json_ok(String::from("{\"status\":\"digest_mismatch\"}")),
+            Err(ota::WriteFinishError::Storage(_)) => {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"status\":\"nvs_write_failed\"}")
+            }
             Err(ota::WriteFinishError::NotWriting) => {
                 json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"status\":\"write_failed\"}")
             }

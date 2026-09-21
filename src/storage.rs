@@ -19,6 +19,30 @@ use esp_nvs::platform::Crc;
 use esp_storage::FlashStorage;
 use log::warn;
 
+/// Why a persistent write didn't happen. Every mutation returns this
+/// instead of swallowing the failure: callers must not report success (or
+/// move on to a state that assumes the value was saved) when NVS refused it.
+/// Details are logged at the failure site (`esp_nvs`'s error isn't `Copy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageError {
+    /// The flash chip or the NVS partition couldn't be opened.
+    Unavailable,
+    /// NVS returned an error while writing or erasing.
+    Write,
+}
+
+/// Outcome of [`Storage::cfg_set`] when NVS itself didn't fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSetResult {
+    /// The value was written.
+    Stored,
+    /// The key was erased (empty value), or was already absent.
+    Deleted,
+    /// The key can't exist in the config map (empty, too long, internal
+    /// `_`-prefixed): nothing was touched.
+    Rejected,
+}
+
 /// `Storage` shared between tasks (the Improv/Wi-Fi task and the HTTP config
 /// server both need it). Lock only around the actual get/set call, not
 /// around unrelated work, so one task blocking on Wi-Fi doesn't stall the
@@ -193,40 +217,40 @@ impl Storage {
         self.get(namespace, key)
     }
 
-    pub fn set_string(&mut self, namespace: &Key, key: &Key, value: &str) {
-        self.set(namespace, key, value);
+    pub fn set_string(&mut self, namespace: &Key, key: &Key, value: &str) -> Result<(), StorageError> {
+        self.set(namespace, key, value)
     }
 
     pub fn get_u8(&mut self, namespace: &Key, key: &Key) -> Option<u8> {
         self.get(namespace, key)
     }
 
-    pub fn set_u8(&mut self, namespace: &Key, key: &Key, value: u8) {
-        self.set(namespace, key, value);
+    pub fn set_u8(&mut self, namespace: &Key, key: &Key, value: u8) -> Result<(), StorageError> {
+        self.set(namespace, key, value)
     }
 
     pub fn get_bool(&mut self, namespace: &Key, key: &Key) -> Option<bool> {
         self.get(namespace, key)
     }
 
-    pub fn set_bool(&mut self, namespace: &Key, key: &Key, value: bool) {
-        self.set(namespace, key, value);
+    pub fn set_bool(&mut self, namespace: &Key, key: &Key, value: bool) -> Result<(), StorageError> {
+        self.set(namespace, key, value)
     }
 
     pub fn get_u16(&mut self, namespace: &Key, key: &Key) -> Option<u16> {
         self.get(namespace, key)
     }
 
-    pub fn set_u16(&mut self, namespace: &Key, key: &Key, value: u16) {
-        self.set(namespace, key, value);
+    pub fn set_u16(&mut self, namespace: &Key, key: &Key, value: u16) -> Result<(), StorageError> {
+        self.set(namespace, key, value)
     }
 
     pub fn get_u32(&mut self, namespace: &Key, key: &Key) -> Option<u32> {
         self.get(namespace, key)
     }
 
-    pub fn set_u32(&mut self, namespace: &Key, key: &Key, value: u32) {
-        self.set(namespace, key, value);
+    pub fn set_u32(&mut self, namespace: &Key, key: &Key, value: u32) -> Result<(), StorageError> {
+        self.set(namespace, key, value)
     }
 
     /// Whether the HTTP hardware-config page (`src/http/`) has been
@@ -238,8 +262,8 @@ impl Storage {
             .unwrap_or(false)
     }
 
-    pub fn lock(&mut self) {
-        self.set_bool(&SYSTEM_NAMESPACE, &KEY_LOCKED, true);
+    pub fn lock(&mut self) -> Result<(), StorageError> {
+        self.set_bool(&SYSTEM_NAMESPACE, &KEY_LOCKED, true)
     }
 
     /// Round-trips a canary value through NVS (write, read back, erase).
@@ -247,13 +271,17 @@ impl Storage {
     /// the agent's critical state (staged OTA, token, config) lives in
     /// NVS, so if it's corrupted or full the device should say so, not
     /// silently claim to be healthy.
+    ///
+    /// Any failed step (write, read-back mismatch, erase) fails the check:
+    /// a stale canary left behind by a failed erase must never let the next
+    /// round pass on a value it didn't itself write.
     pub fn self_check(&mut self) -> bool {
         const CANARY: Key = Key::from_str("canary");
         const VALUE: u8 = 0xA5;
-        self.set_u8(&SYSTEM_NAMESPACE, &CANARY, VALUE);
-        let ok = self.get_u8(&SYSTEM_NAMESPACE, &CANARY) == Some(VALUE);
-        self.delete(&SYSTEM_NAMESPACE, &CANARY);
-        ok
+        let written = self.set_u8(&SYSTEM_NAMESPACE, &CANARY, VALUE).is_ok();
+        let read_back = self.get_u8(&SYSTEM_NAMESPACE, &CANARY) == Some(VALUE);
+        let erased = self.delete(&SYSTEM_NAMESPACE, &CANARY).is_ok();
+        written && read_back && erased
     }
 
     /// `None` if no status LED is configured.
@@ -261,7 +289,7 @@ impl Storage {
         self.get_u8(&HW_NAMESPACE, &KEY_LED_GPIO)
     }
 
-    pub fn save_led_gpio(&mut self, gpio: Option<u8>) {
+    pub fn save_led_gpio(&mut self, gpio: Option<u8>) -> Result<(), StorageError> {
         match gpio {
             Some(gpio) => self.set_u8(&HW_NAMESPACE, &KEY_LED_GPIO, gpio),
             None => self.delete(&HW_NAMESPACE, &KEY_LED_GPIO),
@@ -280,8 +308,8 @@ impl Storage {
         self.get_u16(&SYSTEM_NAMESPACE, &KEY_APP_PORT).unwrap_or(8080)
     }
 
-    pub fn save_app_port(&mut self, port: u16) {
-        self.set_u16(&SYSTEM_NAMESPACE, &KEY_APP_PORT, port);
+    pub fn save_app_port(&mut self, port: u16) -> Result<(), StorageError> {
+        self.set_u16(&SYSTEM_NAMESPACE, &KEY_APP_PORT, port)
     }
 
     /// Current McuConfigMap generation in NVS (contrat §4a) -- distinct
@@ -301,27 +329,31 @@ impl Storage {
 
     /// Sets one McuConfigMap key (contrat §4a). An empty `value` erases the
     /// key (reset to the build default) -- the empty string is otherwise
-    /// reserved, never a legitimate stored value. Rejects keys that can't
-    /// exist here at all (empty, too long for NVS, or `_`-prefixed/internal)
-    /// by silently doing nothing, rather than risking a panic from
-    /// `Key::from_str` on an oversized admin-supplied key. Doesn't bump the
-    /// generation -- call [`Self::cfg_bump_generation`] once after a batch.
-    pub fn cfg_set(&mut self, key: &str, value: &str) {
+    /// reserved, never a legitimate stored value. Keys that can't exist
+    /// here at all (empty, too long for NVS, or `_`-prefixed/internal) are
+    /// reported as [`ConfigSetResult::Rejected`] without touching NVS --
+    /// checked before `Key::from_str`, which would panic on an oversized
+    /// admin-supplied key. A genuine NVS failure is an `Err`, distinct from
+    /// a rejection. Doesn't bump the generation -- call
+    /// [`Self::cfg_bump_generation`] once after a batch.
+    pub fn cfg_set(&mut self, key: &str, value: &str) -> Result<ConfigSetResult, StorageError> {
         if key.is_empty() || key.len() > MAX_CFG_KEY_LEN || key.starts_with('_') {
-            return;
+            return Ok(ConfigSetResult::Rejected);
         }
         let key = Key::from_str(key);
         if value.is_empty() {
-            self.delete(&CFG_NAMESPACE, &key);
+            self.delete(&CFG_NAMESPACE, &key)?;
+            Ok(ConfigSetResult::Deleted)
         } else {
-            self.set_string(&CFG_NAMESPACE, &key, value);
+            self.set_string(&CFG_NAMESPACE, &key, value)?;
+            Ok(ConfigSetResult::Stored)
         }
     }
 
-    pub fn cfg_bump_generation(&mut self) -> u32 {
+    pub fn cfg_bump_generation(&mut self) -> Result<u32, StorageError> {
         let next = self.cfg_generation().wrapping_add(1);
-        self.set_u32(&CFG_NAMESPACE, &KEY_CFG_GENERATION, next);
-        next
+        self.set_u32(&CFG_NAMESPACE, &KEY_CFG_GENERATION, next)?;
+        Ok(next)
     }
 
     /// Every user-defined McuConfigMap key currently in NVS (namespace
@@ -346,15 +378,16 @@ impl Storage {
         out
     }
 
-    pub fn delete(&mut self, namespace: &Key, key: &Key) {
-        let Some(nvs) = self.nvs() else {
-            return;
-        };
+    /// Erases a key. Idempotent: an already-absent key (or namespace) is
+    /// `Ok`, only real NVS/flash failures are errors.
+    pub fn delete(&mut self, namespace: &Key, key: &Key) -> Result<(), StorageError> {
+        let nvs = self.nvs().ok_or(StorageError::Unavailable)?;
         match nvs.delete(namespace, key) {
-            Ok(()) | Err(NvsError::NamespaceNotFound | NvsError::KeyNotFound) => {}
+            Ok(()) | Err(NvsError::NamespaceNotFound | NvsError::KeyNotFound) => Ok(()),
             Err(e) => {
                 warn!("Failed to delete {}: {e:?}", key.as_str());
                 self.nvs = None;
+                Err(StorageError::Write)
             }
         }
     }
@@ -375,16 +408,15 @@ impl Storage {
         }
     }
 
-    fn set<T>(&mut self, namespace: &Key, key: &Key, value: T)
+    fn set<T>(&mut self, namespace: &Key, key: &Key, value: T) -> Result<(), StorageError>
     where
         Nvs<SharedFlash>: Set<T>,
     {
-        let Some(nvs) = self.nvs() else {
-            return;
-        };
-        if let Err(e) = nvs.set(namespace, key, value) {
+        let nvs = self.nvs().ok_or(StorageError::Unavailable)?;
+        nvs.set(namespace, key, value).map_err(|e| {
             warn!("Failed to save {}: {e:?}", key.as_str());
             self.nvs = None;
-        }
+            StorageError::Write
+        })
     }
 }
