@@ -6,3 +6,5 @@ version      = "0.1.0"
 license      = "MIT"
 
 [dependencies]
+# Software SHA-256 for the appended image hash (pure Rust, no_std).
+sha2 = { version = "0.10", default-features = false }
