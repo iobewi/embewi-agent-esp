@@ -26,6 +26,16 @@ path = "./src/bin/main.rs"
 # without needing to time a physical power-cut against a live self-check
 # window (which normally completes before Wi-Fi even reconnects).
 fault-injection = []
+# TEST/DEBUG ONLY -- never enable in a production image. A stronger variant
+# of `fault-injection`: instead of a clean `software_reset()` after the
+# self-check passes, spins forever right at the top of `selfcheck_task`,
+# starving the whole (single-threaded) embassy executor before either the
+# self-check or its own software deadline ever gets polled again -- the one
+# failure a purely software timeout structurally cannot catch, since it
+# depends on the same stuck executor. Proves the *hardware* watchdog alone
+# forces the eventual reset, with zero cooperation from any of this
+# firmware's own code.
+fault-injection-freeze = []
 
 [dependencies]
 esp-hal = { version = "~1.1.0", features = ["esp32c3", "log-04", "unstable"] }

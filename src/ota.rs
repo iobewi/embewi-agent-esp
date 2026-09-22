@@ -821,6 +821,19 @@ fn disable_boot_watchdog() {
 
 #[embassy_executor::task]
 async fn selfcheck_task(storage: &'static SharedStorage) {
+    // TEST/DEBUG ONLY (`fault-injection-freeze` feature, never in a
+    // production image): starves the executor before the self-check's own
+    // software deadline (below) can ever be polled -- the one failure mode
+    // that deadline structurally can't catch, since it depends on the same
+    // stuck executor. Only the hardware watchdog (`arm_boot_watchdog`,
+    // already armed and fed by `on_boot` before this task was spawned) can
+    // recover from this; if it doesn't, this loop runs forever.
+    if cfg!(feature = "fault-injection-freeze") {
+        warn!("ota: [fault-injection-freeze] spinning forever, only the hardware watchdog can save this boot");
+        loop {
+            core::hint::spin_loop();
+        }
+    }
     // contrat §3: bounded by a deadline, not just "run the checks" -- a
     // hung check must never leave the device stuck in `pending_verify`
     // forever. Uses a plain `embassy_time::Timer` race rather than a
