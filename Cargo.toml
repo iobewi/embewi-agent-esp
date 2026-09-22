@@ -38,6 +38,12 @@ fault-injection = []
 fault-injection-freeze = []
 
 [dependencies]
+# Generic transactional OTA engine core, extracted from this crate's own
+# `ota.rs`/`ota-logic` -- see https://github.com/iobewi/atomic-ota. Pinned
+# by commit (not a version yet: nothing in it is a stable API) so a build
+# here is reproducible without depending on a sibling checkout's layout.
+atomic-ota = { git = "https://github.com/iobewi/atomic-ota", rev = "0f3e6ee" }
+
 esp-hal = { version = "~1.1.0", features = ["esp32c3", "log-04", "unstable"] }
 
 esp-rtos = { version = "0.3.0", features = [
