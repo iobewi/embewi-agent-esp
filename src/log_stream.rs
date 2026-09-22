@@ -32,7 +32,9 @@ use critical_section::Mutex;
 use edge_http::ws::{is_upgrade_accepted, upgrade_request_headers, MAX_BASE64_KEY_LEN, MAX_BASE64_KEY_RESPONSE_LEN, NONCE_LEN};
 use edge_ws::{FrameHeader, FrameType};
 use embassy_net::Stack;
-use embassy_time::{with_timeout, Duration, Timer};
+use embassy_net::tcp::TcpSocket;
+use embassy_time::{with_timeout, Duration, Instant, Timer};
+use mbedtls_rs::Session;
 use heapless::{Deque, String as HString};
 use log::{Level, LevelFilter, Metadata, Record, info, warn};
 use serde::Serialize;
@@ -43,8 +45,45 @@ use crate::tls::TlsReferenceStatic;
 
 const LINE_MAX: usize = 160;
 const RING_CAPACITY: usize = 24;
-const RETRY_PERIOD: Duration = Duration::from_secs(5);
 const DRAIN_PERIOD: Duration = Duration::from_millis(200);
+
+/// Reconnect backoff for the outer loop in [`run`]: 5s, 10s, 20s, 40s,
+/// 60s, 60s... (doubling, capped at `MAX_BACKOFF`) -- before this, any
+/// failure (a durably unreachable Core, `NoCa`, a bad cert, anything)
+/// meant a fresh DNS+TCP+TLS handshake attempt every 5s indefinitely.
+const BASE_BACKOFF: Duration = Duration::from_secs(5);
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
+/// A session that stayed up for at least this long is "was healthy, just
+/// glitched", not "still broken" -- [`run`] resets the backoff to
+/// `BASE_BACKOFF` after one, so a normally-stable Core recovers quickly
+/// from a one-off blip while a durably broken one (bad CA, TLS
+/// misconfigured, Core down for good) doesn't get hammered every
+/// `BASE_BACKOFF` forever. Deliberately one flat threshold/backoff for
+/// every failure mode (`ClientTlsError`'s variants included) rather than a
+/// different schedule per cause -- keeps this change small; nothing here
+/// rules out splitting that out later if a specific cause turns out to
+/// need it.
+const STABLE_THRESHOLD: Duration = Duration::from_secs(30);
+
+/// `current * 2`, capped at [`MAX_BACKOFF`]. Never below `current` (so
+/// repeated calls actually converge), which for the smallest possible
+/// `current` this is ever called with (`BASE_BACKOFF`) already holds.
+fn next_backoff(current: Duration) -> Duration {
+    Duration::from_secs((current.as_secs() * 2).min(MAX_BACKOFF.as_secs()))
+}
+
+/// `base` ± up to 30%, drawn from the same hardware RNG the WS frame
+/// masking below already uses. Without this, a whole fleet of devices that
+/// lost the same Core at the same instant (a Core restart, a network
+/// blip) would retry in lockstep and hit it with a burst the moment it
+/// comes back, instead of spreading back out over roughly the backoff
+/// window.
+fn jittered(base: Duration) -> Duration {
+    let base_ms = base.as_millis() as i64;
+    let percent = (esp_hal::rng::Rng::new().random() % 61) as i64 - 30; // -30..=30
+    let ms = (base_ms + base_ms * percent / 100).max(1000);
+    Duration::from_millis(ms as u64)
+}
 
 static RING: Mutex<RefCell<Deque<HString<LINE_MAX>, RING_CAPACITY>>> =
     Mutex::new(RefCell::new(Deque::new()));
@@ -149,30 +188,59 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: Tl
     // record just crosses over more round trips instead of failing.
     let mut rx_buffer = [0u8; 1024];
     let mut tx_buffer = [0u8; 512];
+    let mut backoff = BASE_BACKOFF;
 
     loop {
         let ctrl_url = agent::ctrl_url(storage).await;
-        if let Some((host, port)) = split_host_port(&ctrl_url)
-            && let Ok(host_c) = CString::new(host)
-        {
-            if let Err(e) = run_session(tls, stack, storage, &mut rx_buffer, &mut tx_buffer, &host_c, port).await {
-                warn!("logs: session ended: {e}");
+        let Some((host, port)) = split_host_port(&ctrl_url) else {
+            // Nothing provisioned (or malformed) -- not a failure, so this
+            // doesn't touch `backoff` at all, only how long until the next
+            // check.
+            drain_and_discard();
+            Timer::after(BASE_BACKOFF).await;
+            continue;
+        };
+        let Ok(host_c) = CString::new(host) else {
+            drain_and_discard();
+            Timer::after(BASE_BACKOFF).await;
+            continue;
+        };
+
+        let stable = match connect_and_upgrade(tls, stack, storage, &mut rx_buffer, &mut tx_buffer, &host_c, port).await {
+            Ok(mut session) => {
+                let connected_at = Instant::now();
+                let err = pump_session(&mut session, storage).await;
+                warn!("logs: session ended: {err}");
+                connected_at.elapsed() >= STABLE_THRESHOLD
             }
-        }
+            Err(e) => {
+                warn!("logs: session ended: {e}");
+                false
+            }
+        };
+
         drain_and_discard();
-        Timer::after(RETRY_PERIOD).await;
+        if stable {
+            backoff = BASE_BACKOFF;
+        }
+        Timer::after(jittered(backoff)).await;
+        backoff = next_backoff(backoff);
     }
 }
 
-async fn run_session(
+/// Connects and completes the WS upgrade handshake -- everything [`run`]
+/// needs before a session is ready to [`pump_session`]. A failure here
+/// never counts as "was stable" (see [`STABLE_THRESHOLD`]): there's no
+/// [`Instant`] to measure from since nothing ever connected.
+async fn connect_and_upgrade<'h, 'buf>(
     tls: TlsReferenceStatic,
     stack: Stack<'static>,
     storage: &'static SharedStorage,
-    rx_buffer: &mut [u8],
-    tx_buffer: &mut [u8],
-    host: &core::ffi::CStr,
+    rx_buffer: &'buf mut [u8],
+    tx_buffer: &'buf mut [u8],
+    host: &'h core::ffi::CStr,
     port: u16,
-) -> Result<(), AllocString> {
+) -> Result<Session<'h, TcpSocket<'buf>>, AllocString> {
     let mut session = crate::tls::connect_client(tls, stack, storage, rx_buffer, tx_buffer, host, port)
         .await
         .map_err(|e| format!("connect to {host:?}:{port} failed: {e}"))?;
@@ -242,6 +310,17 @@ async fn run_session(
     }
 
     info!("logs: connected to {host_str}:{port}");
+    Ok(session)
+}
+
+/// Drives an already-upgraded WS session until it ends, always returning a
+/// message describing why (a clean server-initiated close included --
+/// there's no "done" state for a log stream short of that). Unchanged from
+/// before the reconnect backoff was added: framing, ping/pong, and the
+/// ring-buffer drain are all exactly what they were, just moved out of
+/// [`connect_and_upgrade`] so [`run`] can time how long the session
+/// actually stayed up.
+async fn pump_session<'h, 'buf>(session: &mut Session<'h, TcpSocket<'buf>>, storage: &'static SharedStorage) -> AllocString {
     loop {
         // Bounded read for whatever the server sent, mainly keepalive
         // Pings: a write-only client that never reads never answers them,
@@ -249,33 +328,29 @@ async fn run_session(
         // drop the connection over that alone, RFC 6455 requiring a Pong
         // in response. `DRAIN_PERIOD` doubles as the read timeout, so this
         // doesn't delay draining the ring by more than that either way.
-        match with_timeout(DRAIN_PERIOD, FrameHeader::recv(&mut session)).await {
+        match with_timeout(DRAIN_PERIOD, FrameHeader::recv(&mut *session)).await {
             Ok(Ok(mut header)) => {
                 let mut payload = [0u8; 125]; // RFC 6455: control frames are <= 125 bytes
-                let payload = header
-                    .recv_payload(&mut session, &mut payload)
-                    .await
-                    .map_err(|e| format!("recv_payload failed: {e:?}"))?;
+                let payload = match header.recv_payload(&mut *session, &mut payload).await {
+                    Ok(payload) => payload,
+                    Err(e) => return format!("recv_payload failed: {e:?}"),
+                };
                 match header.frame_type {
                     FrameType::Ping => {
                         header.frame_type = FrameType::Pong;
                         header.mask_key = Some(esp_hal::rng::Rng::new().random());
-                        header
-                            .send(&mut session)
-                            .await
-                            .map_err(|e| format!("pong send failed: {e:?}"))?;
-                        header
-                            .send_payload(&mut session, payload)
-                            .await
-                            .map_err(|e| format!("pong payload send failed: {e:?}"))?;
+                        if let Err(e) = header.send(&mut *session).await {
+                            return format!("pong send failed: {e:?}");
+                        }
+                        if let Err(e) = header.send_payload(&mut *session, payload).await {
+                            return format!("pong payload send failed: {e:?}");
+                        }
                     }
-                    FrameType::Close => {
-                        return Err(AllocString::from("server closed the connection"));
-                    }
+                    FrameType::Close => return AllocString::from("server closed the connection"),
                     _ => {}
                 }
             }
-            Ok(Err(e)) => return Err(format!("recv failed: {e:?}")),
+            Ok(Err(e)) => return format!("recv failed: {e:?}"),
             Err(_timeout) => {} // nothing from the server this round, as usual
         }
 
@@ -288,9 +363,9 @@ async fn run_session(
                 continue;
             };
             let mask_key = esp_hal::rng::Rng::new().random();
-            edge_ws::io::send(&mut session, FrameType::Text(false), Some(mask_key), &json)
-                .await
-                .map_err(|e| format!("send failed: {e:?}"))?;
+            if let Err(e) = edge_ws::io::send(&mut *session, FrameType::Text(false), Some(mask_key), &json).await {
+                return format!("send failed: {e:?}");
+            }
         }
     }
 }
