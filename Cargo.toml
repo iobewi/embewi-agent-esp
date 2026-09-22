@@ -155,12 +155,33 @@ embewi-boot-core = { path = "crates/embewi-boot-core" }
 # MbedTLS's SSL record buffers default to 16 KiB *per direction* (32 KiB
 # total) -- fine on a desktop, but most of this device's ~100 KiB heap on
 # its own, and the reason a TLS 1.3 handshake (more state live at once than
-# 1.2) failed with `MBEDTLS_ERR_SSL_ALLOC_FAILED` while 1.2 didn't. Cut to
-# 4 KiB first (confirmed working, both versions), then to 2 KiB here --
-# still generous for this agent's small EC certs and JSON/HTML payloads (a
-# few hundred bytes to a few KiB at most); a handshake message or record
-# bigger than the buffer just fragments across more of them instead of
-# failing, so this is a throughput trade, not a correctness one.
+# 1.2) failed with `MBEDTLS_ERR_SSL_ALLOC_FAILED` while 1.2 didn't.
+#
+# Outgoing (`ssl-out-content-len`) is cut to 2 KiB: this agent's own
+# responses (small EC certs, JSON/HTML) are always a few hundred bytes to a
+# few KiB, so MbedTLS just splits a rare larger one across more records --
+# a throughput trade this agent controls, not a correctness one, since it's
+# also the one deciding how much to write per call.
+#
+# Incoming (`ssl-in-content-len`) is kept at the standard 16 KiB, NOT cut to
+# match: unlike outgoing, an oversized *incoming* record isn't something
+# this side gets to negotiate down. Standard TLS gives a server no way to
+# tell a compliant peer "send me smaller records" -- `max_fragment_length`
+# only lets an endpoint bound what it RECEIVES in the direction that
+# extension covers, and even then only if the peer honours it; a client
+# already mid-handshake, or one that simply ignores the extension, can
+# still legally send up to a full 16 KiB plaintext record. A 2 KiB incoming
+# buffer therefore isn't "smaller records, same protocol" the way a smaller
+# outgoing buffer is -- it silently drops the connection (no HTTP response
+# at all) the moment any standards-compliant client's write pattern
+# produces one incoming record above ~1.7 KiB (measured: a single
+# `PUT /v1alpha1/ota/write` body from ~1.7 KiB up over HTTPS, headers
+# included in the same record, killed the connection outright -- found
+# while exercising a sector-sized, 4 KiB OTA write chunk over TLS for the
+# first time). +14 KiB of heap (out stays 2 KiB, so this isn't +28 KiB)
+# buys back interoperability with any client that doesn't happen to
+# fragment its own writes under that threshold -- which nothing in the
+# contract asks a Core implementation to guarantee.
 # `default-features = false` drops the "tls" bundle, which pulls in RSA,
 # DES, Camellia, ARIA, MD5, RIPEMD160, PKCS7, x509-*write*, every EC curve,
 # and every key-exchange mode MbedTLS supports -- ~314 KiB of C code for a
@@ -182,7 +203,7 @@ mbedtls-rs = { version = "0.3.0", default-features = false, features = [
   # X.509 notBefore/notAfter checks (off by default); needs the clock
   # installed in `tls::init`, and brings `hook-timer` with it.
   "hook-wall-clock",
-  "ssl-in-content-len-2048", "ssl-out-content-len-2048",
+  "ssl-in-content-len-16384", "ssl-out-content-len-2048",
 ] }
 # `EspCryptoRng` (src/tls.rs) implements this directly against
 # `esp_hal::rng::Rng` -- named here so we can name the trait, not just a
