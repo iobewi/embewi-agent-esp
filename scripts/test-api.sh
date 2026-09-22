@@ -114,14 +114,14 @@ run_safe() {
     local tmp; tmp=$(mktemp)
     printf 'embewi-test-api-sh-payload' > "$tmp"
     local expected; expected="sha256:$(sha256sum "$tmp" | cut -d' ' -f1)"
-    local write; write=$(curl -s -m 15 -X PUT -H "Authorization: Bearer $TOKEN" \
+    local write; write=$(curl -sk -m 15 -X PUT -H "Authorization: Bearer $TOKEN" \
         -H "X-Embewi-Deployment-Id: test-api-sh" -H "X-Embewi-Digest: $expected" \
         --data-binary @"$tmp" "$URL/v1alpha1/ota/write")
     check "status == written" "$(jget "$write" status)" "written"
     check "digest calculé == attendu" "$(jget "$write" digest)" "$expected"
 
     echo "== PUT /v1alpha1/ota/write (digest volontairement faux) =="
-    local bad; bad=$(curl -s -m 15 -X PUT -H "Authorization: Bearer $TOKEN" \
+    local bad; bad=$(curl -sk -m 15 -X PUT -H "Authorization: Bearer $TOKEN" \
         -H "X-Embewi-Deployment-Id: test-api-sh-bad" -H "X-Embewi-Digest: sha256:0000000000000000000000000000000000000000000000000000000000000000" \
         --data-binary @"$tmp" "$URL/v1alpha1/ota/write")
     check "digest_mismatch" "$(jget "$bad" status)" "digest_mismatch"
@@ -143,13 +143,13 @@ run_safe() {
     head -c "$half" "$tmp" > "$tmp.part1"
     tail -c +"$((half + 1))" "$tmp" > "$tmp.part2"
     local expected_cr; expected_cr="sha256:$(sha256sum "$tmp" | cut -d' ' -f1)"
-    local part1; part1=$(curl -s -m 15 -X PUT -H "Authorization: Bearer $TOKEN" \
+    local part1; part1=$(curl -sk -m 15 -X PUT -H "Authorization: Bearer $TOKEN" \
         -H "X-Embewi-Deployment-Id: test-api-sh-cr" -H "X-Embewi-Digest: $expected_cr" \
         -H "Content-Range: bytes 0-$((half - 1))/$total" \
         --data-binary @"$tmp.part1" "$URL/v1alpha1/ota/write")
     check "1er chunk -> partial" "$(jget "$part1" status)" "partial"
     check "written == 1 secteur plein flushé (durable, pas juste accepté)" "$(jget "$part1" written)" "$half"
-    local part2; part2=$(curl -s -m 15 -X PUT -H "Authorization: Bearer $TOKEN" \
+    local part2; part2=$(curl -sk -m 15 -X PUT -H "Authorization: Bearer $TOKEN" \
         -H "X-Embewi-Deployment-Id: test-api-sh-cr" -H "X-Embewi-Digest: $expected_cr" \
         -H "Content-Range: bytes $half-$((total - 1))/$total" \
         --data-binary @"$tmp.part2" "$URL/v1alpha1/ota/write")
@@ -157,7 +157,7 @@ run_safe() {
     check "digest final correct après reprise" "$(jget "$part2" digest)" "$expected_cr"
 
     echo "== PUT /v1alpha1/ota/write (resync sur mauvais offset) =="
-    local resync; resync=$(curl -s -m 15 -o /tmp/resync_body.json -w "%{http_code}" -X PUT \
+    local resync; resync=$(curl -sk -m 15 -o /tmp/resync_body.json -w "%{http_code}" -X PUT \
         -H "Authorization: Bearer $TOKEN" -H "X-Embewi-Deployment-Id: test-api-sh-resync" \
         -H "X-Embewi-Digest: $expected_cr" \
         -H "Content-Range: bytes 999-$((999 + half - 1))/999999" --data-binary @"$tmp.part1" "$URL/v1alpha1/ota/write")
@@ -165,7 +165,7 @@ run_safe() {
     check "erreur == range_mismatch" "$(jget "$(cat /tmp/resync_body.json)" error)" "range_mismatch"
 
     echo "== PUT /v1alpha1/ota/write (Content-Range malformé) =="
-    local malformed; malformed=$(curl -s -o /tmp/malformed_body.json -w "%{http_code}" -m 10 -X PUT \
+    local malformed; malformed=$(curl -sk -o /tmp/malformed_body.json -w "%{http_code}" -m 10 -X PUT \
         -H "Authorization: Bearer $TOKEN" -H "X-Embewi-Deployment-Id: test-api-sh-malformed" \
         -H "X-Embewi-Digest: $expected_cr" -H "Content-Range: n'importe-quoi" \
         --data-binary @"$tmp.part1" "$URL/v1alpha1/ota/write")
@@ -175,7 +175,7 @@ run_safe() {
     # Protocole durci : chaque refus se fait avant de toucher la session.
     put_write() { # put_write <fichier> <dep-id> <digest> [Content-Range] -> "<code> <corps>"
         local file="$1" dep="$2" dig="$3" range="${4:-}"
-        local args=(-s -m 15 -o /tmp/put_body.json -w "%{http_code}" -X PUT -H "Authorization: Bearer $TOKEN")
+        local args=(-sk -m 15 -o /tmp/put_body.json -w "%{http_code}" -X PUT -H "Authorization: Bearer $TOKEN")
         [[ -n "$dep" ]] && args+=(-H "X-Embewi-Deployment-Id: $dep")
         [[ -n "$dig" ]] && args+=(-H "X-Embewi-Digest: $dig")
         [[ -n "$range" ]] && args+=(-H "Content-Range: $range")
@@ -207,7 +207,7 @@ run_safe() {
         "$(put_write "$tmp.part2" test-api-sh-sm "$expected_cr" "bytes $half-$((total - 1))/$total" | cut -d' ' -f1)" "200"
 
     echo "== POST /v1alpha1/ota/activate (deployment_id différent) =="
-    local act; act=$(curl -s -m 10 -o /tmp/act_body.json -w "%{http_code}" -X POST -H "Authorization: Bearer $TOKEN" \
+    local act; act=$(curl -sk -m 10 -o /tmp/act_body.json -w "%{http_code}" -X POST -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: application/json" -d '{"deployment_id":"pas-le-bon"}' "$URL/v1alpha1/ota/activate")
     check "activate d'un autre deployment -> 409 deployment_mismatch" \
         "$act $(jget "$(cat /tmp/act_body.json)" error)" "409 deployment_mismatch"
