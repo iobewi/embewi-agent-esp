@@ -731,3 +731,12 @@ fn a_torn_body_is_rejected_even_if_a_faulty_executor_commits_it_anyway() {
     }
     assert!(checked > 10_000, "only {checked} torn bodies were exercised");
 }
+
+#[test]
+fn the_entry_format_is_frozen_by_golden_vectors() {
+    // Cross-checked against scripts/ewbt-otadata.py (an independent implementation): if these change,
+    // every device already flashed loses its otadata -- bump FORMAT_VERSION instead.
+    let hex = |raw: Raw| raw.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    assert_eq!(hex(e(1, state::VALID).encode()), "010000004557425401000000484e1c0dffffffff3ca5c35a020000009a984347");
+    assert_eq!(hex(e(2, state::NEW).encode()), "0200000045574254010000002564efc8ffffffff3ca5c35a000000007437f655");
+}

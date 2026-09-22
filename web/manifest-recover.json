@@ -1,13 +1,15 @@
 {
-    "name": "embewi-agent-esp (récupération : image applicative seule)",
+    "name": "embewi-agent-esp (récupération : image applicative ota_0 seule)",
     "version": "0.1.0",
     "new_install_prompt_erase": false,
     "builds": [
         {
             "chipFamily": "ESP32-C3",
             "parts": [
-                { "path": "firmware/esp32c3/otadata.bin", "offset": 61440 },
-                { "path": "firmware/esp32c3/app.bin", "offset": 131072 }
+                {
+                    "path": "firmware/esp32c3/app.bin",
+                    "offset": 131072
+                }
             ]
         }
     ]

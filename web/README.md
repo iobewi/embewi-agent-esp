@@ -45,22 +45,23 @@ directement dans la fenêtre d'ESP Web Tools et y mène.
 ## Image avec le bootloader Rust (`embewi-boot`)
 
 ```sh
-scripts/build-boot.sh     # -> web/firmware/esp32c3/{firmware,app,otadata}.bin
+scripts/build-boot.sh     # -> web/firmware/esp32c3/{firmware,app}.bin
 ```
 
-`firmware.bin` est l'image mergée (embewi-boot + table de partitions + agent,
-`otadata` seedé) servie par `index.html` / `manifest.json`. `app.bin` et
-`otadata.bin` alimentent `recover.html`.
+`firmware.bin` est l'image mergée (embewi-boot + table de partitions + agent)
+servie par `index.html` / `manifest.json`. `otadata` y est **vierge** : c'est
+`embewi-boot` qui l'initialise au premier boot (il valide `ota_0`, écrit
+`Valid(seq=1)` en relisant chaque étape, puis boote). `app.bin` (image
+applicative seule) alimente `recover.html`.
 
 ## Récupération : `recover.html`
 
-`http://localhost:8080/recover.html` réécrit **uniquement** `ota_0` (`0x20000`)
-et `otadata` (`0xf000`), sans effacer la flash : bootloader, table de
-partitions et NVS (Wi-Fi, token) sont conservés. À utiliser quand une image
-applicative est corrompue mais que le bootloader démarre encore (`boot: FAILED
-bad image magic …`). Pas un flash complet : si le bootloader lui-même est en
+`http://localhost:8080/recover.html` réécrit **uniquement** `ota_0` (`0x20000`),
+sans effacer la flash : bootloader, table de partitions, `otadata` et NVS (Wi-Fi,
+token) sont conservés. À utiliser quand l'image applicative de `ota_0` est
+corrompue mais que le bootloader démarre encore (`boot: slot N image refused` ou
+`HALT ... reason 1`). Pas un flash complet : si le bootloader lui-même est en
 cause, utiliser `index.html` avec « Erase ».
 
-`otadata` est seedé (`seq=1`, VALID) parce que le bootloader Rust ne le gère
-pas encore : vierge, l'agent croirait que le slot courant est « Factory » et
-écrirait ses OTA dans le slot en cours d'exécution (voir `boot/README.md`).
+`scripts/ewbt-otadata.py` (test/debug uniquement, hors build) fabrique ou lit
+des entrées `otadata` pour éprouver un état précis.

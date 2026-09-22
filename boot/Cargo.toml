@@ -1,9 +1,5 @@
 # embewi-boot -- second-stage bootloader for the ESP32-C3 (Rust, no ESP-IDF).
 #
-# SPIKE (step 1 of the boot chain): prove ROM -> embewi-boot -> ota_0 ->
-# embewi-agent on real hardware. Deliberately no rollback, no otadata state
-# machine, no watchdog handover yet -- see boot/README.md.
-#
 # Its own workspace root: the agent's `[workspace]` excludes this directory
 # (they share a target triple but not a linker script, a memory layout or a
 # feature set, so they must not unify into one Cargo.lock/feature graph).
@@ -13,12 +9,15 @@
 edition      = "2024"
 name         = "embewi-boot"
 rust-version = "1.88"
-version      = "0.0.1"
+version      = "0.0.2"
 license      = "MIT"
 
 [dependencies]
 esp-hal     = { version = "~1.1.0", features = ["esp32c3"] }
 esp-println = { version = "0.17.0", features = ["esp32c3"] }
+# Every decision (which slot, what to write, is the image bootable) lives there,
+# tested on the host; this crate only performs it on the real flash.
+embewi-boot-core = { path = "../crates/embewi-boot-core" }
 
 [profile.dev]
 opt-level = "s"

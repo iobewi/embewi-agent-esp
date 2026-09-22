@@ -6,31 +6,75 @@ Second-stage bootloader Embewi pour ESP32-C3, en Rust `no_std` (sans ESP-IDF).
 ROM Espressif -> embewi-boot -> ota_0 / ota_1 -> embewi-agent
 ```
 
-## État : spike (étape 1)
+## État : étape 5 -- bootstrap d'`otadata` (pas encore de rollback)
 
-Ce crate ne prouve encore qu'une chose : qu'un second-stage Rust peut prendre
-la main après la ROM, charger l'image **actuelle** de l'agent et la démarrer.
+Chaîne : ROM -> `embewi-boot` -> slot choisi par `otadata` -> agent.
 
-Ce qu'il fait : coupe d'abord la protection « flashboot » des watchdogs TIMG0
-et RTC (voir ci-dessous), puis lit la table de partitions (`0x8000`), sélectionne `ota_0`,
-valide l'en-tête (magic, `chip_id`, segments dans des plages autorisées, aucun
-recouvrement avec sa propre zone RAM), copie les segments RAM, configure le
-MMU/cache pour les segments DROM/IROM (pages de 64 Ko) et saute à l'entry
-point. Toute anomalie s'affiche et l'arrête, sans jamais sauter.
+Toutes les *décisions* (quel slot, quoi écrire dans `otadata`, l'image est-elle
+amorçable) viennent de `crates/embewi-boot-core`, testé sur l'hôte contre des
+coupures de courant (modèle adversarial). Ce crate-ci les exécute sur la vraie
+flash :
 
-Ce qu'il ne fait **pas** encore : rollback, machine d'états `otadata`
-(le slot est toujours `ota_0`), vérification du checksum/SHA de l'image,
-armement d'un watchdog (`esp_hal::init` les désactive tous).
+- coupe la protection « flashboot » des watchdogs (voir ci-dessous) ;
+- règle la taille de la puce dans le driver flash de la ROM (sans quoi la
+  lecture d'`ota_1`, au-delà de 2 Mo, échoue -- trouvé sous QEMU) ;
+- lit la table de partitions (`otadata`, `ota_0`, `ota_1`) puis les deux
+  entrées `otadata` ;
+- `plan_boot` : `otadata` **vierge** = premier boot normal : `ota_0` est validée,
+  puis `Valid(seq=1)` est écrit **par le bootloader** (l'image livrée ne contient
+  aucun état runtime) ; un `New` passe `Pending` *avant* le saut ; un `Pending`
+  jamais confirmé devient `Aborted` (rollback) ; une image non amorçable est
+  marquée `Invalid` ; rien d'utilisable => `HALT` explicite, jamais de devinette ;
+- charge l'image (segments RAM copiés, DROM/IROM mappés par le MMU) et saute.
+
+Écriture d'une entrée `otadata`, chaque étape relue avant la suivante (une
+erreur = arrêt) :
+
+```text
+effacer le secteur        -> relire : effacé
+écrire le corps           -> relire : exactement le corps, mot de commit encore effacé
+écrire le mot de commit   -> relire : exactement l'entrée committée, et elle se décode
+   (commande flash séparée)
+```
+
+Le mot de commit veut donc dire « j'ai vérifié CE corps », pas seulement « une
+seconde commande a tourné ».
+
+Pas encore : vérification checksum/SHA (les contrôles s'arrêtent à
+`Verify::Structure`), armement d'un watchdog pour une image qui se fige, et un
+**agent qui écrit ce format** : l'agent actuel écrit encore des entrées
+ESP-IDF, que ce format ignore volontairement (`activate`/`confirm`/`reject` du
+crate `embewi-boot-core` à adopter -- étape suivante). Tant que ce n'est pas
+fait, seul le bootloader crée des entrées.
 
 ## Construire
 
 ```sh
-scripts/build-boot.sh     # -> web/firmware/esp32c3/firmware.bin
+scripts/build-boot.sh     # -> web/firmware/esp32c3/firmware.bin (otadata vierge)
 ```
 
 `web/firmware/esp32c3/firmware.bin` est l'image mergée (bootloader + table de
 partitions + agent) à flasher à l'offset `0x0` avec ESP Web Tools
-(`http-server web -p 8080`), comme avant.
+(`http-server web -p 8080`).
+
+## Résultat sur matériel (ESP32-C3-Zero) -- spike, point de référence
+
+Validé sur silicium avec le spike (slot fixé à `ota_0`, sans A/B ni
+vérification) : ROM -> `embewi-boot` -> `ota_0` -> agent réel -> Wi-Fi + SNTP ->
+NVS et écritures flash (`scripts/test-api.sh safe`, 42/42) -> reboot. **L'étape 5
+(écritures flash `otadata`, sélection A/B) n'est validée que sous QEMU** : à
+refaire sur le device avant de s'y fier.
+
+Deux choses que QEMU n'avait **pas** révélées lors du spike :
+
+1. **`WDT_FLASHBOOT_MOD_EN`** (ci-dessous) : sans lui, reset en boucle.
+2. **`otadata` vierge** : `esp-bootloader-esp-idf` le lit comme « slot courant =
+   Factory », donc `next_partition()` -- utilisé par `/ota/write` -- désigne
+   `ota_0`, le slot **en cours d'exécution** (constaté : en-tête de `ota_0`
+   écrasé). Le bootloader ESP-IDF masquait ce cas ; `embewi-boot` l'initialise
+   désormais lui-même.
+
+Et une que QEMU a révélée à l'étape 5 : la taille de puce du driver ROM (ci-dessus).
 
 ## Contraintes de conception
 
@@ -39,12 +83,12 @@ partitions + agent) à flasher à l'offset `0x0` avec ESP Web Tools
   en DRAM `0x3fcd4000..0x3fcdc000`, dans la fenêtre du bootloader ESP-IDF
   (la ROM garde ses propres données au-dessus de `0x3fcdc710`).
 - **Moins de 32 Ko** : la table de partitions commence à `0x8000`. Actuellement
-  ~16 Ko, notamment parce que le journal n'utilise pas `core::fmt`
-  (`log!` : texte et hexadécimal seulement, ~10 Ko économisés).
-- **Crate à part** (son propre `[workspace]`, exclu du workspace de l'agent) :
-  autre linker script, autre mémoire, autres features.
-- Les fonctions ROM (flash, cache, MMU) viennent de `esp-rom-sys`, via
-  `esp-hal`.
+  ~21 Ko ; le journal n'utilise pas `core::fmt` (`log!` : texte et hexadécimal
+  seulement, ~10 Ko économisés).
+- **Crate à part** (son propre `[workspace]`, exclu de celui de l'agent) :
+  autre linker script, autre mémoire, autres features. Dépend par chemin de
+  `crates/embewi-boot-core`.
+- Les fonctions ROM (flash, cache, MMU) viennent de `esp-rom-sys`, via `esp-hal`.
 
 ## Origine
 
@@ -55,32 +99,17 @@ d'un dépôt sans licence.
 ## Tester sans matériel
 
 L'émulateur Espressif (`qemu-system-riscv32 -machine esp32c3`) embarque la
-vraie ROM du C3 et exécute l'image mergée. Ce n'est pas du silicium (cache,
-timings flash) : il ne remplace pas le test sur device.
+vraie ROM du C3 et exécute l'image mergée, **écritures flash comprises** : la
+flash émulée (fichier de 4 Mo passé en `-drive file=...,if=mtd,format=raw`) est
+modifiée en place, donc `scripts/ewbt-otadata.py decode <flash> 0xf000` montre ce
+que le bootloader a écrit. Scénarios éprouvés : `otadata` vierge (seed),
+redémarrage sans écriture, `Pending` jamais confirmé (-> `Aborted`, retour sur
+`ota_0`), candidat `New` sur `ota_1` (`Pending` écrit avant le saut, boot de
+`ota_1`), candidat non amorçable (-> `Invalid`), corps non committé ignoré,
+entrées ESP-IDF héritées (re-seed), `ota_0` corrompu (`HALT`).
 
-## Résultat sur matériel (ESP32-C3-Zero) -- point de référence
-
-Validé sur silicium : ROM -> `embewi-boot` -> `ota_0` -> agent réel -> Wi-Fi +
-SNTP -> NVS et écritures flash (campagne `scripts/test-api.sh safe`, 42/42) ->
-reboot (`staged` conservé, retour en ~3 s). C'est le dernier état où le slot
-est fixé à `ota_0` et où il n'y a ni A/B, ni rollback, ni vérification
-checksum/SHA : à utiliser comme point de bisect.
-
-Deux choses que l'émulateur QEMU n'avait **pas** révélées, et qui doivent
-rester connues :
-
-1. **`WDT_FLASHBOOT_MOD_EN`** (ci-dessous) : sans lui, reset en boucle.
-2. **`otadata` vierge** : `esp-bootloader-esp-idf` le lit comme « slot
-   courant = Factory » (`ota.rs`, branche `UNINITIALIZED_SEQUENCE`), donc
-   `next_partition()` -- utilisé par `/ota/write` -- désigne `ota_0`, le slot
-   **en cours d'exécution**. Constaté : la campagne `safe` a écrasé l'en-tête
-   de `ota_0` (`bad image magic 0x65`, le `e` de `embewi-test-api-sh-payload`).
-   Le bootloader ESP-IDF masquait ce cas en écrivant `otadata` (`seq=1`,
-   VALID) au premier boot. Ce spike ne le fait pas : `scripts/build-boot.sh`
-   le seed dans l'image mergée, et `web/recover.html` le réécrit avec `ota_0`.
-   **Mesure temporaire** : le bootloader final doit traiter un `otadata`
-   vierge comme un cas normal (`ota_0` valide -> initialisation atomique ->
-   `ota_0` actif/valide), sans état runtime fabriqué par l'outillage.
+Ce n'est pas du silicium (cache, timings flash, watchdogs, écritures réelles) :
+il ne remplace pas le test sur device.
 
 ## Watchdogs « flashboot » (leçon du premier essai matériel)
 

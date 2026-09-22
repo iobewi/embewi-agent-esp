@@ -30,12 +30,11 @@ espflash save-image "${FLASH_ARGS[@]}" --merge --skip-padding \
     --bootloader boot/target/embewi-boot.bin \
     --partition-table partitions.csv \
     "target/${TARGET}/release/embewi-agent-esp" "$OUT"
-# Mesure temporaire du spike : embewi-boot ne gère pas encore `otadata`. Vierge,
-# `otadata` fait croire à l'agent (esp-bootloader-esp-idf : current = Factory)
-# que le slot courant est « aucun » et que le prochain slot d'OTA est ota_0 --
-# le slot en cours d'exécution, que /ota/write écraserait. Le bootloader
-# ESP-IDF le seedait (seq=1) au premier boot ; on le fait ici à la place.
-python3 scripts/otadata-seed.py "$OUT" 0xf000 web/firmware/esp32c3/otadata.bin
+# `otadata` reste VIERGE dans l'image : c'est embewi-boot qui l'initialise au
+# premier boot (il valide ota_0, écrit Valid(seq=1), relit, puis boote). Aucun
+# outil de build ne fabrique d'état runtime.
+# app.bin (image applicative seule) alimente web/recover.html.
 espflash save-image "${FLASH_ARGS[@]}" \
     "target/${TARGET}/release/embewi-agent-esp" web/firmware/esp32c3/app.bin >/dev/null
+rm -f web/firmware/esp32c3/otadata.bin
 echo "Image écrite: $OUT ($(stat -c%s "$OUT") octets)"
