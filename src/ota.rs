@@ -57,6 +57,14 @@ pub const PARTITION_LAYOUT: &str = "embewi-ab-v1";
 /// own rollback takes over on the next boot. Same value `firmware-c` uses
 /// (`EMBEWI_PENDING_DEADLINE_MS`).
 const SELFCHECK_DEADLINE: Duration = Duration::from_secs(15);
+/// How long the anti-freeze watchdog (see [`arm_boot_watchdog`]) gets before
+/// it force-resets the device. Longer than `SELFCHECK_DEADLINE` so the
+/// graceful, logged software timeout in `selfcheck_task` fires first in the
+/// ordinary case; this is the hardware backstop for when even that doesn't
+/// run -- a hang before the self-check's own `select` is ever reached, or
+/// one inside the embassy executor itself, neither of which a purely
+/// software deadline (which depends on that same executor) can catch.
+const WATCHDOG_DEADLINE: esp_hal::time::Duration = esp_hal::time::Duration::from_secs(20);
 
 const NAMESPACE: Key = Key::from_str("ota");
 const KEY_STAGE: Key = Key::from_str("stage");
@@ -736,6 +744,12 @@ async fn mark_valid(storage: &'static SharedStorage) {
         warn!("ota: couldn't confirm the running image (code {}), rolling back", e as u8);
         mark_invalid_and_reboot(storage).await;
     }
+    // `otadata_confirm` only returns `Ok` once the committed `Valid` entry
+    // has been read back and decoded exactly as written (`execute_otadata_write`).
+    // Only now does the anti-freeze watchdog come off: a freeze anywhere
+    // before this point -- including one the self-check race itself can't
+    // catch -- still resets into a `Pending` entry embewi-boot rolls back.
+    disable_boot_watchdog();
     finish_validation(storage, &staged).await;
 }
 
@@ -749,10 +763,60 @@ async fn mark_invalid_and_reboot(storage: &'static SharedStorage) -> ! {
         warn!("ota: couldn't record rejection (code {}), resetting anyway", e as u8);
     }
     warn!("ota: self-check failed, marking image invalid and rebooting for rollback");
+    // The anti-freeze watchdog (armed for this whole pending_verify window,
+    // see `arm_boot_watchdog`) is deliberately left running here, not
+    // disabled: this reset is about to happen anyway, and if *this* call
+    // itself somehow never returns, the watchdog is still the backstop.
+    //
     // Gives the log line above time to actually reach the WebSocket log
     // stream/serial console before the reset cuts it off.
     Timer::after(Duration::from_millis(200)).await;
     esp_hal::system::software_reset();
+}
+
+// --- anti-freeze watchdog ----------------------------------------------
+//
+// `esp_hal::init()` unconditionally disables every watchdog on the chip
+// (there's no `Config` option to keep one running) as part of its normal
+// hardware bring-up -- so a watchdog `embewi-boot` armed before jumping here
+// does not survive into this agent; only the agent's own code can protect
+// its post-`init()` startup. `arm_boot_watchdog` is called right after
+// `TimerGroup::new(peripherals.TIMG0)`/`esp_rtos::start` (`src/bin/main.rs`)
+// -- not any earlier: `TimerGroup::new`'s first use of TIMG0 resets the
+// whole peripheral block (`PeripheralClockControl`'s refcount going 0 -> 1),
+// which would silently wipe out a watchdog armed before that call. From
+// there it covers everything through `on_boot`'s decision -- `Storage::new`,
+// not just the bounded self-check race inside `on_boot` itself. `on_boot`
+// disables it again within milliseconds for every outcome except
+// a genuine `pending_verify` self-check, where [`feed_boot_watchdog`] keeps
+// it running until the image is durably confirmed
+// ([`mark_valid`]/[`disable_boot_watchdog`]).
+//
+// TIMG0's own watchdog (not RTC_CNTL's, which `http::run`'s
+// `reboot_after_delay` already threads `LPWR` through for its own
+// unrelated `/reboot`/`/ota/activate` use). `Wdt::new()` needs no peripheral
+// value -- like `esp_hal::init()`'s own internal disabling code, it derives
+// register access purely from the `TIMG0` type parameter -- so this needs
+// no plumbing through `main`'s peripherals at all.
+fn boot_watchdog() -> esp_hal::timer::timg::Wdt<esp_hal::peripherals::TIMG0<'static>> {
+    esp_hal::timer::timg::Wdt::new()
+}
+
+/// Arms the anti-freeze watchdog. Call exactly once, right after
+/// `TimerGroup::new(peripherals.TIMG0)` (see the module section comment
+/// above for why not any earlier).
+pub fn arm_boot_watchdog() {
+    let mut wdt = boot_watchdog();
+    wdt.set_timeout(esp_hal::timer::timg::MwdtStage::Stage0, WATCHDOG_DEADLINE);
+    wdt.enable();
+}
+
+fn feed_boot_watchdog() {
+    boot_watchdog().feed();
+}
+
+fn disable_boot_watchdog() {
+    boot_watchdog().disable();
 }
 
 #[embassy_executor::task]
@@ -815,6 +879,11 @@ pub async fn on_boot(storage: &'static SharedStorage, spawner: Spawner) {
         BootAction::SelfCheck => {
             agent::set_state(agent::State::PendingVerify);
             warn!("ota: image is PENDING_VERIFY, starting bounded self-check (deadline {SELFCHECK_DEADLINE:?})");
+            // Anti-freeze backstop stays armed (see `arm_boot_watchdog`'s doc
+            // comment): fed here for a fresh window covering the self-check
+            // and the confirm that follows it. Every other outcome below
+            // disables it instead.
+            feed_boot_watchdog();
             if let Ok(token) = selfcheck_task(storage) {
                 spawner.spawn(token);
             }
@@ -842,6 +911,11 @@ pub async fn on_boot(storage: &'static SharedStorage, spawner: Spawner) {
             }
         }
     }
+
+    // Not a pending_verify boot after all (or one that needed no further
+    // action): the anti-freeze window `arm_boot_watchdog` opened at the top
+    // of `main` is over.
+    disable_boot_watchdog();
 
     // The NVS canary round-trip `/health` reports on (during
     // `pending_verify` the self-check task runs it instead).

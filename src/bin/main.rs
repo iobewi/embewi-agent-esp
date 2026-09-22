@@ -71,6 +71,16 @@ async fn main(spawner: Spawner) -> ! {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
+    // `esp_hal::init` above unconditionally disabled every watchdog on the
+    // chip (no `Config` option to keep one running), and `TimerGroup::new`
+    // just now reset the whole TIMG0 block anyway (its first use resets the
+    // peripheral -- arming the watchdog any earlier than this would just
+    // have that reset wipe it straight back out). From here on, re-armed:
+    // a freeze anywhere through `ota::on_boot`'s decision still resets the
+    // device instead of bricking it on a `pending_verify` image; see
+    // `ota.rs`'s "anti-freeze watchdog" section for the rest of it.
+    embewi_agent_esp::ota::arm_boot_watchdog();
+
     // Not yet wrapped in the shared Mutex: nothing else is running yet, so
     // this one-time boot read needs no locking.
     let mut boot_storage = Storage::new(peripherals.FLASH);
