@@ -50,7 +50,7 @@ use alloc::string::String;
 use embassy_executor::Spawner;
 use embassy_net::Stack;
 use embassy_net::tcp::TcpSocket;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::peripherals::LPWR;
 use esp_hal::rtc_cntl::{Rtc, RwdtStage, RwdtStageAction};
 use log::warn;
@@ -104,6 +104,19 @@ const STYLE_CSS: &str = include_str!("../../web/style.css");
 /// rather than continuing to serve the admin API in clear text next to it.
 const ADMIN_PORT_HTTP: u16 = 80;
 const ADMIN_PORT_HTTPS: u16 = 443;
+
+/// Bound on the TLS handshake specifically, well short of the 45 s socket
+/// idle timeout below (which covers the *whole* connection, handshake
+/// included, but is meant to tolerate a slow legitimate client mid-request,
+/// not a stalled/adversarial handshake). This server handles one connection
+/// at a time (this module's own doc comment): without this, a client that
+/// opens the TCP connection and then stalls the handshake (a partial/absent
+/// `ClientHello`, or bytes dripped just fast enough to keep resetting the
+/// socket's own idle timer) can hold the only admin connection for up to
+/// that 45 s on every single attempt, locking out legitimate Core traffic.
+/// 5 s is generous for a real ECDHE handshake on this CPU (~0.5-1 s
+/// observed) with LAN-grade margin.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Escapes `&`/`<`/`>`/`"` so admin-supplied text reflected back into
 /// `value="..."` attributes can't break out of the attribute or inject
@@ -219,9 +232,16 @@ pub(super) async fn serve(
                         continue;
                     }
                 };
-                if let Err(e) = session.connect().await {
-                    warn!("HTTPS: handshake failed: {e}");
-                    continue;
+                match with_timeout(HANDSHAKE_TIMEOUT, session.connect()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        warn!("HTTPS: handshake failed: {e}");
+                        continue;
+                    }
+                    Err(_) => {
+                        warn!("HTTPS: handshake timed out after {HANDSHAKE_TIMEOUT:?}");
+                        continue;
+                    }
                 }
                 if let Err(e) =
                     serve_connection(router, &config, &mut http_buffer, crate::tls::TlsSocket::new(session)).await
