@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::agent;
-use ota_logic::{BootAction, BootImage, StagedKind, boot_action};
+use atomic_ota::{Action, BackendOutcome, TransactionState};
 
 use crate::storage::{SharedStorage, Storage, StorageError};
 
@@ -427,20 +427,20 @@ pub async fn active_slot(storage: &SharedStorage) -> String {
 /// comparing raw sequence numbers) is exactly what removes that hazard: it
 /// needs no notion of "current slot" at all, just what `embewi_boot_core`
 /// itself calls trustworthy.
-async fn current_ota_image(storage: &SharedStorage) -> BootImage {
+async fn current_ota_image(storage: &SharedStorage) -> BackendOutcome {
     let mut storage = storage.lock().await;
     let Some(entries) = read_otadata_locked(&mut storage) else {
-        return BootImage::Other;
+        return BackendOutcome::Other;
     };
     let is = |wanted: u32| {
         entries.iter().any(|raw| matches!(boot_core::decode(raw), Decoded::Ok(e) if e.state == wanted))
     };
     if is(boot_core::state::PENDING_VERIFY) {
-        BootImage::PendingVerify
+        BackendOutcome::PendingConfirmation
     } else if is(boot_core::state::VALID) {
-        BootImage::Valid
+        BackendOutcome::Confirmed
     } else {
-        BootImage::Other
+        BackendOutcome::Other
     }
 }
 
@@ -580,13 +580,29 @@ pub async fn write_received() -> u32 {
     WRITE_SESSION.lock().await.as_ref().map_or(0, |s| s.flushed + s.sector_filled)
 }
 
-/// `PUT /v1alpha1/ota/write`'s resume decision (contrat §4's
-/// `Content-Range` protocol) and `Content-Range` header parsing live in
-/// `ota-logic` (workspace crate, `crates/ota-logic`) instead of here --
-/// pure enough to unit-test with a plain `cargo test`, no ESP32 hardware
-/// involved. Re-exported so callers keep writing `ota::Plan`/
-/// `ota::write_plan` as if it were still defined in this module.
-pub use ota_logic::{Plan, is_valid_digest, parse_content_range, range_len, write_is_final, write_plan};
+/// `Content-Range` header parsing/shape-checking is transport-specific and
+/// stays pure enough to unit-test with a plain `cargo test` (no ESP32
+/// hardware involved) in `ota-logic` (workspace crate, `crates/ota-logic`).
+/// Re-exported so callers keep writing `ota::parse_content_range` as if it
+/// were still defined in this module.
+pub use ota_logic::{is_valid_digest, parse_content_range, range_len};
+
+/// `PUT /v1alpha1/ota/write`'s resume decision itself (contrat §4's
+/// `Content-Range` protocol, decoupled from `Content-Range`'s own wire
+/// format) is `atomic_ota::resume_plan`/`atomic_ota::is_complete` --
+/// generic, `no_std`, host-tested in that crate. These two functions are
+/// thin `u32`-to-`u64` adapters so callers keep writing `ota::Plan`/
+/// `ota::write_plan`/`ota::write_is_final` unchanged; nothing about the
+/// decision itself lives here anymore.
+pub use atomic_ota::ResumePlan as Plan;
+
+pub fn write_plan(has_range: bool, start: u32, in_progress: bool, written: u32) -> Plan {
+    atomic_ota::resume_plan(has_range, u64::from(start), in_progress, u64::from(written))
+}
+
+pub fn write_is_final(has_range: bool, end: u32, total: u32) -> bool {
+    atomic_ota::is_complete(has_range, u64::from(end), u64::from(total))
+}
 
 /// Whether a continuing PUT carries the same `deployment_id`, digest and
 /// total as the session it claims to resume.
@@ -849,7 +865,7 @@ pub enum ActivateError {
 
 /// Records the validated image's digest and `deployment_id` as the active
 /// ones. Idempotent, so an interrupted validation can be finished at the
-/// next boot ([`BootAction::FinishInterruptedValidation`]).
+/// next boot ([`Action::FinishInterruptedActivation`]).
 async fn promote_staged(storage: &SharedStorage, staged: &Staged) -> Result<(), StorageError> {
     let mut storage = storage.lock().await;
     storage.set_string(&NAMESPACE, &KEY_ACTIVE_DIGEST, &staged.digest)?;
@@ -1014,25 +1030,25 @@ async fn selfcheck_task(storage: &'static SharedStorage) {
 
 /// Called once at boot (`src/bin/main.rs`): reconciles the persisted staged
 /// record with what the bootloader actually booted (contrat §3's "cœur dur
-/// du projet"). The decision itself is [`ota_logic::boot_action`], a pure
-/// table unit-tested on the host; this only gathers its inputs and applies
-/// the outcome. This is the only place `agent::State` is driven from
-/// `Booting`.
+/// du projet"). The decision itself is [`atomic_ota::reconcile`], a pure
+/// table host-tested in that crate; this only gathers its inputs and
+/// applies the outcome. This is the only place `agent::State` is driven
+/// from `Booting`.
 pub async fn on_boot(storage: &'static SharedStorage, spawner: Spawner) {
     let staged = staged(storage).await;
     let image = current_ota_image(storage).await;
     let booted = active_slot(storage).await;
     let booted_is_staged = (!booted.is_empty()).then(|| booted == staged.slot);
-    let kind = match staged.stage {
-        Stage::None => StagedKind::None,
-        Stage::Written => StagedKind::Written,
-        Stage::Activating => StagedKind::Activating,
+    let staged_state = match staged.stage {
+        Stage::None => None,
+        Stage::Written => Some(TransactionState::Staged),
+        Stage::Activating => Some(TransactionState::Activating),
     };
-    let action = boot_action(kind, image, booted_is_staged);
+    let action = atomic_ota::reconcile(staged_state, image, booted_is_staged);
     info!("ota: boot slot={booted:?} staged={} image={image:?} -> {action:?}", staged.stage.as_str());
 
     match action {
-        BootAction::SelfCheck => {
+        Action::AwaitConfirmation => {
             agent::set_state(agent::State::PendingVerify);
             warn!("ota: image is PENDING_VERIFY, starting bounded self-check (deadline {SELFCHECK_DEADLINE:?})");
             // Anti-freeze backstop stays armed (see `arm_boot_watchdog`'s doc
@@ -1045,19 +1061,19 @@ pub async fn on_boot(storage: &'static SharedStorage, spawner: Spawner) {
             }
             return;
         }
-        BootAction::RollbackUnaccounted => {
+        Action::RollbackUnaccounted => {
             warn!("ota: PENDING_VERIFY image not accounted for by the staged record, rolling back");
             agent::set_state(agent::State::Rollback);
             mark_invalid_and_reboot(storage).await;
         }
-        BootAction::Nothing | BootAction::KeepWritten => {}
-        BootAction::ClearStale => {
+        Action::Nothing | Action::KeepStaged => {}
+        Action::ClearStale => {
             warn!("ota: stale staged record ({}), clearing", staged.stage.as_str());
             if clear_staged(storage).await.is_err() {
                 warn!("ota: stale staged record couldn't be cleared");
             }
         }
-        BootAction::FinishInterruptedValidation => {
+        Action::FinishInterruptedActivation => {
             warn!("ota: finishing a validation interrupted before its bookkeeping");
             // Runs the same path as a live validation; `Degraded` (set by
             // it on failure) must not be overwritten below.
@@ -1065,6 +1081,13 @@ pub async fn on_boot(storage: &'static SharedStorage, spawner: Spawner) {
             if agent::state() == agent::State::Degraded {
                 return;
             }
+        }
+        // `Action` is `#[non_exhaustive]`: atomic-ota is not at a stable API
+        // yet, and a future variant must not silently fall into one of the
+        // arms above. Nothing destructive on an outcome this build doesn't
+        // recognize -- same policy as `running_matches_staged: None`.
+        _ => {
+            warn!("ota: reconcile returned an action this build doesn't recognize, doing nothing");
         }
     }
 

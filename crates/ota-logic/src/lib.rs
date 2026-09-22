@@ -1,44 +1,23 @@
-//! Pure OTA write-session decision logic (contrat §4's `Content-Range`
-//! resume protocol) -- split out of `embewi-agent-esp`'s `src/ota.rs` and
-//! `src/http/ota_write.rs` into its own crate specifically so it can be
-//! unit-tested with a plain `cargo test`, no ESP32 hardware or `no_std`
-//! toolchain involved.
+//! Pure `Content-Range` transport logic for `PUT /v1alpha1/ota/write`
+//! (contrat §4) -- split out of `embewi-agent-esp`'s `src/ota.rs` into its
+//! own crate specifically so it can be unit-tested with a plain `cargo
+//! test`, no ESP32 hardware or `no_std` toolchain involved.
 //!
-//! Mirrors `firmware-c`'s own split: that project keeps this exact same
-//! logic in `embewi_parse.c`/`embewi_parse.h`, host-tested in
-//! `test/host/test_parse.c`, for the same reason -- it's the one part of
-//! the OTA write path that's pure enough to test without a device, and
-//! subtle enough (off-by-one on a resumed transfer) to be worth it.
+//! The resume *decision* this header used to drive (`Plan`/`write_plan`/
+//! `write_is_final`) and the post-reboot staged-transaction reconciliation
+//! (`boot_action`) have since moved to
+//! [`atomic-ota`](https://github.com/iobewi/atomic-ota) -- generic,
+//! transport-agnostic, `no_std`, host-tested there instead. What's left
+//! here is genuinely `Content-Range`-shaped and has no business in a
+//! transport-agnostic engine: parsing the header's `bytes
+//! <start>-<end>/<total>` syntax, and the wire-format shape of the
+//! `sha256:<hex>` digest header. `embewi-agent-esp`'s `ota.rs` adapts these
+//! into the decoded numbers `atomic_ota::resume_plan`/`is_complete` take.
 //!
 //! `#![no_std]` except under `cargo test` (the test harness itself needs
 //! `std`) -- the firmware crate depends on this directly, so it must stay
 //! usable from a `no_std` build.
 #![cfg_attr(not(test), no_std)]
-
-/// `PUT /v1alpha1/ota/write`'s resume decision, ported verbatim from
-/// `firmware-c`'s `embewi_ota_plan`.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Plan {
-    Begin,
-    Resync,
-    Continue,
-}
-
-pub fn write_plan(has_range: bool, start: u32, in_progress: bool, written: u32) -> Plan {
-    if !has_range || start == 0 {
-        return Plan::Begin;
-    }
-    if !in_progress || written != start {
-        return Plan::Resync;
-    }
-    Plan::Continue
-}
-
-/// Ported from `firmware-c`'s `embewi_ota_is_final`, with the `end + 1`
-/// checked: `end == u32::MAX` must not wrap to 0 and match a `total` of 0.
-pub fn write_is_final(has_range: bool, end: u32, total: u32) -> bool {
-    !has_range || end.checked_add(1) == Some(total)
-}
 
 /// Number of bytes a `Content-Range: bytes start-end/total` chunk carries
 /// (`end - start + 1`), `None` if the range is inverted or the length
@@ -71,115 +50,9 @@ pub fn parse_content_range(value: &str) -> Option<(u32, u32, u32)> {
     (start <= end && end < total).then_some((start, end, total))
 }
 
-/// What the agent's persisted staged-OTA record says (`ota::Stage`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StagedKind {
-    None,
-    Written,
-    Activating,
-}
-
-/// What the bootloader says about the image that just booted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BootImage {
-    PendingVerify,
-    Valid,
-    /// Anything else (factory image with a blank `otadata`, `Invalid`, ...).
-    Other,
-}
-
-/// What `ota::on_boot` must do -- see [`boot_action`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BootAction {
-    /// Nothing staged, nothing to reconcile.
-    Nothing,
-    /// The staged image is the pending one: run the bounded self-check.
-    SelfCheck,
-    /// The bootloader has an unconfirmed image the staged record doesn't
-    /// account for: never promote it blindly, roll it back.
-    RollbackUnaccounted,
-    /// `mark_valid` was interrupted after the bootloader validated the
-    /// image but before its digest/`deployment_id` were recorded: finish it.
-    FinishInterruptedValidation,
-    /// The record no longer describes anything real (activation aborted, or
-    /// the bootloader fell back to the previous slot): forget it.
-    ClearStale,
-    /// `written` and waiting for `/ota/activate`: must survive the reboot.
-    KeepWritten,
-}
-
-/// The `on_boot` decision table. `booted_is_staged` is whether the slot
-/// actually running equals the staged record's slot, `None` if the running
-/// slot couldn't be determined -- then nothing destructive is decided
-/// (a flaky partition-table read must never roll back a good image).
-pub fn boot_action(staged: StagedKind, image: BootImage, booted_is_staged: Option<bool>) -> BootAction {
-    use BootAction::*;
-    match (image, booted_is_staged) {
-        (BootImage::PendingVerify, None) => SelfCheck,
-        (BootImage::PendingVerify, Some(true)) if staged == StagedKind::Activating => SelfCheck,
-        (BootImage::PendingVerify, _) => RollbackUnaccounted,
-        (_, None) => Nothing,
-        (_, Some(same)) => match staged {
-            StagedKind::None => Nothing,
-            StagedKind::Written if same => ClearStale,
-            StagedKind::Written => KeepWritten,
-            StagedKind::Activating if same && image == BootImage::Valid => FinishInterruptedValidation,
-            StagedKind::Activating => ClearStale,
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn plan_no_range_always_begins() {
-        assert_eq!(write_plan(false, 0, false, 0), Plan::Begin);
-        assert_eq!(write_plan(false, 42, true, 42), Plan::Begin);
-    }
-
-    #[test]
-    fn plan_start_zero_always_begins() {
-        assert_eq!(write_plan(true, 0, true, 1234), Plan::Begin);
-        assert_eq!(write_plan(true, 0, false, 0), Plan::Begin);
-    }
-
-    #[test]
-    fn plan_resyncs_when_nothing_in_progress() {
-        assert_eq!(write_plan(true, 100, false, 0), Plan::Resync);
-    }
-
-    #[test]
-    fn plan_resyncs_on_offset_mismatch() {
-        assert_eq!(write_plan(true, 100, true, 50), Plan::Resync);
-        assert_eq!(write_plan(true, 100, true, 200), Plan::Resync);
-    }
-
-    #[test]
-    fn plan_continues_when_aligned() {
-        assert_eq!(write_plan(true, 100, true, 100), Plan::Continue);
-    }
-
-    #[test]
-    fn is_final_without_range_is_always_final() {
-        // Legacy monolithic write: one PUT is the whole image.
-        assert!(write_is_final(false, 0, 0));
-        assert!(write_is_final(false, 999, 1));
-    }
-
-    #[test]
-    fn is_final_with_range_checks_last_byte() {
-        assert!(write_is_final(true, 999, 1000));
-        assert!(!write_is_final(true, 499, 1000));
-    }
-
-    #[test]
-    fn is_final_off_by_one_boundaries() {
-        // The exact boundary that a resumed transfer's last chunk must hit.
-        assert!(write_is_final(true, 0, 1));
-        assert!(!write_is_final(true, 0, 2));
-    }
 
     #[test]
     fn parses_a_well_formed_range() {
@@ -237,8 +110,6 @@ mod tests {
     fn u32_max_end_cannot_wrap() {
         // `end + 1` used to wrap to 0 and match `total == 0`.
         assert_eq!(parse_content_range("bytes 0-4294967295/0"), None);
-        assert!(!write_is_final(true, u32::MAX, 0));
-        assert!(write_is_final(true, u32::MAX - 1, u32::MAX));
     }
 
     #[test]
@@ -260,59 +131,5 @@ mod tests {
         assert!(!is_valid_digest(&format!("sha256:{hex}0")));
         assert!(!is_valid_digest(&format!("sha1:{hex}")));
         assert!(!is_valid_digest(&format!("sha256:{}g", &hex[..63])));
-    }
-
-    use BootAction::*;
-    use BootImage as I;
-    use StagedKind as S;
-
-    #[test]
-    fn boot_written_survives_a_reboot() {
-        assert_eq!(boot_action(S::Written, I::Other, Some(false)), KeepWritten);
-        assert_eq!(boot_action(S::Written, I::Valid, Some(false)), KeepWritten);
-    }
-
-    #[test]
-    fn boot_written_on_the_running_slot_is_stale() {
-        assert_eq!(boot_action(S::Written, I::Valid, Some(true)), ClearStale);
-    }
-
-    #[test]
-    fn boot_activating_pending_same_slot_self_checks() {
-        assert_eq!(boot_action(S::Activating, I::PendingVerify, Some(true)), SelfCheck);
-    }
-
-    #[test]
-    fn boot_activating_valid_same_slot_finishes_validation() {
-        assert_eq!(boot_action(S::Activating, I::Valid, Some(true)), FinishInterruptedValidation);
-    }
-
-    #[test]
-    fn boot_activating_on_another_slot_is_an_aborted_activation() {
-        assert_eq!(boot_action(S::Activating, I::Valid, Some(false)), ClearStale);
-        assert_eq!(boot_action(S::Activating, I::Other, Some(false)), ClearStale);
-        assert_eq!(boot_action(S::Activating, I::Other, Some(true)), ClearStale);
-    }
-
-    #[test]
-    fn boot_pending_image_the_record_does_not_explain_is_rolled_back() {
-        assert_eq!(boot_action(S::None, I::PendingVerify, Some(true)), RollbackUnaccounted);
-        assert_eq!(boot_action(S::None, I::PendingVerify, Some(false)), RollbackUnaccounted);
-        assert_eq!(boot_action(S::Written, I::PendingVerify, Some(true)), RollbackUnaccounted);
-        assert_eq!(boot_action(S::Activating, I::PendingVerify, Some(false)), RollbackUnaccounted);
-    }
-
-    #[test]
-    fn boot_unknown_slot_is_never_destructive() {
-        assert_eq!(boot_action(S::Activating, I::PendingVerify, None), SelfCheck);
-        assert_eq!(boot_action(S::None, I::PendingVerify, None), SelfCheck);
-        assert_eq!(boot_action(S::Written, I::Valid, None), Nothing);
-        assert_eq!(boot_action(S::Activating, I::Valid, None), Nothing);
-    }
-
-    #[test]
-    fn boot_nothing_staged_does_nothing() {
-        assert_eq!(boot_action(S::None, I::Valid, Some(true)), Nothing);
-        assert_eq!(boot_action(S::None, I::Other, Some(false)), Nothing);
     }
 }
