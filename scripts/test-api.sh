@@ -130,9 +130,16 @@ run_safe() {
         "$(jget "$after" staged.deployment_id)" "test-api-sh"
 
     echo "== PUT /v1alpha1/ota/write (reprise Content-Range) =="
-    printf 'embewi-content-range-resume-test-payload-0123456789' > "$tmp"
-    local total; total=$(wc -c < "$tmp")
-    local half=$((total / 2))
+    # `written` est désormais DURABLE (ota.rs: écriture sector-aware, un seul
+    # erase+program par secteur de 4 Ko) : il ne peut avancer que par pas de
+    # secteur, pas à chaque octet accepté. Le split est donc calé exactement
+    # sur un secteur (premier chunk = 1 secteur plein, second = le reliquat)
+    # pour exercer ce comportement précisément, pas un artefact de petite
+    # taille de payload.
+    local sector=4096
+    local total=$((sector + 500))
+    head -c "$total" /dev/urandom > "$tmp"
+    local half=$sector
     head -c "$half" "$tmp" > "$tmp.part1"
     tail -c +"$((half + 1))" "$tmp" > "$tmp.part2"
     local expected_cr; expected_cr="sha256:$(sha256sum "$tmp" | cut -d' ' -f1)"
@@ -141,7 +148,7 @@ run_safe() {
         -H "Content-Range: bytes 0-$((half - 1))/$total" \
         --data-binary @"$tmp.part1" "$URL/v1alpha1/ota/write")
     check "1er chunk -> partial" "$(jget "$part1" status)" "partial"
-    check "written == taille du 1er chunk" "$(jget "$part1" written)" "$half"
+    check "written == 1 secteur plein flushé (durable, pas juste accepté)" "$(jget "$part1" written)" "$half"
     local part2; part2=$(curl -s -m 15 -X PUT -H "Authorization: Bearer $TOKEN" \
         -H "X-Embewi-Deployment-Id: test-api-sh-cr" -H "X-Embewi-Digest: $expected_cr" \
         -H "Content-Range: bytes $half-$((total - 1))/$total" \
@@ -153,7 +160,7 @@ run_safe() {
     local resync; resync=$(curl -s -m 15 -o /tmp/resync_body.json -w "%{http_code}" -X PUT \
         -H "Authorization: Bearer $TOKEN" -H "X-Embewi-Deployment-Id: test-api-sh-resync" \
         -H "X-Embewi-Digest: $expected_cr" \
-        -H "Content-Range: bytes 999-$((999 + half - 1))/2000" --data-binary @"$tmp.part1" "$URL/v1alpha1/ota/write")
+        -H "Content-Range: bytes 999-$((999 + half - 1))/999999" --data-binary @"$tmp.part1" "$URL/v1alpha1/ota/write")
     check "offset erroné -> 416" "$resync" "416"
     check "erreur == range_mismatch" "$(jget "$(cat /tmp/resync_body.json)" error)" "range_mismatch"
 

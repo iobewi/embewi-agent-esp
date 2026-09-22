@@ -33,7 +33,7 @@ use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use embewi_boot_core as boot_core;
 use boot_core::Decoded;
@@ -185,6 +185,14 @@ fn read_otadata_locked(storage: &mut Storage) -> Option<[boot_core::Raw; SLOT_CO
 /// neither of which should reach an HTTP handler in practice).
 struct WriteTarget {
     slot: AppPartitionSubType,
+    /// Absolute flash offset of the partition -- resolved here, once, and
+    /// from here on cached by callers (`write_begin` puts it in the
+    /// `WriteSession`) instead of re-parsing the partition table on every
+    /// chunk. Safe to cache for a whole session: nothing else can move
+    /// `otadata`'s active slot while a write is in flight (`activate` only
+    /// ever runs after a session has already finished, once
+    /// `staged.stage == Written`).
+    offset: u32,
     size: usize,
 }
 
@@ -196,7 +204,7 @@ fn write_target_locked(storage: &mut Storage) -> Option<WriteTarget> {
             let slot = slot_from_index(1 - otadata_active_slot(&entries)?)?;
             let table = esp_bootloader_esp_idf::partitions::read_partition_table(flash, &mut *buffer).ok()?;
             let app = table.find_partition(PartitionType::App(slot)).ok().flatten()?;
-            Some(WriteTarget { slot, size: app.len() as usize })
+            Some(WriteTarget { slot, offset: app.offset(), size: app.len() as usize })
         })
         .flatten()
 }
@@ -480,14 +488,55 @@ pub async fn prepare(storage: &SharedStorage, req: &PrepareRequest) -> PrepareRe
     PrepareResponse { accepted: true, target_slot: Some(slot_name(target.slot)), reason: None }
 }
 
+/// Flash sector size, and the unit [`WriteSession`] buffers before ever
+/// touching flash -- see its own doc comment.
+const OTA_SECTOR: u32 = 0x1000;
+
 /// In-RAM write session (see the module doc comment for why this doesn't
 /// need to survive a reboot). One at a time, matching `firmware-c`'s own
 /// single static session -- this device only ever serves one HTTP
 /// connection at a time anyway.
+///
+/// Buffers one flash sector in RAM and only ever erases/programs it once
+/// full (or once, partially, at [`write_finish`]) -- not once per incoming
+/// HTTP chunk. `esp-storage`'s `embedded_storage::Storage::write` (the
+/// convenience trait the previous version of this session used) does a
+/// read-modify-erase-rewrite of the *whole* sector on every call that isn't
+/// itself sector-aligned; with a 1 KiB HTTP read buffer, writing one 4 KiB
+/// sector meant up to four full erase+reprogram cycles of that same sector
+/// instead of one.
 struct WriteSession {
     slot: AppPartitionSubType,
-    written: u32,
+    /// Absolute flash offset of the target partition, resolved once in
+    /// [`write_begin`] ([`WriteTarget`]) and cached for the whole session --
+    /// no partition-table re-parse per chunk. Nothing beyond `session.flushed
+    /// <= params.total <= target.size` (checked once, at `write_begin`) is
+    /// needed to stay inside the partition: no need to also carry its size.
+    partition_offset: u32,
+    /// One sector, filled from `sector_filled` on each chunk until full.
+    /// Heap-allocated (`Box`): 4 KiB is too large to risk on an embassy
+    /// task's stack (`#![deny(clippy::large_stack_frames)]`), and this way
+    /// nothing changes if `OTA_SECTOR` ever grows.
+    sector: Box<[u8; OTA_SECTOR as usize]>,
+    /// Bytes of `sector` filled so far (buffered, not yet on flash).
+    sector_filled: u32,
+    /// Bytes *durably* written to flash -- what `write_written`/resume/the
+    /// `partial` response report, distinct from bytes merely accepted into
+    /// the session. `flushed + sector_filled` is every byte accepted so far.
+    flushed: u32,
+    /// Hashed exactly up to `flushed`, never ahead of it: hashing happens
+    /// at flush time, not at receive time, specifically so a resume after a
+    /// dropped connection -- which re-sends from `flushed`, the only bytes
+    /// actually on flash -- never needs to un-hash bytes the (streaming,
+    /// one-way) hasher already consumed but that never reached flash.
     hasher: Sha256,
+    /// When `write_begin` opened this session -- purely diagnostic, logged
+    /// by `write_finish` (contrat §4's own `written`/digest reply carries
+    /// no timing field).
+    started_at: Instant,
+    /// How many sectors have been erased+programmed so far -- purely
+    /// diagnostic, alongside `started_at`.
+    sectors_flushed: u32,
     /// Frozen at the first PUT: what the image is (`deployment_id`,
     /// `digest`) and how big (`total`). Every later PUT of the session must
     /// repeat them exactly ([`write_params_match`]) and `write_finish`
@@ -511,8 +560,24 @@ pub async fn write_in_progress() -> bool {
     WRITE_SESSION.lock().await.is_some()
 }
 
+/// Bytes durably on flash -- see [`WriteSession::flushed`]'s doc comment.
+/// This is what the JSON `written` field reports to the client: the point
+/// it's safe to resume *after a dropped connection* from.
 pub async fn write_written() -> u32 {
-    WRITE_SESSION.lock().await.as_ref().map_or(0, |s| s.written)
+    WRITE_SESSION.lock().await.as_ref().map_or(0, |s| s.flushed)
+}
+
+/// Bytes accepted into the session so far -- `flushed` plus whatever's
+/// buffered in the current, not-yet-full sector. Distinct from
+/// `write_written` and used only for `write_plan`'s Continue-vs-Resync
+/// decision: consecutive chunks of one *uninterrupted* PUT sequence declare
+/// their `start` as "how much I've sent so far", which -- unless the
+/// connection actually dropped -- is this, not `write_written` (which lags
+/// behind it by up to one sector). Conflating the two would spuriously
+/// 416 a live transfer whose chunk size doesn't happen to be a multiple of
+/// the flash sector size.
+pub async fn write_received() -> u32 {
+    WRITE_SESSION.lock().await.as_ref().map_or(0, |s| s.flushed + s.sector_filled)
 }
 
 /// `PUT /v1alpha1/ota/write`'s resume decision (contrat §4's
@@ -553,48 +618,100 @@ pub async fn write_begin(storage: &SharedStorage, params: SessionParams) -> Resu
     if params.total as usize > target.size {
         return Err(BeginError::TooLarge);
     }
-    *WRITE_SESSION.lock().await = Some(WriteSession { slot: target.slot, written: 0, hasher: Sha256::new(), params });
+    *WRITE_SESSION.lock().await = Some(WriteSession {
+        slot: target.slot,
+        partition_offset: target.offset,
+        sector: Box::new([0u8; OTA_SECTOR as usize]),
+        sector_filled: 0,
+        flushed: 0,
+        hasher: Sha256::new(),
+        started_at: Instant::now(),
+        sectors_flushed: 0,
+        params,
+    });
     Ok(())
 }
 
-pub async fn write_chunk(storage: &SharedStorage, data: &[u8]) -> bool {
+/// Erases and programs the sector at `sector_index` (0-based within the
+/// partition) with `session.sector[..len]`, `storage` already locked. One
+/// erase, one program: the whole point of buffering a sector before ever
+/// calling this.
+/// Flashes `session.sector[..len]` (`len` is the number of *real* image
+/// bytes in it) at `sector_index`, padded to the flash word size.
+///
+/// `NorFlash::write` (unlike the auto-RMW `embedded_storage::Storage` trait
+/// this replaces) requires both the offset and the length to be a multiple
+/// of the flash word size (4 bytes here) -- always true for a full sector
+/// (`OTA_SECTOR` is 4096), but the final, partial sector at `write_finish`
+/// rarely lands on a word boundary.
+///
+/// Invariant this keeps: padding is a hardware-write-granularity detail,
+/// never part of the OTA payload. Concretely, for a logical image of `N`
+/// bytes (`session.params.total`):
+///
+/// ```text
+/// flash program length = align_up(N, 4)   (this function, at most +3 bytes)
+/// digest                covers exactly [0, N)      -- hasher.update gets `len`, never `padded`
+/// write_received/write_written are bounded by N    -- `flushed`/`received` advance by `len`, never `padded`
+/// align_up(N, 4) <= partition_size                 -- checked below; total <= target.size at write_begin,
+///                                                      and partition sizes are themselves sector-aligned
+/// ```
+///
+/// So no *logical* OTA byte ever crosses `total`; only the NOR adapter may
+/// program the minimal hardware-required alignment padding, and that
+/// padding is explicitly zeroed (never leftover, indeterminate buffer
+/// content) before it's written.
+fn flush_sector(storage: &mut Storage, session: &mut WriteSession, sector_index: u32, len: u32) -> bool {
+    let base = session.partition_offset + sector_index * OTA_SECTOR;
+    let padded = (len as usize).div_ceil(4) * 4;
+    debug_assert!(padded <= OTA_SECTOR as usize, "padding must never cross the sector it belongs to");
+    session.sector[len as usize..padded].fill(0);
+    storage
+        .with_raw_flash(|flash| -> Option<()> {
+            NorFlash::erase(flash, base, base + OTA_SECTOR).ok()?;
+            NorFlash::write(flash, base, &session.sector[..padded]).ok()
+        })
+        .flatten()
+        .is_some()
+}
+
+/// Appends `data` to the session, flushing whole sectors to flash as they
+/// fill (see [`WriteSession`]'s doc comment). Handles `data` of any length,
+/// not just the HTTP handler's own read-buffer size -- it may span several
+/// sectors in one call.
+pub async fn write_chunk(storage: &SharedStorage, mut data: &[u8]) -> bool {
     let mut session_guard = WRITE_SESSION.lock().await;
     let Some(session) = session_guard.as_mut() else {
         return false;
     };
 
-    // Never write past the size the session declared.
-    if u32::try_from(data.len()).ok().and_then(|len| session.written.checked_add(len)).is_none_or(|end| end > session.params.total)
+    // Never accept more than the size the session declared.
+    let received = session.flushed + session.sector_filled;
+    if u32::try_from(data.len()).ok().and_then(|len| received.checked_add(len)).is_none_or(|end| end > session.params.total)
     {
         return false;
     }
 
     let mut storage = storage.lock().await;
-    let written = session.written;
-    let expected_slot = session.slot;
-    let wrote = storage
-        .with_raw_flash(|flash| {
-            let mut buffer = table_buffer();
-            let (_, entries) = read_otadata_raw(flash, &mut buffer)?;
-            if slot_from_index(1 - otadata_active_slot(&entries)?) != Some(expected_slot) {
-                // The write target changed under us mid-session (otadata's Valid
-                // entry moved) -- shouldn't happen (nothing else activates while a
-                // write is in flight), but writing to the wrong slot would silently
-                // corrupt it, so refuse rather than guess.
-                return None;
+    while !data.is_empty() {
+        let space = (OTA_SECTOR - session.sector_filled) as usize;
+        let take = space.min(data.len());
+        session.sector[session.sector_filled as usize..session.sector_filled as usize + take]
+            .copy_from_slice(&data[..take]);
+        session.sector_filled += take as u32;
+        data = &data[take..];
+
+        if session.sector_filled == OTA_SECTOR {
+            let sector_index = session.flushed / OTA_SECTOR;
+            if !flush_sector(&mut storage, session, sector_index, OTA_SECTOR) {
+                return false;
             }
-            let table = esp_bootloader_esp_idf::partitions::read_partition_table(flash, &mut *buffer).ok()?;
-            let entry = table.find_partition(PartitionType::App(expected_slot)).ok().flatten()?;
-            let mut region = entry.as_embedded_storage(flash);
-            embedded_storage::Storage::write(&mut region, written, data).ok()
-        })
-        .flatten()
-        .is_some();
-    if !wrote {
-        return false;
+            session.hasher.update(&session.sector[..OTA_SECTOR as usize]);
+            session.flushed += OTA_SECTOR;
+            session.sector_filled = 0;
+            session.sectors_flushed += 1;
+        }
     }
-    session.hasher.update(data);
-    session.written += data.len() as u32;
     true
 }
 
@@ -619,11 +736,30 @@ pub enum WriteFinishError {
 /// (contrat §6). Both the expected digest and the `deployment_id` come
 /// from the session -- fixed by its first PUT, not by the last request.
 pub async fn write_finish(storage: &SharedStorage) -> Result<WriteFinishOk, WriteFinishError> {
-    let Some(session) = WRITE_SESSION.lock().await.take() else {
+    let Some(mut session) = WRITE_SESSION.lock().await.take() else {
         return Err(WriteFinishError::NotWriting);
     };
-    if session.written != session.params.total {
-        warn!("ota: session ended at {} of {} octets", session.written, session.params.total);
+
+    // The image's own size rarely lands on a sector boundary: flush
+    // whatever's left buffered (a final, partial sector) before checking
+    // completeness (see `flush_sector`'s own comment on the padding this
+    // needs).
+    if session.sector_filled > 0 {
+        let mut storage_guard = storage.lock().await;
+        let sector_index = session.flushed / OTA_SECTOR;
+        let len = session.sector_filled;
+        if !flush_sector(&mut storage_guard, &mut session, sector_index, len) {
+            return Err(WriteFinishError::Incomplete);
+        }
+        drop(storage_guard);
+        session.hasher.update(&session.sector[..len as usize]);
+        session.flushed += len;
+        session.sector_filled = 0;
+        session.sectors_flushed += 1;
+    }
+
+    if session.flushed != session.params.total {
+        warn!("ota: session ended at {} of {} octets", session.flushed, session.params.total);
         return Err(WriteFinishError::Incomplete);
     }
 
@@ -644,12 +780,19 @@ pub async fn write_finish(storage: &SharedStorage) -> Result<WriteFinishOk, Writ
         slot_name(session.slot),
         &digest,
         &session.params.deployment_id,
-        session.written,
+        session.flushed,
     )
     .await
     .map_err(WriteFinishError::Storage)?;
-    info!("ota: write OK {} octets slot={} -> staged=written", session.written, slot_name(session.slot));
-    Ok(WriteFinishOk { written: session.written, digest })
+    let elapsed = session.started_at.elapsed();
+    info!(
+        "ota: write OK {} octets ({} secteurs erase+program) en {}ms slot={} -> staged=written",
+        session.flushed,
+        session.sectors_flushed,
+        elapsed.as_millis(),
+        slot_name(session.slot)
+    );
+    Ok(WriteFinishOk { written: session.flushed, digest })
 }
 
 /// `POST /v1alpha1/ota/activate` (contrat §4): points the bootloader at the

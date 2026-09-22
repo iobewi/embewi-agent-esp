@@ -99,8 +99,14 @@ impl RequestHandlerService for OtaWrite {
         };
 
         let in_progress = ota::write_in_progress().await;
-        let written_so_far = ota::write_written().await;
-        match ota::write_plan(has_range, start, in_progress, written_so_far) {
+        // The Continue-vs-Resync decision: how much this session has
+        // *accepted* so far (flushed to flash or still buffered), which is
+        // what an uninterrupted client's next chunk continues from --
+        // distinct from `ota::write_written` (flushed only), reported to
+        // the client below as the durable point to resume from after a
+        // dropped connection.
+        let received_so_far = ota::write_received().await;
+        match ota::write_plan(has_range, start, in_progress, received_so_far) {
             ota::Plan::Begin => match ota::write_begin(self.storage, params).await {
                 Ok(()) => {}
                 Err(ota::BeginError::TooLarge) => {
