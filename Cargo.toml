@@ -18,6 +18,15 @@ version      = "0.1.0"
 name = "embewi-agent-esp"
 path = "./src/bin/main.rs"
 
+[features]
+# TEST/DEBUG ONLY -- never enable in a production image. Makes the
+# pending_verify self-check reset the device right after it passes but
+# BEFORE confirming (`ota.rs`'s `selfcheck_task`), deterministically
+# exercising embewi-boot's `Pending -> Aborted -> fallback` rollback path
+# without needing to time a physical power-cut against a live self-check
+# window (which normally completes before Wi-Fi even reconnects).
+fault-injection = []
+
 [dependencies]
 esp-hal = { version = "~1.1.0", features = ["esp32c3", "log-04", "unstable"] }
 

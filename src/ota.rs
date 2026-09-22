@@ -768,7 +768,22 @@ async fn selfcheck_task(storage: &'static SharedStorage) {
     // itself does in this exact spot (an `esp_timer` deadline calling
     // `esp_restart()`, not a TWDT trip).
     match select(async { storage.lock().await.self_check() }, Timer::after(SELFCHECK_DEADLINE)).await {
-        Either::First(true) => mark_valid(storage).await,
+        Either::First(true) => {
+            // TEST/DEBUG ONLY (`fault-injection` feature, never in a
+            // production image): reset right here, after the self-check
+            // passed but before `confirm` ever runs -- so `otadata` is left
+            // exactly as a real crash mid-`pending_verify` would leave it
+            // (still `Pending`), for embewi-boot's rollback to act on on the
+            // next boot. Deterministic, unlike timing a physical power-cut
+            // against a window that normally closes before Wi-Fi even
+            // reconnects.
+            if cfg!(feature = "fault-injection") {
+                warn!("ota: [fault-injection] self-check passed, resetting BEFORE confirm to exercise rollback");
+                Timer::after(Duration::from_millis(200)).await;
+                esp_hal::system::software_reset();
+            }
+            mark_valid(storage).await
+        }
         Either::First(false) => mark_invalid_and_reboot(storage).await,
         Either::Second(()) => {
             warn!("ota: self-check deadline exceeded, forcing a reset (bootloader will roll back)");
