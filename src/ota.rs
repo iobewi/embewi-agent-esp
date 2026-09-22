@@ -1,13 +1,22 @@
 //! OTA A/B updates (contrat §3/§4/§6). The Core streams a raw `.bin` into
-//! whichever `ota_0`/`ota_1` slot isn't currently booted; the bootloader
-//! (`esp-bootloader-esp-idf`) does the real rollback -- this module only
-//! ever *asks* it to switch slots, it never re-implements that decision.
+//! whichever `ota_0`/`ota_1` slot isn't currently booted.
+//!
+//! `otadata` itself -- which slot is active, what to write to activate,
+//! confirm or reject one -- is `embewi_boot_core` (`crates/embewi-boot-core`),
+//! the same crate `embewi-boot` (`boot/`) uses to decide what to boot. This
+//! module never re-implements that decision or that format: every write goes
+//! through [`execute_otadata_write`], the same erase/body/commit protocol the
+//! bootloader executes, each step read back before the next. `otadata`
+//! entries written the ESP-IDF way (as `esp-bootloader-esp-idf`, still used
+//! here only for partition-table parsing and the OTA image writes
+//! themselves, would write) are deliberately not understood by this format --
+//! no legacy mode, matching `embewi-boot`.
 //!
 //! Mirrors `firmware-c`'s `embewi_ota.c`/`embewi_selfcheck.c` state machine
 //! (same `stage`/`slot`/`digest`/`deployment_id`/`size` staged-NVS layout,
 //! same `embewi_ota_plan`/`embewi_ota_is_final` pure resume logic for
-//! `Content-Range`), reimplemented against `esp-bootloader-esp-idf`'s Rust
-//! API and embassy tasks instead of ESP-IDF's C one and FreeRTOS tasks.
+//! `Content-Range`), reimplemented against embassy tasks instead of
+//! ESP-IDF's C one and FreeRTOS tasks.
 //!
 //! Staged state is persisted to NVS (not just kept in RAM) because, unlike
 //! a Core restart, the reconcile in contrat §6 also has to survive *this*
@@ -25,9 +34,10 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
-use esp_bootloader_esp_idf::ota::OtaImageState;
-use esp_bootloader_esp_idf::ota_updater::OtaUpdater;
-use esp_bootloader_esp_idf::partitions::{AppPartitionSubType, PARTITION_TABLE_MAX_LEN};
+use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
+use embewi_boot_core as boot_core;
+use boot_core::Decoded;
+use esp_bootloader_esp_idf::partitions::{AppPartitionSubType, DataPartitionSubType, PARTITION_TABLE_MAX_LEN, PartitionType};
 use esp_nvs::Key;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -36,7 +46,7 @@ use sha2::{Digest, Sha256};
 use crate::agent;
 use ota_logic::{BootAction, BootImage, StagedKind, boot_action};
 
-use crate::storage::{SharedStorage, StorageError};
+use crate::storage::{SharedStorage, Storage, StorageError};
 
 /// Contrat §4: `POST /ota/prepare`'s `partition_layout` field must match
 /// this exactly, or the write is refused before a single byte transfers.
@@ -80,6 +90,188 @@ fn slot_from_name(name: &str) -> Option<AppPartitionSubType> {
 /// on an embassy task's already-tight stack.
 fn table_buffer() -> Box<[u8; PARTITION_TABLE_MAX_LEN]> {
     Box::new([0u8; PARTITION_TABLE_MAX_LEN])
+}
+
+// --- otadata (embewi_boot_core) ---------------------------------------------
+//
+// `otadata` semantics (which slot is active, what to write for a transition)
+// live in `embewi_boot_core`, shared with `embewi-boot`. What's here only
+// finds the partition and drives the flash for it -- `esp-bootloader-esp-idf`
+// is used purely as a partition-table *parser* (its own `OtaUpdater`/`Ota`,
+// which read and write `otadata` in the older, non-committed format, are not
+// used anywhere in this file).
+
+const SLOT_COUNT: u8 = 2;
+/// `otadata`'s two entries sit at the start of each of its two 4 KiB sectors.
+const OTADATA_SECTOR: u32 = 0x1000;
+
+fn slot_index(slot: AppPartitionSubType) -> Option<u8> {
+    match slot {
+        AppPartitionSubType::Ota0 => Some(0),
+        AppPartitionSubType::Ota1 => Some(1),
+        _ => None,
+    }
+}
+
+fn slot_from_index(i: u8) -> Option<AppPartitionSubType> {
+    match i {
+        0 => Some(AppPartitionSubType::Ota0),
+        1 => Some(AppPartitionSubType::Ota1),
+        _ => None,
+    }
+}
+
+/// The slot this device is currently running: among `Valid`/`Pending`
+/// entries (the only states a slot that's actually executing can be in --
+/// `New`/`Invalid`/`Aborted` never are), the one with the highest sequence.
+/// Matches `embewi-boot`'s own candidate selection (`plan_boot`, and
+/// `embewi_boot_core::activate`'s own choice of which sector to protect):
+/// **not** "the first `Valid` entry found" -- a stale `Valid` entry can
+/// legitimately survive in the other sector after a successful `confirm`
+/// (nothing clears it, same as `plan_boot` never does), so two entries can
+/// both read `Valid` at once. Picking the wrong one here would report the
+/// slot that's actually running as the OTA *target*, letting `/ota/write`
+/// overwrite the image this device is executing from.
+fn otadata_active_slot(entries: &[boot_core::Raw; SLOT_COUNT as usize]) -> Option<u8> {
+    entries
+        .iter()
+        .filter_map(|raw| match boot_core::decode(raw) {
+            Decoded::Ok(e) if e.state == boot_core::state::VALID || e.state == boot_core::state::PENDING_VERIFY => {
+                Some(e.seq)
+            }
+            _ => None,
+        })
+        .max()
+        .map(|seq| boot_core::slot_of(seq, SLOT_COUNT))
+}
+
+/// Reads the two raw `otadata` entries and that partition's flash offset
+/// (for callers that go on to write there). Free function (not a method) so
+/// it can be called from inside another `with_raw_flash` closure, since
+/// `PartitionTable`/`PartitionEntry` can't be returned out of one (they
+/// borrow `buffer`, which lives only for the call).
+fn read_otadata_raw(
+    flash: &mut esp_storage::FlashStorage<'static>,
+    buffer: &mut [u8; PARTITION_TABLE_MAX_LEN],
+) -> Option<(u32, [boot_core::Raw; SLOT_COUNT as usize])> {
+    let table = esp_bootloader_esp_idf::partitions::read_partition_table(flash, buffer).ok()?;
+    let otadata = table.find_partition(PartitionType::Data(DataPartitionSubType::Ota)).ok().flatten()?;
+    let base = otadata.offset();
+    let mut entries = [boot_core::BLANK; SLOT_COUNT as usize];
+    for (i, raw) in entries.iter_mut().enumerate() {
+        ReadNorFlash::read(flash, base + i as u32 * OTADATA_SECTOR, raw).ok()?;
+    }
+    Some((base, entries))
+}
+
+/// `storage` must already be locked (a sync helper, callable from inside an
+/// already-`.lock().await`ed section without deadlocking on it again).
+fn read_otadata_locked(storage: &mut Storage) -> Option<[boot_core::Raw; SLOT_COUNT as usize]> {
+    storage.with_raw_flash(|flash| read_otadata_raw(flash, &mut table_buffer()).map(|(_, e)| e)).flatten()
+}
+
+/// Where a new OTA image is currently allowed to go: the slot `otadata`
+/// does *not* call `Valid`. `None` if that can't be determined -- `otadata`
+/// unreadable, or with no `Valid` entry yet (a device `embewi-boot` hasn't
+/// seeded, or one caught mid self-check with nothing confirmed at all,
+/// neither of which should reach an HTTP handler in practice).
+struct WriteTarget {
+    slot: AppPartitionSubType,
+    size: usize,
+}
+
+fn write_target_locked(storage: &mut Storage) -> Option<WriteTarget> {
+    storage
+        .with_raw_flash(|flash| {
+            let mut buffer = table_buffer();
+            let (_, entries) = read_otadata_raw(flash, &mut buffer)?;
+            let slot = slot_from_index(1 - otadata_active_slot(&entries)?)?;
+            let table = esp_bootloader_esp_idf::partitions::read_partition_table(flash, &mut *buffer).ok()?;
+            let app = table.find_partition(PartitionType::App(slot)).ok().flatten()?;
+            Some(WriteTarget { slot, size: app.len() as usize })
+        })
+        .flatten()
+}
+
+/// One `otadata` entry update, executed exactly as `embewi-boot` does it:
+/// erase the sector, program the body (everything but the commit word),
+/// program the commit word in its own command -- each step read back and
+/// checked before the next. `storage` must already be locked.
+fn execute_otadata_write(storage: &mut Storage, write: boot_core::Write) -> Result<(), OtadataError> {
+    storage
+        .with_raw_flash(|flash| -> Option<()> {
+            let mut buffer = table_buffer();
+            let (base, _) = read_otadata_raw(flash, &mut buffer)?;
+            let base = base + u32::from(write.sector) * OTADATA_SECTOR;
+            let [erase, body, commit] = write.ops();
+            let mut back = [0u8; boot_core::ENTRY_SIZE];
+
+            let boot_core::Op::Erase { .. } = erase else { return None };
+            NorFlash::erase(flash, base, base + OTADATA_SECTOR).ok()?;
+            ReadNorFlash::read(flash, base, &mut back).ok()?;
+            if back != boot_core::BLANK {
+                return None;
+            }
+
+            let boot_core::Op::Program { offset, len, data, .. } = body else { return None };
+            NorFlash::write(flash, base + u32::from(offset), &data[..usize::from(len)]).ok()?;
+            ReadNorFlash::read(flash, base, &mut back).ok()?;
+            if back != write.entry.body() {
+                return None;
+            }
+
+            let boot_core::Op::Program { offset, len, data, .. } = commit else { return None };
+            NorFlash::write(flash, base + u32::from(offset), &data[..usize::from(len)]).ok()?;
+            ReadNorFlash::read(flash, base, &mut back).ok()?;
+            if back != write.entry.encode() || boot_core::decode(&back) != Decoded::Ok(write.entry) {
+                return None;
+            }
+            Some(())
+        })
+        .flatten()
+        .ok_or(OtadataError::Verify)
+}
+
+/// Why an `otadata` transition ([`otadata_confirm`]/[`otadata_reject`]/
+/// [`otadata_activate`]) didn't happen.
+enum OtadataError {
+    /// The partition or its entries couldn't be read.
+    Unavailable,
+    /// `embewi_boot_core` found nothing to act on (no `Pending` entry for
+    /// confirm/reject, no `Valid` entry to activate against) -- a boot-chain
+    /// anomaly, not something to paper over.
+    NoTransition,
+    /// A write step didn't read back as expected.
+    Verify,
+}
+
+/// The running image, self-checked and passing: `Pending` -> `Valid`.
+async fn otadata_confirm(storage: &SharedStorage) -> Result<(), OtadataError> {
+    let mut storage = storage.lock().await;
+    let entries = read_otadata_locked(&mut storage).ok_or(OtadataError::Unavailable)?;
+    let write = boot_core::confirm(entries).ok_or(OtadataError::NoTransition)?;
+    execute_otadata_write(&mut storage, write)
+}
+
+/// The running image, self-checked and failing: `Pending` -> `Invalid`, so
+/// the next boot falls back at once (`embewi-boot`'s `plan_boot` treats an
+/// `Invalid`/`Aborted` entry as dead, never a candidate).
+async fn otadata_reject(storage: &SharedStorage) -> Result<(), OtadataError> {
+    let mut storage = storage.lock().await;
+    let entries = read_otadata_locked(&mut storage).ok_or(OtadataError::Unavailable)?;
+    let write = boot_core::reject(entries).ok_or(OtadataError::NoTransition)?;
+    execute_otadata_write(&mut storage, write)
+}
+
+/// Arms `target` slot as `New` (contrat's `/ota/activate`): one committed
+/// write, into whichever sector does not hold the last `Valid` entry, so the
+/// slot that's still known-good stays selectable through any interruption.
+async fn otadata_activate(storage: &SharedStorage, target: AppPartitionSubType) -> Result<(), OtadataError> {
+    let mut storage = storage.lock().await;
+    let entries = read_otadata_locked(&mut storage).ok_or(OtadataError::Unavailable)?;
+    let target = slot_index(target).ok_or(OtadataError::Unavailable)?;
+    let write = boot_core::activate(entries, SLOT_COUNT, target).map_err(|_| OtadataError::NoTransition)?;
+    execute_otadata_write(&mut storage, write)
 }
 
 /// Contrat §4: `staged.state` ∈ `none | written | activating`.
@@ -211,32 +403,29 @@ pub async fn active_slot(storage: &SharedStorage) -> String {
         .unwrap_or_default()
 }
 
-async fn current_ota_state(storage: &SharedStorage) -> Option<OtaImageState> {
+/// The image state relevant to the boot decision (contrat §3): a `Pending`
+/// entry means a self-check is owed, regardless of which sector holds it;
+/// otherwise a `Valid` entry means the running image is confirmed. Scanning
+/// both entries for these two states (rather than resolving "the current
+/// slot" the way `esp-bootloader-esp-idf`'s `Ota::current_slot()` did, by
+/// comparing raw sequence numbers) is exactly what removes that hazard: it
+/// needs no notion of "current slot" at all, just what `embewi_boot_core`
+/// itself calls trustworthy.
+async fn current_ota_image(storage: &SharedStorage) -> BootImage {
     let mut storage = storage.lock().await;
-    storage
-        .with_raw_flash(|flash| {
-            let mut buffer = table_buffer();
-            let mut updater = OtaUpdater::new(flash, &mut buffer).ok()?;
-            let mut ota_data = updater.ota_data().ok()?;
-            ota_data.current_ota_state().ok()
-        })
-        .flatten()
-}
-
-async fn set_current_ota_state(storage: &SharedStorage, state: OtaImageState) -> bool {
-    let mut storage = storage.lock().await;
-    storage
-        .with_raw_flash(|flash| {
-            let mut buffer = table_buffer();
-            let Ok(mut updater) = OtaUpdater::new(flash, &mut buffer) else {
-                return false;
-            };
-            let Ok(mut ota_data) = updater.ota_data() else {
-                return false;
-            };
-            ota_data.set_current_ota_state(state).is_ok()
-        })
-        .unwrap_or(false)
+    let Some(entries) = read_otadata_locked(&mut storage) else {
+        return BootImage::Other;
+    };
+    let is = |wanted: u32| {
+        entries.iter().any(|raw| matches!(boot_core::decode(raw), Decoded::Ok(e) if e.state == wanted))
+    };
+    if is(boot_core::state::PENDING_VERIFY) {
+        BootImage::PendingVerify
+    } else if is(boot_core::state::VALID) {
+        BootImage::Valid
+    } else {
+        BootImage::Other
+    }
 }
 
 /// `POST /v1alpha1/ota/prepare` request body (contrat §4). `artifact` and
@@ -274,21 +463,13 @@ pub async fn prepare(storage: &SharedStorage, req: &PrepareRequest) -> PrepareRe
     }
 
     let mut storage = storage.lock().await;
-    storage
-        .with_raw_flash(|flash| {
-            let mut buffer = table_buffer();
-            let Ok(mut updater) = OtaUpdater::new(flash, &mut buffer) else {
-                return refuse("busy");
-            };
-            let Ok((region, slot)) = updater.next_partition() else {
-                return refuse("busy");
-            };
-            if req.size as usize > region.partition_size() {
-                return refuse("size_too_large");
-            }
-            PrepareResponse { accepted: true, target_slot: Some(slot_name(slot)), reason: None }
-        })
-        .unwrap_or_else(|| refuse("busy"))
+    let Some(target) = write_target_locked(&mut storage) else {
+        return refuse("busy");
+    };
+    if req.size as usize > target.size {
+        return refuse("size_too_large");
+    }
+    PrepareResponse { accepted: true, target_slot: Some(slot_name(target.slot)), reason: None }
 }
 
 /// In-RAM write session (see the module doc comment for why this doesn't
@@ -357,23 +538,14 @@ pub enum BeginError {
 /// does the same (see its own comment for why) -- prepare is a compat
 /// pre-check, not a reservation.
 pub async fn write_begin(storage: &SharedStorage, params: SessionParams) -> Result<(), BeginError> {
-    let (slot, capacity) = {
+    let target = {
         let mut storage = storage.lock().await;
-        let found = storage.with_raw_flash(|flash| {
-            let mut buffer = table_buffer();
-            let mut updater = OtaUpdater::new(flash, &mut buffer).ok()?;
-            let (region, slot) = updater.next_partition().ok()?;
-            Some((slot, region.partition_size()))
-        });
-        let Some(Some(found)) = found else {
-            return Err(BeginError::Busy);
-        };
-        found
+        write_target_locked(&mut storage).ok_or(BeginError::Busy)?
     };
-    if params.total as usize > capacity {
+    if params.total as usize > target.size {
         return Err(BeginError::TooLarge);
     }
-    *WRITE_SESSION.lock().await = Some(WriteSession { slot, written: 0, hasher: Sha256::new(), params });
+    *WRITE_SESSION.lock().await = Some(WriteSession { slot: target.slot, written: 0, hasher: Sha256::new(), params });
     Ok(())
 }
 
@@ -395,22 +567,21 @@ pub async fn write_chunk(storage: &SharedStorage, data: &[u8]) -> bool {
     let wrote = storage
         .with_raw_flash(|flash| {
             let mut buffer = table_buffer();
-            let Ok(mut updater) = OtaUpdater::new(flash, &mut buffer) else {
-                return false;
-            };
-            let Ok((mut region, slot)) = updater.next_partition() else {
-                return false;
-            };
-            if slot != expected_slot {
-                // The booted/next-update partition changed under us mid-session --
-                // shouldn't happen (nothing else calls `activate_next_partition`
-                // while a write is in flight), but writing to the wrong slot would
-                // silently corrupt it, so refuse rather than guess.
-                return false;
+            let (_, entries) = read_otadata_raw(flash, &mut buffer)?;
+            if slot_from_index(1 - otadata_active_slot(&entries)?) != Some(expected_slot) {
+                // The write target changed under us mid-session (otadata's Valid
+                // entry moved) -- shouldn't happen (nothing else activates while a
+                // write is in flight), but writing to the wrong slot would silently
+                // corrupt it, so refuse rather than guess.
+                return None;
             }
-            embedded_storage::Storage::write(&mut region, written, data).is_ok()
+            let table = esp_bootloader_esp_idf::partitions::read_partition_table(flash, &mut *buffer).ok()?;
+            let entry = table.find_partition(PartitionType::App(expected_slot)).ok().flatten()?;
+            let mut region = entry.as_embedded_storage(flash);
+            embedded_storage::Storage::write(&mut region, written, data).ok()
         })
-        .unwrap_or(false);
+        .flatten()
+        .is_some();
     if !wrote {
         return false;
     }
@@ -499,21 +670,7 @@ pub async fn activate(storage: &SharedStorage, deployment_id: &str) -> Result<&'
         .await
         .map_err(ActivateError::Storage)?;
 
-    let ok = {
-        let mut storage = storage.lock().await;
-        storage
-            .with_raw_flash(|flash| {
-                let mut buffer = table_buffer();
-                let mut updater = OtaUpdater::new(flash, &mut buffer).ok()?;
-                let mut ota_data = updater.ota_data().ok()?;
-                Some(
-                    ota_data.set_current_app_partition(target).is_ok()
-                        && ota_data.set_current_ota_state(OtaImageState::New).is_ok(),
-                )
-            })
-            .flatten()
-            .unwrap_or(false)
-    };
+    let ok = otadata_activate(storage, target).await.is_ok();
     if !ok {
         // Best effort: back to `Written` so a retry of `activate` is possible.
         if save_staged(storage, Stage::Written, &staged.slot, &staged.digest, &staged.deployment_id, staged.size)
@@ -573,20 +730,24 @@ async fn finish_validation(storage: &SharedStorage, staged: &Staged) {
 /// (contrat §3: "mark_valid n'est appelé QUE si tous les checks passent").
 async fn mark_valid(storage: &'static SharedStorage) {
     let staged = staged(storage).await;
-    if !set_current_ota_state(storage, OtaImageState::Valid).await {
+    if let Err(e) = otadata_confirm(storage).await {
         // Couldn't even record validation -- don't claim `running` over an
-        // image the bootloader doesn't agree is confirmed.
+        // image `embewi-boot` doesn't agree is confirmed.
+        warn!("ota: couldn't confirm the running image (code {}), rolling back", e as u8);
         mark_invalid_and_reboot(storage).await;
     }
     finish_validation(storage, &staged).await;
 }
 
 /// The rollback path (contrat §3): marks the image invalid and resets.
-/// Never returns -- on reboot, the bootloader sees `Invalid` (or a stuck
-/// `PendingVerify`, if even this much couldn't complete) and falls back to
-/// the previous slot on its own; this agent doesn't drive that part.
+/// Never returns -- on reboot, `embewi-boot` sees `Invalid`/`Aborted` (or a
+/// stuck `Pending`, if even this much couldn't complete, itself turned
+/// `Aborted` on the next boot) and falls back to the previous slot on its
+/// own; this agent doesn't drive that part.
 async fn mark_invalid_and_reboot(storage: &'static SharedStorage) -> ! {
-    let _ = set_current_ota_state(storage, OtaImageState::Invalid).await;
+    if let Err(e) = otadata_reject(storage).await {
+        warn!("ota: couldn't record rejection (code {}), resetting anyway", e as u8);
+    }
     warn!("ota: self-check failed, marking image invalid and rebooting for rollback");
     // Gives the log line above time to actually reach the WebSocket log
     // stream/serial console before the reset cuts it off.
@@ -624,11 +785,7 @@ async fn selfcheck_task(storage: &'static SharedStorage) {
 /// `Booting`.
 pub async fn on_boot(storage: &'static SharedStorage, spawner: Spawner) {
     let staged = staged(storage).await;
-    let image = match current_ota_state(storage).await {
-        Some(OtaImageState::PendingVerify) => BootImage::PendingVerify,
-        Some(OtaImageState::Valid) => BootImage::Valid,
-        _ => BootImage::Other,
-    };
+    let image = current_ota_image(storage).await;
     let booted = active_slot(storage).await;
     let booted_is_staged = (!booted.is_empty()).then(|| booted == staged.slot);
     let kind = match staged.stage {
