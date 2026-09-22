@@ -6,16 +6,20 @@ Second-stage bootloader Embewi pour ESP32-C3, en Rust `no_std` (sans ESP-IDF).
 ROM Espressif -> embewi-boot -> ota_0 / ota_1 -> embewi-agent
 ```
 
-## État : étape 5 -- bootstrap d'`otadata` (pas encore de rollback)
+## État : chaîne A/B + rollback + anti-freeze, validée sur silicium
 
 Chaîne : ROM -> `embewi-boot` -> slot choisi par `otadata` -> agent.
 
 Toutes les *décisions* (quel slot, quoi écrire dans `otadata`, l'image est-elle
-amorçable) viennent de `crates/embewi-boot-core`, testé sur l'hôte contre des
-coupures de courant (modèle adversarial). Ce crate-ci les exécute sur la vraie
-flash :
+amorçable) viennent de `crates/embewi-boot-core`, partagé par le bootloader
+**et** par l'agent (`src/ota.rs`) -- une seule définition de ce qu'est une
+entrée `otadata` valide et de quel slot est actif, des deux côtés du saut.
+Testé sur l'hôte contre des coupures de courant sous un modèle *adversarial*
+(champs programmés dans n'importe quel ordre, pas seulement en ordre
+d'adresses) : voir le module doc de `crates/embewi-boot-core/src/lib.rs`.
+`embewi-boot` exécute ces décisions sur la vraie flash :
 
-- coupe la protection « flashboot » des watchdogs (voir ci-dessous) ;
+- coupe la protection « flashboot » des watchdogs (voir plus bas) ;
 - règle la taille de la puce dans le driver flash de la ROM (sans quoi la
   lecture d'`ota_1`, au-delà de 2 Mo, échoue -- trouvé sous QEMU) ;
 - lit la table de partitions (`otadata`, `ota_0`, `ota_1`) puis les deux
@@ -27,8 +31,11 @@ flash :
   marquée `Invalid` ; rien d'utilisable => `HALT` explicite, jamais de devinette ;
 - charge l'image (segments RAM copiés, DROM/IROM mappés par le MMU) et saute.
 
-Écriture d'une entrée `otadata`, chaque étape relue avant la suivante (une
-erreur = arrêt) :
+Écriture d'une entrée `otadata` (`New`/`Pending`/`Valid`/`Invalid`/`Aborted`,
+format **EWBT** : 32 octets, deux secteurs, compatible en taille/position avec
+`esp_ota_select_entry_t` mais avec un magic, un `ext_crc` et un **mot de commit
+programmé séparément** dans `seq_label` -- qu'ESP-IDF ignore -- pas de mode
+legacy), chaque étape relue avant la suivante, une erreur = arrêt :
 
 ```text
 effacer le secteur        -> relire : effacé
@@ -38,14 +45,58 @@ effacer le secteur        -> relire : effacé
 ```
 
 Le mot de commit veut donc dire « j'ai vérifié CE corps », pas seulement « une
-seconde commande a tourné ».
+seconde commande a tourné ». Cette écriture est identique côté agent
+(`ota.rs::execute_otadata_write`) : `activate`/`confirm`/`reject` du crate
+partagé, plus aucune entrée écrite au format ESP-IDF depuis
+`fix(agent): migrate otadata semantics to embewi-boot-core`.
 
-Pas encore : vérification checksum/SHA (les contrôles s'arrêtent à
-`Verify::Structure`), armement d'un watchdog pour une image qui se fige, et un
-**agent qui écrit ce format** : l'agent actuel écrit encore des entrées
-ESP-IDF, que ce format ignore volontairement (`activate`/`confirm`/`reject` du
-crate `embewi-boot-core` à adopter -- étape suivante). Tant que ce n'est pas
-fait, seul le bootloader crée des entrées.
+Un watchdog matériel (TIMG0, indépendant du `LPWR`/RTC déjà utilisé par
+`/reboot`) protège toute la fenêtre `pending_verify`, armé juste après
+`esp_rtos::start` (pas plus tôt : `TimerGroup::new(TIMG0)` réinitialise le
+bloc à sa première utilisation et effacerait un watchdog armé avant) et
+désactivé seulement **après** que `confirm` ait été relu et décodé -- un gel
+n'importe où dans cette fenêtre, y compris avant que le self-check logiciel
+lui-même ne soit jamais exécuté, se termine en `Pending` non confirmé, donc
+en rollback au boot suivant. Détail dans `src/ota.rs`, section
+« anti-freeze watchdog ».
+
+**Ce qui n'est pas encore couvert** : `embewi-boot` s'arrête à
+`Verify::Structure` avant de sauter (`boot/src/main.rs`) -- il ne revérifie
+pas le checksum XOR ni le SHA-256 appendu de l'image à chaque boot, seulement
+sa structure (segments dans les plages autorisées, pas de recouvrement du
+bootloader). Il fait confiance au SHA-256 vérifié une fois par l'OTA au moment
+de l'écriture ; un bit-flip en flash *après* une écriture réussie ne serait
+détecté qu'au niveau structure, pas au niveau contenu.
+
+### Trois défauts trouvés par les gates matériels eux-mêmes, avant tout dégât
+
+| Défaut | Où | Comment il a été trouvé |
+|---|---|---|
+| Ciblage du mauvais slot avec deux entrées `Valid` (celle en cours d'exécution, pas la plus récente) | `src/ota.rs`, sélection du slot cible pour `/ota/write` | Un `prepare` de contrôle après un `confirm` réussi, avant toute écriture réelle |
+| Taille de puce non réglée dans le driver flash ROM : `ota_1` (> 2 Mo) illisible | `boot/src/main.rs` | Sous QEMU, en écrivant réellement `otadata` (pas seulement en le lisant) |
+| `TimerGroup::new(TIMG0)` réinitialise tout le bloc, effaçant un watchdog armé trop tôt | `src/bin/main.rs` | Relecture du code avant tout flash, en concevant le WDT anti-freeze |
+
+### Gate de conformité anti-brick, validé sur ESP32-C3 réel
+
+Trois scénarios, chacun rejoué avec une vraie image OTA (pas un binaire
+factice) :
+
+1. **Self-check normal** : `activate` -> reboot -> `Pending` -> self-check ->
+   `confirm` -> `Valid`. Confirmé en ~4 s, aucun reset parasite.
+2. **Reset explicite avant `confirm`** (feature `fault-injection`) : l'entrée
+   reste `Pending` au moment de la coupure -> boot suivant -> `Aborted` ->
+   retour sur le dernier slot `Valid`.
+3. **Gel pur, sans aucun appel logiciel à `software_reset()`** (feature
+   `fault-injection-freeze`, une boucle infinie dès l'entrée dans la tâche de
+   self-check, avant même que son propre timeout logiciel ne soit jamais
+   interrogé) : silence total (Wi-Fi et HTTP compris) pendant ~24 s, puis
+   reset matériel -> `Aborted` -> retour sur le dernier slot `Valid`. C'est la
+   preuve que la protection ne dépend d'aucune coopération de ce firmware,
+   seulement du compte à rebours matériel.
+
+Dans les trois cas : digest et `deployment_id` corrects après coup, `staged`
+nettoyé, `/health` ok, et une nouvelle tentative recible correctement le slot
+abandonné (l'entrée `Aborted` n'est plus jamais candidate).
 
 ## Construire
 
@@ -57,24 +108,27 @@ scripts/build-boot.sh     # -> web/firmware/esp32c3/firmware.bin (otadata vierge
 partitions + agent) à flasher à l'offset `0x0` avec ESP Web Tools
 (`http-server web -p 8080`).
 
-## Résultat sur matériel (ESP32-C3-Zero) -- spike, point de référence
+## Résultat sur matériel (ESP32-C3-Zero)
 
-Validé sur silicium avec le spike (slot fixé à `ota_0`, sans A/B ni
-vérification) : ROM -> `embewi-boot` -> `ota_0` -> agent réel -> Wi-Fi + SNTP ->
-NVS et écritures flash (`scripts/test-api.sh safe`, 42/42) -> reboot. **L'étape 5
-(écritures flash `otadata`, sélection A/B) n'est validée que sous QEMU** : à
-refaire sur le device avant de s'y fier.
+Historique, du spike au gate anti-brick complet (voir git log pour le détail
+commit par commit) :
 
-Deux choses que QEMU n'avait **pas** révélées lors du spike :
+1. **Spike** (slot fixé à `ota_0`, sans A/B ni rollback) : ROM -> `embewi-boot`
+   -> `ota_0` -> agent réel -> Wi-Fi + SNTP -> NVS et écritures flash
+   (`scripts/test-api.sh safe`, 42/42) -> reboot.
+2. **Bootstrap `otadata` et sélection A/B réelle**, d'abord validés sous QEMU
+   (écritures flash comprises, pas seulement lues), puis sur device.
+3. **Migration de l'agent** vers le même format `embewi_boot_core` --
+   c'est ce cycle qui a révélé le défaut de ciblage de slot (tableau
+   ci-dessus).
+4. **Gate rollback réel** (`Pending` -> reset -> `Aborted` -> retour), puis
+   **watchdog anti-freeze**, puis **gate gel pur** (tableau ci-dessus) : les
+   trois cas de la matrice de conformité anti-brick.
 
-1. **`WDT_FLASHBOOT_MOD_EN`** (ci-dessous) : sans lui, reset en boucle.
-2. **`otadata` vierge** : `esp-bootloader-esp-idf` le lit comme « slot courant =
-   Factory », donc `next_partition()` -- utilisé par `/ota/write` -- désigne
-   `ota_0`, le slot **en cours d'exécution** (constaté : en-tête de `ota_0`
-   écrasé). Le bootloader ESP-IDF masquait ce cas ; `embewi-boot` l'initialise
-   désormais lui-même.
-
-Et une que QEMU a révélée à l'étape 5 : la taille de puce du driver ROM (ci-dessus).
+QEMU (la vraie ROM du C3, écritures flash comprises) a servi de première
+passe à chaque étape avant le device réel, et a lui-même révélé un défaut
+(taille de puce non réglée, tableau ci-dessus) qu'un test purement en lecture
+n'aurait pas montré.
 
 ## Contraintes de conception
 

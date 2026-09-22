@@ -19,6 +19,17 @@ vérité Core ↔ Agent, inchangée par la migration de langage.
 
 _À définir — toolchain et structure du projet Rust en cours de mise en place._
 
+## OTA A/B et rollback anti-brick
+
+Full Rust, sans ESP-IDF : le second-stage bootloader ([`boot/`](boot/README.md),
+`embewi-boot`) et l'agent partagent la même définition de l'état `otadata`
+([`crates/embewi-boot-core`](crates/embewi-boot-core)), testée sur l'hôte
+contre des coupures de courant sous un modèle adversarial. Un watchdog
+matériel protège toute la fenêtre `pending_verify` ; les trois cas de la
+matrice de conformité (self-check normal, reset avant confirmation, gel pur
+sans aucun reset logiciel) sont validés sur ESP32-C3 réel. Détails dans
+[`boot/README.md`](boot/README.md).
+
 ## Installation firmware (ESP Web Tools)
 
 Le devcontainer sert `web/` — une page qui permet de flasher le firmware
