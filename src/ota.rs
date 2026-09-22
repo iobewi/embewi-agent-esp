@@ -326,8 +326,13 @@ pub struct Staged {
     pub size: u32,
 }
 
-pub async fn staged(storage: &SharedStorage) -> Staged {
-    let mut storage = storage.lock().await;
+/// `storage` must already be locked -- see [`read_otadata_locked`]'s own
+/// doc comment for why this crate names that variant `_locked` rather than
+/// overloading. The single source of truth for what "staged" means on
+/// flash; [`staged`] (self-locking, for async callers) and
+/// [`NvsTransactionMetadata`] (sync, for `atomic_ota`) both read through
+/// this, never duplicate it.
+fn staged_locked(storage: &mut Storage) -> Staged {
     Staged {
         stage: Stage::from_u8(storage.get_u8(&NAMESPACE, &KEY_STAGE).unwrap_or(0)),
         slot: storage.get_string(&NAMESPACE, &KEY_SLOT).unwrap_or_default(),
@@ -339,17 +344,21 @@ pub async fn staged(storage: &SharedStorage) -> Staged {
     }
 }
 
+pub async fn staged(storage: &SharedStorage) -> Staged {
+    staged_locked(&mut *storage.lock().await)
+}
+
 /// Persists the staged-OTA record. Fails as soon as one field can't be
 /// written: the record is only trustworthy when this returns `Ok`.
-async fn save_staged(
-    storage: &SharedStorage,
+/// `storage` must already be locked -- see [`staged_locked`].
+fn save_staged_locked(
+    storage: &mut Storage,
     stage: Stage,
     slot: &str,
     digest: &str,
     deployment_id: &str,
     size: u32,
 ) -> Result<(), StorageError> {
-    let mut storage = storage.lock().await;
     // `stage` is what `staged()` consumers switch on. Clearing drops it
     // first (a failure later leaves "nothing staged" beside stale details,
     // which is harmless); any other stage is published last, so a failure
@@ -368,8 +377,194 @@ async fn save_staged(
     Ok(())
 }
 
+async fn save_staged(
+    storage: &SharedStorage,
+    stage: Stage,
+    slot: &str,
+    digest: &str,
+    deployment_id: &str,
+    size: u32,
+) -> Result<(), StorageError> {
+    save_staged_locked(&mut *storage.lock().await, stage, slot, digest, deployment_id, size)
+}
+
 pub async fn clear_staged(storage: &SharedStorage) -> Result<(), StorageError> {
     save_staged(storage, Stage::None, "", "", "", 0).await
+}
+
+/// The one artifact kind v1 ever stages. A transaction's own identity is
+/// `deployment_id` (`atomic_ota::TransactionRecord::id`) -- never
+/// duplicated as this artifact's id, per `atomic-ota`'s own `transaction`
+/// module doc comment on why the two must stay distinct even with a single
+/// artifact today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactKind {
+    Firmware,
+}
+
+/// Where an artifact goes -- deliberately narrower than
+/// `AppPartitionSubType` (no `Factory`: that slot is never an OTA
+/// write/activation target).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Ota0,
+    Ota1,
+}
+
+impl Target {
+    fn to_subtype(self) -> AppPartitionSubType {
+        match self {
+            Target::Ota0 => AppPartitionSubType::Ota0,
+            Target::Ota1 => AppPartitionSubType::Ota1,
+        }
+    }
+
+    fn from_subtype(subtype: AppPartitionSubType) -> Option<Target> {
+        match subtype {
+            AppPartitionSubType::Ota0 => Some(Target::Ota0),
+            AppPartitionSubType::Ota1 => Some(Target::Ota1),
+            _ => None,
+        }
+    }
+
+    fn to_slot_name(self) -> &'static str {
+        slot_name(self.to_subtype())
+    }
+
+    fn from_slot_name(name: &str) -> Option<Target> {
+        Target::from_subtype(slot_from_name(name)?)
+    }
+}
+
+/// `atomic_ota`'s transaction record, with this agent's concrete identity
+/// types: the transaction id is `deployment_id`, the (one, for now)
+/// artifact is always [`ArtifactKind::Firmware`].
+type OtaTransaction = atomic_ota::TransactionRecord<String, ArtifactKind, Target>;
+
+/// Parses the `sha256:<64 hex>` string NVS stores back into
+/// `atomic_ota::Digest`'s raw bytes. Only used reading a staged record
+/// back (`NvsTransactionMetadata::load`) -- writing one always has the raw
+/// hasher output already in hand (`write_finish`), never round-trips
+/// through this.
+fn parse_digest(value: &str) -> Option<atomic_ota::Digest> {
+    let hex = value.strip_prefix("sha256:")?;
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for (i, b) in bytes.iter_mut().enumerate() {
+        *b = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(atomic_ota::Digest(bytes))
+}
+
+fn format_digest(digest: &atomic_ota::Digest) -> String {
+    let mut s = String::from("sha256:");
+    for b in digest.0 {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Adapts the existing `staged`/NVS layout to `atomic_ota::TransactionMetadata`
+/// -- same five keys, same on-flash bytes, no new layout. `storage` must
+/// already be locked (constructed inside a `storage.lock().await` block):
+/// `TransactionMetadata`'s methods are sync, `SharedStorage`'s own lock is
+/// async, so the lock can only happen at the call site, same as
+/// [`execute_otadata_write`]'s own `_locked` convention.
+struct NvsTransactionMetadata<'a> {
+    storage: &'a mut Storage,
+}
+
+impl atomic_ota::TransactionMetadata for NvsTransactionMetadata<'_> {
+    type Error = StorageError;
+    type Record = OtaTransaction;
+
+    /// `Ok(None)` both for a genuinely empty `staged.stage` and for a
+    /// non-empty one whose `slot`/`digest` don't parse -- the latter
+    /// should never happen (`commit` never writes a non-empty stage
+    /// without a valid slot/digest alongside it, in the same call), but if
+    /// flash is corrupted regardless, "nothing usable staged" is the same
+    /// refusal `activate`'s pre-`atomic_ota` form already gave via its own
+    /// `slot_from_name(..).ok_or(NotStaged)`.
+    fn load(&mut self) -> Result<Option<Self::Record>, Self::Error> {
+        let staged = staged_locked(self.storage);
+        let state = match staged.stage {
+            Stage::None => return Ok(None),
+            Stage::Written => TransactionState::Staged,
+            Stage::Activating => TransactionState::Activating,
+        };
+        let Some(target) = Target::from_slot_name(&staged.slot) else {
+            return Ok(None);
+        };
+        let Some(digest) = parse_digest(&staged.digest) else {
+            return Ok(None);
+        };
+        Ok(Some(atomic_ota::TransactionRecord {
+            id: staged.deployment_id,
+            state,
+            artifacts: alloc::vec![atomic_ota::ArtifactRecord {
+                id: ArtifactKind::Firmware,
+                size: u64::from(staged.size),
+                digest,
+                target,
+            }],
+        }))
+    }
+
+    /// Guarantees old-or-new, never a mix -- but only by reusing the two
+    /// transitions the NVS field-ordering discipline
+    /// ([`save_staged_locked`]'s own doc comment) actually proves safe:
+    /// `Empty -> anything` (stage published last) and `anything -> Empty`
+    /// (stage cleared first). A `Some -> Some` commit whose identity or
+    /// artifacts differ from what's already there would need to replace
+    /// body fields *in place* while the stage marker stays non-empty
+    /// throughout -- exactly the case that discipline does not cover (a
+    /// crash mid-write could leave the old stage byte next to a mix of old
+    /// and new body fields) -- so it is refused here rather than assumed
+    /// safe. The caller (`write_finish`) must `commit(None)` first if it
+    /// really means to replace a different, already-staged transaction.
+    fn commit(&mut self, record: Option<&Self::Record>) -> Result<(), Self::Error> {
+        let current = self.load()?;
+        if let (Some(a), Some(b)) = (&current, record) {
+            if a.id != b.id || a.artifacts != b.artifacts {
+                warn!(
+                    "ota: refusing to replace a staged transaction in place (would mix old/new on a crash); clear to empty first"
+                );
+                return Err(StorageError::Write);
+            }
+        }
+        match record {
+            None => save_staged_locked(self.storage, Stage::None, "", "", "", 0),
+            Some(r) => {
+                let stage = match r.state {
+                    TransactionState::Staged => Stage::Written,
+                    TransactionState::Activating => Stage::Activating,
+                    // `TransactionState` is `#[non_exhaustive]`: a variant
+                    // this build doesn't recognize is never written.
+                    _ => {
+                        warn!("ota: refusing to commit a transaction state this build doesn't recognize");
+                        return Err(StorageError::Write);
+                    }
+                };
+                let Some(artifact) = r.artifacts.first() else {
+                    warn!("ota: refusing to commit a transaction with no artifacts");
+                    return Err(StorageError::Write);
+                };
+                let Ok(size) = u32::try_from(artifact.size) else {
+                    return Err(StorageError::Write);
+                };
+                save_staged_locked(
+                    self.storage,
+                    stage,
+                    artifact.target.to_slot_name(),
+                    &format_digest(&artifact.digest),
+                    &r.id,
+                    size,
+                )
+            }
+        }
+    }
 }
 
 /// Digest of the currently-running, validated firmware -- empty until the
@@ -779,7 +974,7 @@ pub async fn write_finish(storage: &SharedStorage) -> Result<WriteFinishOk, Writ
         return Err(WriteFinishError::Incomplete);
     }
 
-    let digest_bytes = session.hasher.finalize();
+    let digest_bytes: [u8; 32] = session.hasher.finalize().into();
     let mut digest = String::from("sha256:");
     for b in digest_bytes {
         let _ = write!(digest, "{b:02x}");
@@ -790,16 +985,25 @@ pub async fn write_finish(storage: &SharedStorage) -> Result<WriteFinishOk, Writ
         return Err(WriteFinishError::DigestMismatch);
     }
 
-    save_staged(
-        storage,
-        Stage::Written,
-        slot_name(session.slot),
-        &digest,
-        &session.params.deployment_id,
-        session.flushed,
-    )
-    .await
-    .map_err(WriteFinishError::Storage)?;
+    let Some(target) = Target::from_subtype(session.slot) else {
+        // Can't happen (`write_target_locked` only ever hands out Ota0/
+        // Ota1), kept as a real error rather than a panic.
+        return Err(WriteFinishError::Storage(StorageError::Write));
+    };
+    let record = OtaTransaction::staged(
+        session.params.deployment_id.clone(),
+        atomic_ota::ArtifactRecord {
+            id: ArtifactKind::Firmware,
+            size: u64::from(session.flushed),
+            digest: atomic_ota::Digest(digest_bytes),
+            target,
+        },
+    );
+    {
+        let mut storage_guard = storage.lock().await;
+        let mut meta = NvsTransactionMetadata { storage: &mut storage_guard };
+        atomic_ota::TransactionMetadata::commit(&mut meta, Some(&record)).map_err(WriteFinishError::Storage)?;
+    }
     let elapsed = session.started_at.elapsed();
     info!(
         "ota: write OK {} octets ({} secteurs erase+program) en {}ms slot={} -> staged=written",
@@ -819,38 +1023,42 @@ pub async fn write_finish(storage: &SharedStorage) -> Result<WriteFinishOk, Writ
 /// activate"), and works identically whether or not this device rebooted
 /// since `/ota/write` finished.
 pub async fn activate(storage: &SharedStorage, deployment_id: &str) -> Result<&'static str, ActivateError> {
-    let staged = staged(storage).await;
-    if staged.stage != Stage::Written {
-        return Err(ActivateError::NotStaged);
-    }
-    // Activate exactly what was staged: the request names a deployment, it
-    // doesn't get to rename the staged one.
-    if staged.deployment_id != deployment_id {
-        return Err(ActivateError::DeploymentMismatch);
-    }
-    let target = slot_from_name(&staged.slot).ok_or(ActivateError::NotStaged)?;
-
     // Record the intent first: if NVS refuses it, nothing has changed yet
     // and the caller gets an error instead of a reboot into a slot whose
-    // staged record disagrees with `otadata`.
-    save_staged(storage, Stage::Activating, &staged.slot, &staged.digest, &staged.deployment_id, staged.size)
-        .await
-        .map_err(ActivateError::Storage)?;
+    // staged record disagrees with `otadata`. `atomic_ota::activate` checks
+    // `Staged` + identity (against the *transaction's* id, i.e.
+    // `deployment_id` -- never an artifact's own id) and durably commits
+    // the transition to `Activating` before returning.
+    let activating = {
+        let mut storage_guard = storage.lock().await;
+        let mut meta = NvsTransactionMetadata { storage: &mut storage_guard };
+        atomic_ota::activate(&mut meta, &String::from(deployment_id)).map_err(|e| match e {
+            atomic_ota::Error::NotStaged => ActivateError::NotStaged,
+            atomic_ota::Error::IdentityMismatch => ActivateError::DeploymentMismatch,
+            atomic_ota::Error::Backend(storage_err) => ActivateError::Storage(storage_err),
+            // `atomic_ota::Error` is `#[non_exhaustive]`: refuse rather
+            // than guess at an outcome this build doesn't recognize.
+            _ => ActivateError::NotStaged,
+        })?
+    };
+    // `atomic_ota::activate` already refused an empty artifact list.
+    let target = activating.artifacts[0].target;
+    let esp_target = target.to_subtype();
 
-    let ok = otadata_activate(storage, target).await.is_ok();
+    let ok = otadata_activate(storage, esp_target).await.is_ok();
     if !ok {
-        // Best effort: back to `Written` so a retry of `activate` is possible.
-        if save_staged(storage, Stage::Written, &staged.slot, &staged.digest, &staged.deployment_id, staged.size)
-            .await
-            .is_err()
-        {
+        // Best effort: back to `Staged` so a retry of `activate` is possible.
+        let reverted = activating.with_state(TransactionState::Staged);
+        let mut storage_guard = storage.lock().await;
+        let mut meta = NvsTransactionMetadata { storage: &mut storage_guard };
+        if atomic_ota::TransactionMetadata::commit(&mut meta, Some(&reverted)).is_err() {
             warn!("ota: activate failed and the staged record couldn't be restored to `written`");
         }
         return Err(ActivateError::NotStaged);
     }
 
-    info!("ota: activate dep={deployment_id} -> slot={} prêt, reboot imminent", staged.slot);
-    Ok(slot_name(target))
+    info!("ota: activate dep={deployment_id} -> slot={} prêt, reboot imminent", target.to_slot_name());
+    Ok(slot_name(esp_target))
 }
 
 pub enum ActivateError {

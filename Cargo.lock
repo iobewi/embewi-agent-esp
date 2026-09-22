@@ -103,7 +103,7 @@ dependencies = [
 [[package]]
 name = "atomic-ota"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/atomic-ota?rev=0f3e6ee#0f3e6eefd84f960edc36c0bce9836c882a34ac1a"
+source = "git+https://github.com/iobewi/atomic-ota?rev=e1092bb#e1092bb3bfd86da299a83022d76da527641582c5"
 dependencies = [
  "sha2",
 ]
