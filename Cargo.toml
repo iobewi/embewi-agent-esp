@@ -43,6 +43,9 @@ fault-injection-freeze = []
 # by commit (not a version yet: nothing in it is a stable API) so a build
 # here is reproducible without depending on a sibling checkout's layout.
 atomic-ota = { git = "https://github.com/iobewi/atomic-ota", rev = "0388c16" }
+# Transport-agnostic Improv Serial codec/parser extracted from this firmware.
+# Pinned by commit while its API is still pre-stable.
+improv-serial = { git = "https://github.com/iobewi/improv-serial", rev = "60a0629" }
 
 esp-hal = { version = "~1.1.0", features = ["esp32c3", "log-04", "unstable"] }
 
