@@ -995,10 +995,9 @@ dependencies = [
  "httparse",
  "improv-serial",
  "log",
- "mbedtls-rs",
+ "esp-hal-mbedtls",
  "ota-logic",
  "picoserve",
- "rand_core 0.10.1",
  "serde",
  "serde_json",
  "smart-leds",
@@ -1233,6 +1232,21 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "termcolor",
+]
+
+[[package]]
+name = "esp-hal-mbedtls"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/esp-hal-mbedtls?rev=ac4eb56#ac4eb5663139b7bedc6843045ad472ece2e847a3"
+dependencies = [
+ "embassy-net",
+ "embassy-sync 0.8.0",
+ "embassy-time",
+ "esp-hal",
+ "mbedtls-rs",
+ "picoserve",
+ "rand_core 0.10.1",
+ "static_cell",
 ]
 
 [[package]]
