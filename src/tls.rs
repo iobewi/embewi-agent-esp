@@ -32,7 +32,7 @@ use core::convert::Infallible;
 use embassy_net::tcp::TcpSocket;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
-use esp_nvs::Key;
+use esp_storage_manager::Key;
 use log::warn;
 use mbedtls_rs::io::{ErrorType, Read};
 use mbedtls_rs::sys::hook::timer::{MbedtlsTimer, hook_timer};
