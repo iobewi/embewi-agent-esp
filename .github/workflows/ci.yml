@@ -22,11 +22,7 @@ jobs:
         with:
           targets: riscv32imc-unknown-none-elf
           components: rust-src
-      - name: Regenerate boot lock and show delta
-        run: |
-          cargo check --manifest-path boot/Cargo.toml --release
-          git diff -- boot/Cargo.lock
-          git diff --exit-code -- boot/Cargo.lock
+      - run: cargo check --manifest-path boot/Cargo.toml --locked --release
 
   check-esp32c3:
     runs-on: ubuntu-latest
