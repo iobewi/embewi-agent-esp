@@ -103,7 +103,7 @@ dependencies = [
 [[package]]
 name = "atomic-boot"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/atomic-boot?rev=0e05ac2#0e05ac2f9c62f7f986911c572fd6cb61d4e0ea22"
+source = "git+https://github.com/iobewi/atomic-boot?rev=0e05ac2#0e05ac2ba01a53470994e3c60b220b9d4a7bbb5d"
 dependencies = [
  "sha2",
 ]
