@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use embassy_executor::Spawner;
 use embassy_net::{Runner, Stack, StackResources};
 use esp_hal::peripherals::{LPWR, WIFI};
-use esp_nvs::Key;
+use esp_storage_manager::Key;
 use esp_radio::wifi::{
     AuthenticationMethod, Config, Interface, WifiController, scan::ScanConfig, sta::StationConfig,
 };
