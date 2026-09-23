@@ -968,11 +968,10 @@ dependencies = [
  "esp-hal",
  "esp-hal-smartled2",
  "esp-metadata-generated",
- "esp-nvs",
  "esp-println",
  "esp-radio",
  "esp-rtos",
- "esp-storage",
+ "esp-storage-manager",
  "heapless 0.9.3",
  "httparse",
  "improv-serial",
@@ -1423,6 +1422,19 @@ dependencies = [
  "esp-metadata-generated",
  "esp-rom-sys",
  "esp-sync",
+]
+
+[[package]]
+name = "esp-storage-manager"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/esp-storage-manager?rev=c5d572f#c5d572f2e1e095ce75fd5b115a08a261005e904d"
+dependencies = [
+ "embedded-storage",
+ "esp-hal",
+ "esp-nvs",
+ "esp-storage",
+ "log",
+ "static_cell",
 ]
 
 [[package]]
