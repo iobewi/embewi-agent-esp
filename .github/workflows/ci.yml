@@ -12,7 +12,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.88.0"
-      - run: cargo test -p ota-logic -p embewi-boot-core
+      - run: cargo test --target x86_64-unknown-linux-gnu -p ota-logic -p embewi-boot-core
 
   check-esp32c3:
     runs-on: ubuntu-latest
