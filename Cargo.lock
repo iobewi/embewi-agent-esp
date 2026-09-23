@@ -988,7 +988,7 @@ dependencies = [
  "esp-hal-smartled2",
  "esp-metadata-generated",
  "esp-println",
- "esp-radio",
+ "esp-wifi-manager",
  "esp-rtos",
  "esp-storage-manager",
  "heapless 0.9.3",
@@ -1461,6 +1461,18 @@ dependencies = [
  "esp-storage",
  "log",
  "static_cell",
+]
+
+[[package]]
+name = "esp-wifi-manager"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/esp-wifi-manager?rev=c38ffd2#c38ffd290821e6188c5bd1fe6073e99744226a39"
+dependencies = [
+ "embassy-executor",
+ "embassy-net",
+ "esp-hal",
+ "esp-radio",
+ "log",
 ]
 
 [[package]]
