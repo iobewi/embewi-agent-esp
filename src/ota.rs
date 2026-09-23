@@ -71,7 +71,7 @@ use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use embewi_boot_core as boot_core;
 use boot_core::Decoded;
 use esp_bootloader_esp_idf::partitions::{AppPartitionSubType, DataPartitionSubType, PARTITION_TABLE_MAX_LEN, PartitionType};
-use esp_nvs::Key;
+use esp_storage_manager::Key;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 
@@ -191,7 +191,7 @@ fn otadata_active_slot(entries: &[boot_core::Raw; SLOT_COUNT as usize]) -> Optio
 /// `PartitionTable`/`PartitionEntry` can't be returned out of one (they
 /// borrow `buffer`, which lives only for the call).
 fn read_otadata_raw(
-    flash: &mut esp_storage::FlashStorage<'static>,
+    flash: &mut esp_storage_manager::FlashStorage<'static>,
     buffer: &mut [u8; PARTITION_TABLE_MAX_LEN],
 ) -> Option<(u32, [boot_core::Raw; SLOT_COUNT as usize])> {
     let table = esp_bootloader_esp_idf::partitions::read_partition_table(flash, buffer).ok()?;
