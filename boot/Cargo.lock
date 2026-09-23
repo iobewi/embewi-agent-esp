@@ -275,16 +275,9 @@ dependencies = [
 name = "embewi-boot"
 version = "0.0.2"
 dependencies = [
- "embewi-boot-core",
+ "atomic-boot",
  "esp-hal",
  "esp-println",
-]
-
-[[package]]
-name = "embewi-boot-core"
-version = "0.1.0"
-dependencies = [
- "sha2",
 ]
 
 [[package]]
