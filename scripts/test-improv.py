@@ -146,6 +146,7 @@ class ImprovSerial:
         self.ser.rts = False
         self.buf = bytearray()
         self.log_buf = bytearray()
+        self.log_history = bytearray()
         self.frames: list[Frame] = []
 
     def close(self) -> None:
@@ -157,6 +158,9 @@ class ImprovSerial:
         self.ser.flush()
 
     def _emit_log(self, data: bytes) -> None:
+        self.log_history += data
+        if len(self.log_history) > 65536:
+            del self.log_history[:-65536]
         self.log_buf += data
         while b"\n" in self.log_buf:
             line, _, rest = self.log_buf.partition(b"\n")
@@ -226,16 +230,15 @@ class ImprovSerial:
         raise TimeoutError("timed out waiting for Improv response")
 
     def wait_log(self, needle: str, timeout: float = 20.0) -> bool:
+        wanted = needle.encode()
+        if wanted in self.log_history:
+            return True
+
         deadline = time.monotonic() + timeout
-        captured = bytearray()
         while time.monotonic() < deadline:
-            chunk = self.ser.read(512)
-            if chunk:
-                captured += chunk
-                self.buf += chunk
-                self.poll()
-                if needle.encode() in captured:
-                    return True
+            self.poll()
+            if wanted in self.log_history:
+                return True
             time.sleep(0.02)
         return False
 
