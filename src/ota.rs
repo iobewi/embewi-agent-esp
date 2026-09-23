@@ -20,7 +20,7 @@
 //! │                                    deployment_id/size layout this
 //! │                                    module always used)
 //! ├── EWBT / bootloader adapter      (otadata_confirm/reject/activate,
-//! │                                    via embewi_boot_core -- see below)
+//! │                                    via atomic_boot -- see below)
 //! └── watchdog / self-check          (arm_boot_watchdog, selfcheck_task)
 //!
 //! atomic_ota (external crate)
@@ -34,7 +34,7 @@
 //! ```
 //!
 //! `otadata` itself -- which slot is active, what to write to activate,
-//! confirm or reject one -- is `embewi_boot_core` (`crates/embewi-boot-core`),
+//! confirm or reject one -- is `atomic_boot` (`crates/embewi-boot-core`),
 //! the same crate `embewi-boot` (`boot/`) uses to decide what to boot. This
 //! module never re-implements that decision or that format: every write goes
 //! through [`execute_otadata_write`], the same erase/body/commit protocol the
@@ -42,7 +42,7 @@
 //! entries written the ESP-IDF way (as `esp-bootloader-esp-idf`, still used
 //! here only for partition-table parsing and the OTA image writes
 //! themselves, would write) are deliberately not understood by this format --
-//! no legacy mode, matching `embewi-boot`. `embewi_boot_core` is its own
+//! no legacy mode, matching `embewi-boot`. `atomic_boot` is its own
 //! thing, unrelated to `atomic_ota`: two separate state machines (bootloader
 //! slot-trust vs. this adapter's OTA transaction), stitched together by
 //! `atomic_ota::reconcile`'s `BackendOutcome` input.
@@ -70,7 +70,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
-use embewi_boot_core as boot_core;
+use atomic_boot as boot_core;
 use boot_core::Decoded;
 use esp_bootloader_esp_idf::partitions::{AppPartitionSubType, DataPartitionSubType, PARTITION_TABLE_MAX_LEN, PartitionType};
 use esp_storage_manager::Key;
@@ -135,10 +135,10 @@ fn table_buffer() -> Box<[u8; PARTITION_TABLE_MAX_LEN]> {
     Box::new([0u8; PARTITION_TABLE_MAX_LEN])
 }
 
-// --- otadata (embewi_boot_core) ---------------------------------------------
+// --- otadata (atomic_boot) ---------------------------------------------
 //
 // `otadata` semantics (which slot is active, what to write for a transition)
-// live in `embewi_boot_core`, shared with `embewi-boot`. What's here only
+// live in `atomic_boot`, shared with `embewi-boot`. What's here only
 // finds the partition and drives the flash for it -- `esp-bootloader-esp-idf`
 // is used purely as a partition-table *parser* (its own `OtaUpdater`/`Ota`,
 // which read and write `otadata` in the older, non-committed format, are not
@@ -175,7 +175,7 @@ fn app_slot_to_subtype(slot: AppSlot) -> AppPartitionSubType {
 /// entries (the only states a slot that's actually executing can be in --
 /// `New`/`Invalid`/`Aborted` never are), the one with the highest sequence.
 /// Matches `embewi-boot`'s own candidate selection (`plan_boot`, and
-/// `embewi_boot_core::activate`'s own choice of which sector to protect):
+/// `atomic_boot::activate`'s own choice of which sector to protect):
 /// **not** "the first `Valid` entry found" -- a stale `Valid` entry can
 /// legitimately survive in the other sector after a successful `confirm`
 /// (nothing clears it, same as `plan_boot` never does), so two entries can
@@ -279,7 +279,7 @@ fn execute_otadata_write(storage: &mut Storage, write: boot_core::Write) -> Resu
 enum OtadataError {
     /// The partition or its entries couldn't be read.
     Unavailable,
-    /// `embewi_boot_core` found nothing to act on (no `Pending` entry for
+    /// `atomic_boot` found nothing to act on (no `Pending` entry for
     /// confirm/reject, no `Valid` entry to activate against) -- a boot-chain
     /// anomaly, not something to paper over.
     NoTransition,
@@ -649,7 +649,7 @@ pub async fn active_slot(storage: &SharedStorage) -> String {
 /// both entries for these two states (rather than resolving "the current
 /// slot" the way `esp-bootloader-esp-idf`'s `Ota::current_slot()` did, by
 /// comparing raw sequence numbers) is exactly what removes that hazard: it
-/// needs no notion of "current slot" at all, just what `embewi_boot_core`
+/// needs no notion of "current slot" at all, just what `atomic_boot`
 /// itself calls trustworthy.
 async fn current_ota_image(storage: &SharedStorage) -> BackendOutcome {
     let mut storage = storage.lock().await;
