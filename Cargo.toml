@@ -46,6 +46,8 @@ atomic-ota = { git = "https://github.com/iobewi/atomic-ota", rev = "0388c16" }
 # Transport-agnostic Improv Serial codec/parser extracted from this firmware.
 # Pinned by commit while its API is still pre-stable.
 improv-serial = { git = "https://github.com/iobewi/improv-serial", rev = "8e9d2c4" }
+# Single owner for raw ESP flash + cached NVS. Application keys remain local.
+esp-storage-manager = { git = "https://github.com/iobewi/esp-storage-manager", rev = "c5d572f", features = ["esp32c3"] }
 
 esp-hal = { version = "~1.1.0", features = ["esp32c3", "log-04", "unstable"] }
 
@@ -104,8 +106,6 @@ smoltcp = { version = "0.13.0", default-features = false, features = [
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
-esp-storage       = { version = "0.9.0", features = ["esp32c3"] }
-esp-nvs           = { version = "0.5.0", features = ["esp32c3"] }
 embedded-storage  = "0.3.1"
 
 # No chip feature declared here: it rides on whatever chip esp-hal above is
