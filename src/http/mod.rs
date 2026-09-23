@@ -63,7 +63,7 @@ use crate::storage::SharedStorage;
 pub mod api;
 pub mod config;
 
-/// The one task actually spawned by `wifi.rs`: picks [`config::serve`] or
+/// The one admin task spawned by `ApplicationSupervisor`: picks [`config::serve`] or
 /// [`api::serve`] based on whether the device is locked yet, and never
 /// switches mid-boot (a successful provisioning save reboots the device,
 /// so the next boot's `run` re-reads `is_locked()` fresh). Deliberately one
