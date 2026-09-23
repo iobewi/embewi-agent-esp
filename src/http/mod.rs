@@ -225,7 +225,7 @@ pub(super) async fn serve(
 
         match tls_config {
             Some(tls_config) => {
-                let mut session = match mbedtls_rs::Session::new(tls, socket, &tls_config) {
+                let mut session = match esp_hal_mbedtls::mbedtls_rs::Session::new(tls, socket, &tls_config) {
                     Ok(session) => session,
                     Err(e) => {
                         warn!("HTTPS: session setup failed: {e}");
