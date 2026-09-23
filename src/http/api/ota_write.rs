@@ -119,6 +119,16 @@ impl RequestHandlerService for OtaWrite {
                         .write_to(request.body_connection.finalize().await?, response_writer)
                         .await;
                 }
+                Err(ota::BeginError::Conflict) => {
+                    return json_error(StatusCode::CONFLICT, "{\"error\":\"ota_busy\"}")
+                        .write_to(request.body_connection.finalize().await?, response_writer)
+                        .await;
+                }
+                Err(ota::BeginError::Storage(_)) => {
+                    return json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"status\":\"nvs_write_failed\"}")
+                        .write_to(request.body_connection.finalize().await?, response_writer)
+                        .await;
+                }
             },
             ota::Plan::Resync => {
                 let written = ota::write_written().await;

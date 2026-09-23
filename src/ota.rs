@@ -554,18 +554,11 @@ impl atomic_ota::TransactionMetadata for NvsTransactionMetadata<'_> {
     /// throughout -- exactly the case that discipline does not cover (a
     /// crash mid-write could leave the old stage byte next to a mix of old
     /// and new body fields) -- so it is refused here rather than assumed
-    /// safe. The caller (`write_finish`) must `commit(None)` first if it
-    /// really means to replace a different, already-staged transaction.
-    ///
-    /// HTTP-adaptation debt, deliberately not paid down yet (no HTTP
-    /// surface changes this step): this refusal surfaces to
-    /// `write_finish`'s caller as `StorageError::Write`, which
-    /// `WriteFinishError::Storage` maps to the same generic `500
-    /// nvs_write_failed` any other NVS failure gets. It is really a state
-    /// conflict, not a storage failure -- a future step giving it a
-    /// distinct `409`-shaped response (once `ota_write.rs` is touched
-    /// again, e.g. for the `ArtifactStorage` swap) should not need to
-    /// change anything here beyond that mapping.
+    /// safe. `write_begin` supersedes (`commit(None)`) any `Staged`
+    /// transaction before a new write ever starts, and refuses to begin at
+    /// all over `Activating` -- so a `Some -> Some` reaching this guard in
+    /// normal operation means that invariant broke upstream, not a
+    /// legitimate replacement to smooth over. It stays a hard refusal.
     fn commit(&mut self, record: Option<&Self::Record>) -> Result<(), Self::Error> {
         let current = self.load()?;
         if let (Some(a), Some(b)) = (&current, record) {
@@ -721,6 +714,16 @@ pub async fn prepare(storage: &SharedStorage, req: &PrepareRequest) -> PrepareRe
     };
     if req.size as usize > target.size {
         return refuse("size_too_large");
+    }
+    // `Staged` will be superseded by `write_begin`, same as the PUT it
+    // precedes -- accept. `Activating` is refused here too: reporting
+    // `accepted` and then having the following PUT hit `write_begin`'s own
+    // `Conflict` would be a prepare that lied.
+    let mut meta = NvsTransactionMetadata { storage: &mut storage };
+    if let Ok(Some(record)) = atomic_ota::TransactionMetadata::load(&mut meta) {
+        if record.state != TransactionState::Staged {
+            return refuse("busy");
+        }
     }
     PrepareResponse { accepted: true, target_slot: Some(slot_name(target.slot)), reason: None }
 }
@@ -949,6 +952,15 @@ pub enum BeginError {
     Busy,
     /// The declared image doesn't fit the slot.
     TooLarge,
+    /// A transaction is `Activating`: refused rather than superseded, since
+    /// clearing it here could race the reboot into it (contrat: `409
+    /// ota_busy`).
+    Conflict,
+    /// Superseding a `Staged` transaction (`commit(None)`) failed. The
+    /// previous transaction may now be in an unknown state -- refusing to
+    /// start a new write on top of that rather than risking two live at
+    /// once.
+    Storage(StorageError),
 }
 
 /// Starts (or restarts) a write session against whichever slot the
@@ -956,6 +968,19 @@ pub enum BeginError {
 /// rather than cached from `/ota/prepare`: `firmware-c`'s `write_begin`
 /// does the same (see its own comment for why) -- prepare is a compat
 /// pre-check, not a reservation.
+///
+/// Before this ever touches flash, whatever is currently staged is
+/// resolved: a `Staged` transaction (written but never activated) is
+/// explicitly superseded -- `commit(None)` clears NVS *before* the new
+/// image's first byte is programmed, never after -- so a power cut at any
+/// point during this write leaves either the old transaction (untouched,
+/// still valid) or nothing staged (the new one incomplete and never
+/// published), never NVS claiming an artifact that flash no longer holds
+/// intact. An `Activating` transaction is refused outright: it is already
+/// handed to the backend and racing a reboot into it. This is what makes
+/// `NvsTransactionMetadata::commit`'s own `Some -> Some` refusal
+/// unreachable in normal operation from here on -- that guard stays as a
+/// genuine invariant check, not a path this function is expected to hit.
 pub async fn write_begin(storage: &SharedStorage, params: SessionParams) -> Result<(), BeginError> {
     let target = {
         let mut storage = storage.lock().await;
@@ -973,6 +998,21 @@ pub async fn write_begin(storage: &SharedStorage, params: SessionParams) -> Resu
         warn!("ota: write_begin got an unparseable digest past validation, refusing");
         return Err(BeginError::Busy);
     };
+
+    {
+        let mut storage_guard = storage.lock().await;
+        let mut meta = NvsTransactionMetadata { storage: &mut storage_guard };
+        match atomic_ota::TransactionMetadata::load(&mut meta).map_err(BeginError::Storage)? {
+            None => {}
+            Some(record) if record.state == TransactionState::Staged => {
+                atomic_ota::TransactionMetadata::commit(&mut meta, None).map_err(BeginError::Storage)?;
+            }
+            // `Activating`, or a future non-exhaustive variant this build
+            // doesn't recognize: refuse rather than guess at superseding it.
+            Some(_) => return Err(BeginError::Conflict),
+        }
+    }
+
     *WRITE_SESSION.lock().await = Some(WriteSession {
         slot: target.slot,
         partition_offset: target.offset,
