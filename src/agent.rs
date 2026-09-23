@@ -11,7 +11,7 @@ use core::convert::Infallible;
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use esp_nvs::Key;
+use esp_storage_manager::Key;
 use picoserve::extract::FromRequestParts;
 use picoserve::request::RequestParts;
 use serde::{Deserialize, Serialize};
