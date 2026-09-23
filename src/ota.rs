@@ -1,5 +1,35 @@
-//! OTA A/B updates (contrat §3/§4/§6). The Core streams a raw `.bin` into
-//! whichever `ota_0`/`ota_1` slot isn't currently booted.
+//! Embewi's OTA adapter (contrat §3/§4/§6): the Core streams a raw `.bin`
+//! into whichever `ota_0`/`ota_1` slot isn't currently booted.
+//!
+//! This module is **not** the OTA engine -- it is the ESP/Embewi-specific
+//! glue around one. The transaction state machine (staged/activating,
+//! post-reboot reconciliation) and the streaming, digest-verified,
+//! resumable write session both live in
+//! [`atomic_ota`](https://github.com/iobewi/atomic-ota), a generic,
+//! `no_std` crate with no ESP32/`esp-hal`/Embassy/HTTP dependency of its
+//! own -- see that crate's own doc comment for what it owns and why. What
+//! stays here is everything that engine needs a concrete backend for, plus
+//! whatever is genuinely specific to this device and this contract:
+//!
+//! ```text
+//! Embewi OTA adapter (this module)
+//! ├── HTTP / contrat v1alpha1        (ota_write.rs; prepare/activate below)
+//! ├── ESP flash backend              (EspArtifactStorage, same
+//! │                                    sector-buffered NorFlash writes
+//! │                                    this module always used)
+//! ├── NVS transaction metadata       (NvsTransactionMetadata, same
+//! │                                    five-key staged/digest/slot/
+//! │                                    deployment_id/size layout this
+//! │                                    module always used)
+//! ├── EWBT / bootloader adapter      (otadata_confirm/reject/activate,
+//! │                                    via embewi_boot_core -- see below)
+//! └── watchdog / self-check          (arm_boot_watchdog, selfcheck_task)
+//!
+//! atomic_ota (external crate)
+//! ├── transaction state machine      (TransactionRecord/TransactionState)
+//! ├── post-reboot reconciliation     (reconcile, driven from on_boot)
+//! └── streaming WriteSession         (digest-verified, resumable)
+//! ```
 //!
 //! `otadata` itself -- which slot is active, what to write to activate,
 //! confirm or reject one -- is `embewi_boot_core` (`crates/embewi-boot-core`),
@@ -10,13 +40,16 @@
 //! entries written the ESP-IDF way (as `esp-bootloader-esp-idf`, still used
 //! here only for partition-table parsing and the OTA image writes
 //! themselves, would write) are deliberately not understood by this format --
-//! no legacy mode, matching `embewi-boot`.
+//! no legacy mode, matching `embewi-boot`. `embewi_boot_core` is its own
+//! thing, unrelated to `atomic_ota`: two separate state machines (bootloader
+//! slot-trust vs. this adapter's OTA transaction), stitched together by
+//! `atomic_ota::reconcile`'s `BackendOutcome` input.
 //!
 //! Mirrors `firmware-c`'s `embewi_ota.c`/`embewi_selfcheck.c` state machine
-//! (same `stage`/`slot`/`digest`/`deployment_id`/`size` staged-NVS layout,
-//! same `embewi_ota_plan`/`embewi_ota_is_final` pure resume logic for
-//! `Content-Range`), reimplemented against embassy tasks instead of
-//! ESP-IDF's C one and FreeRTOS tasks.
+//! (same `stage`/`slot`/`digest`/`deployment_id`/`size` staged-NVS layout),
+//! reimplemented against embassy tasks instead of ESP-IDF's C one and
+//! FreeRTOS tasks -- the resume-decision and reconciliation *logic* itself
+//! now lives in `atomic_ota`, not reimplemented here.
 //!
 //! Staged state is persisted to NVS (not just kept in RAM) because, unlike
 //! a Core restart, the reconcile in contrat §6 also has to survive *this*
