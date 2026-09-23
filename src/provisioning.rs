@@ -7,7 +7,7 @@ use esp_hal::Async;
 use esp_hal::usb_serial_jtag::{UsbSerialJtagRx, UsbSerialJtagTx};
 use log::{info, warn};
 
-use crate::improv::{self, Command, ImprovError, ParsedCommand, Parser, State};
+use improv_serial::{self as improv, Command, ImprovError, ParsedCommand, Parser, State};
 use crate::status::{self, Status};
 use crate::storage::SharedStorage;
 use crate::wifi::WifiManager;
