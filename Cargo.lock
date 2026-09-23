@@ -975,6 +975,7 @@ dependencies = [
  "esp-storage",
  "heapless 0.9.3",
  "httparse",
+ "improv-serial",
  "log",
  "mbedtls-rs",
  "ota-logic",
@@ -1833,6 +1834,11 @@ dependencies = [
  "walkdir",
  "winapi-util",
 ]
+
+[[package]]
+name = "improv-serial"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/improv-serial?rev=8e9d2c4#8e9d2c437d07cc22fe848ec0493ea3a3c5ecaea3"
 
 [[package]]
 name = "indexmap"
