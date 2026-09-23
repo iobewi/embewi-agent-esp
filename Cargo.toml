@@ -52,7 +52,7 @@ improv-serial = { git = "https://github.com/iobewi/improv-serial", rev = "8e9d2c
 esp-storage-manager = { git = "https://github.com/iobewi/esp-storage-manager", rev = "c5d572f", features = ["esp32c3"] }
 # Reusable Wi-Fi station transport. Credential persistence and application
 # service supervision remain local to this firmware.
-esp-wifi-manager = { git = "https://github.com/iobewi/esp-wifi-manager", rev = "c38ffd2", features = ["esp32c3"] }
+esp-wifi-manager = { git = "https://github.com/iobewi/esp-wifi-manager", rev = "b322df0", features = ["esp32c3"] }
 
 esp-hal = { version = "~1.1.0", features = ["esp32c3", "log-04", "unstable"] }
 
