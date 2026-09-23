@@ -9,6 +9,7 @@ use log::{info, warn};
 
 use improv_serial::{self as improv, Command, ImprovError, ParsedCommand, Parser, State};
 use crate::status::{self, Status};
+use crate::supervisor::ApplicationSupervisor;
 use crate::storage::SharedStorage;
 use crate::wifi::WifiManager;
 
@@ -22,7 +23,13 @@ type Rx = UsbSerialJtagRx<'static, Async>;
 type Tx = UsbSerialJtagTx<'static, Async>;
 
 /// Serves Improv Serial forever.
-pub async fn run(mut rx: Rx, mut tx: Tx, mut wifi: WifiManager, storage: &'static SharedStorage) -> ! {
+pub async fn run(
+    mut rx: Rx,
+    mut tx: Tx,
+    mut wifi: WifiManager,
+    mut supervisor: ApplicationSupervisor,
+    storage: &'static SharedStorage,
+) -> ! {
     let mut parser = Parser::new();
     let mut state = if wifi.is_online() {
         State::Provisioned
@@ -44,7 +51,7 @@ pub async fn run(mut rx: Rx, mut tx: Tx, mut wifi: WifiManager, storage: &'stati
         };
         for &byte in &buffer[..read] {
             if let Some(command) = parser.feed(byte) {
-                handle(command, &mut tx, &mut state, &mut wifi, storage).await;
+                handle(command, &mut tx, &mut state, &mut wifi, &mut supervisor, storage).await;
             }
         }
     }
@@ -80,6 +87,7 @@ async fn handle(
     tx: &mut Tx,
     state: &mut State,
     wifi: &mut WifiManager,
+    supervisor: &mut ApplicationSupervisor,
     storage: &'static SharedStorage,
 ) {
     match command {
@@ -164,6 +172,11 @@ async fn handle(
             send(tx, &improv::state_frame(*state)).await;
 
             if wifi.provision(storage, &settings.ssid, settings.password).await {
+                if let Some(stack) = wifi.ip_stack() {
+                    supervisor.on_ip_ready(stack, storage);
+                } else {
+                    warn!("Wi-Fi reported connected without an IP stack");
+                }
                 *state = State::Provisioned;
                 status::set(Status::Online);
                 send(tx, &improv::state_frame(*state)).await;
