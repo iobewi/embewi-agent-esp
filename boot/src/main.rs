@@ -33,7 +33,7 @@
 #![no_std]
 #![no_main]
 
-use embewi_boot_core as boot_core;
+use atomic_boot as boot_core;
 
 use boot_core::image::{self, MemoryMap, Verify};
 use boot_core::{BLANK, Boot, Decoded, ENTRY_SIZE, Halt, Op, Raw, Write, decode, plan_boot};
