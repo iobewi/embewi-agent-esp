@@ -10,6 +10,11 @@
 #   scripts/test-api.sh <url> <token> ota-activate   # active le slot déjà stagé par `safe` -- coupe le device en l'air, voir l'avertissement dans la fonction
 #   scripts/test-api.sh <url> <token> push-cert <cert.pem> <key.pem>  # POST /tls/cert -- bascule le serveur admin en HTTPS:443
 #   scripts/test-api.sh <url> <token> push-ca <ca.pem>                 # POST /tls/ca -- CA à vérifier pour heartbeat/logs sortants
+#   scripts/test-api.sh <url> <token> push-firmware <image.bin> [deployment-id]
+#       # prepare + écriture chunkée (16 Ko) d'une vraie image -- piloté par
+#       # written=N que le device rapporte à chaque réponse (partial ou 416),
+#       # jamais par un compteur local : un accroc réseau se resynchronise
+#       # tout seul au lieu de désynchroniser silencieusement le transfert.
 #
 # `safe` ne laisse aucun effet de bord dangereux : il stage un faux binaire
 # de test sur le slot inactif (visible dans `GET /info`'s `staged` jusqu'au
@@ -125,9 +130,16 @@ run_safe() {
         -H "X-Embewi-Deployment-Id: test-api-sh-bad" -H "X-Embewi-Digest: sha256:0000000000000000000000000000000000000000000000000000000000000000" \
         --data-binary @"$tmp" "$URL/v1alpha1/ota/write")
     check "digest_mismatch" "$(jget "$bad" status)" "digest_mismatch"
+    # `write_begin` (contrat post-2026-09-23 : supersession avant écriture)
+    # a déjà superseded/effacé test-api-sh dès le premier octet de ce PUT --
+    # avant même que le digest de B ne puisse être vérifié, qui ne l'est
+    # qu'à `write_finish`. Le slot physique peut donc déjà être partiellement
+    # écrasé : NVS ne doit plus jamais prétendre que test-api-sh y est encore
+    # intact. Fail-safe voulu : après un digest invalide, rien n'est
+    # activable, jamais un candidat que le flash ne reflète plus fidèlement.
     local after; after=$(auth_get /v1alpha1/info)
-    check "idempotence : staged garde l'écriture précédente, pas celle en échec" \
-        "$(jget "$after" staged.deployment_id)" "test-api-sh"
+    check "fail-safe : plus rien d'activable après un digest invalide (A a été superseded par le begin de B)" \
+        "$(jget "$after" staged.state)" "none"
 
     echo "== PUT /v1alpha1/ota/write (reprise Content-Range) =="
     # `written` est désormais DURABLE (ota.rs: écriture sector-aware, un seul
@@ -286,6 +298,79 @@ print(json.dumps({'ca_pem': open(sys.argv[1]).read()}))
     echo "CA enregistré : heartbeat/logs sortants (contrat §5) vérifieront désormais les certs contre ce CA."
 }
 
+run_push_firmware() {
+    local file="${1:?Usage: $0 <url> <token> push-firmware <image.bin> [deployment-id]}"
+    local dep="${2:-push-$(date +%s)}"
+    local total; total=$(stat -c%s "$file")
+    local digest; digest="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+    echo "deployment_id=$dep total=$total digest=$digest"
+
+    local info; info=$(auth_get /v1alpha1/info)
+    local chip; chip=$(jget "$info" chip)
+    echo "== POST /v1alpha1/ota/prepare =="
+    local prep; prep=$(auth_post /v1alpha1/ota/prepare \
+        "{\"deployment_id\":\"$dep\",\"digest\":\"$digest\",\"size\":$total,\"chip\":\"$chip\",\"partition_layout\":\"embewi-ab-v1\"}")
+    echo "  target_slot=$(jget "$prep" target_slot)"
+    [[ "$(jget "$prep" accepted)" == "True" ]] || { echo "prepare refusé: $prep"; return 1; }
+
+    # Piloté par les réponses du device, jamais par un compteur local : le
+    # `cursor` (= prochain Content-Range à envoyer) ne bouge QUE sur ce que
+    # le device rapporte comme `written` (durable), que ce soit via un
+    # `partial` normal ou via le `written` qu'un `416 range_mismatch`
+    # renvoie après un accroc réseau -- exactement le protocole de reprise
+    # que `atomic_ota::resume_plan`/`write_plan` expose déjà côté firmware
+    # (séparation `received` vs `durable`). Ne jamais supposer que ce que le
+    # client vient d'envoyer est ce que le device a effectivement rendu
+    # durable.
+    local chunk=16384
+    local cursor=0
+    local stall=0
+    local body; body=$(mktemp)
+    while [[ "$cursor" -lt "$total" ]]; do
+        local end=$((cursor + chunk))
+        [[ "$end" -gt "$total" ]] && end=$total
+        local len=$((end - cursor))
+        local code
+        code=$(curl -sk -m 25 -o "$body" -w "%{http_code}" -X PUT \
+            -H "Authorization: Bearer $TOKEN" -H "X-Embewi-Deployment-Id: $dep" -H "X-Embewi-Digest: $digest" \
+            -H "Content-Range: bytes $cursor-$((end - 1))/$total" \
+            --data-binary @<(dd if="$file" bs=1 skip="$cursor" count="$len" 2>/dev/null) \
+            "$URL/v1alpha1/ota/write" 2>/dev/null || echo "000")
+        local resp; resp=$(cat "$body" 2>/dev/null)
+        local status; status=$(jget "$resp" status)
+        local reported; reported=$(jget "$resp" written)
+
+        if [[ "$status" == "written" ]]; then
+            check "digest final == attendu" "$(jget "$resp" digest)" "$digest"
+            echo "OK: $total octets écrits, deployment_id=$dep"
+            rm -f "$body"
+            return 0
+        elif [[ "$status" == "digest_mismatch" ]]; then
+            echo "digest_mismatch -- le contenu envoyé ne correspond pas au digest annoncé, abandon."
+            rm -f "$body"
+            return 1
+        elif [[ "$status" == "partial" && -n "$reported" ]]; then
+            # Signal utile seulement si `written` diverge de ce qu'un
+            # compteur local naïf aurait supposé (`end`) -- l'avancement
+            # normal (`written == end`) n'a rien d'un resync et ne doit pas
+            # être bruité comme tel.
+            [[ "$reported" != "$end" ]] && echo "  (désync détectée : device à written=$reported, pas $end -- resync)"
+            cursor=$reported
+            stall=0
+        elif [[ "$code" == "416" && -n "$reported" ]]; then
+            echo "  416 range_mismatch -- resync sur written=$reported (cursor était $cursor)"
+            cursor=$reported
+            stall=0
+        else
+            stall=$((stall + 1))
+            echo "  anomalie (code=$code status=$status resp=$resp) à cursor=$cursor, retry $stall/8"
+            [[ "$stall" -ge 8 ]] && { echo "ABANDON après $stall échecs à cursor=$cursor"; rm -f "$body"; return 1; }
+            sleep 2
+        fi
+    done
+    rm -f "$body"
+}
+
 case "$MODE" in
     safe) run_safe ;;
     reboot) run_reboot ;;
@@ -293,5 +378,6 @@ case "$MODE" in
     ota-activate) run_ota_activate ;;
     push-cert) run_push_cert "${4:-}" "${5:-}" ;;
     push-ca) run_push_ca "${4:-}" ;;
-    *) echo "Mode inconnu: $MODE (safe|reboot|rotate-token|ota-activate|push-cert|push-ca)" >&2; exit 1 ;;
+    push-firmware) run_push_firmware "${4:-}" "${5:-}" ;;
+    *) echo "Mode inconnu: $MODE (safe|reboot|rotate-token|ota-activate|push-cert|push-ca|push-firmware)" >&2; exit 1 ;;
 esac
