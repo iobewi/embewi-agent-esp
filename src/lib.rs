@@ -10,6 +10,7 @@ pub mod provisioning;
 pub mod stack_usage;
 pub mod status;
 pub mod storage;
+pub mod supervisor;
 pub mod time;
 pub mod tls;
 pub mod wifi;
