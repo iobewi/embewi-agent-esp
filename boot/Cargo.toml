@@ -17,7 +17,7 @@ esp-hal     = { version = "~1.1.0", features = ["esp32c3"] }
 esp-println = { version = "0.17.0", features = ["esp32c3"] }
 # Every decision (which slot, what to write, is the image bootable) lives in
 # atomic-boot, tested on the host; this crate only performs it on real flash.
-atomic-boot = { git = "https://github.com/iobewi/atomic-boot", rev = "594ffbf" }
+atomic-boot = { git = "https://github.com/iobewi/atomic-boot", rev = "0e05ac2" }
 
 [profile.dev]
 opt-level = "s"
