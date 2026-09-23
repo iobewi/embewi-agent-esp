@@ -158,7 +158,7 @@ embassy-futures = "0.1"
 ota-logic = { path = "crates/ota-logic" }
 # Power-cut-safe A/B boot-state machine and image validator shared with
 # embewi-boot (boot/). Pinned while the external API remains pre-stable.
-atomic-boot = { git = "https://github.com/iobewi/atomic-boot", rev = "594ffbf" }
+atomic-boot = { git = "https://github.com/iobewi/atomic-boot", rev = "0e05ac2" }
 # MbedTLS's SSL record buffers default to 16 KiB *per direction* (32 KiB
 # total) -- fine on a desktop, but most of this device's ~100 KiB heap on
 # its own, and the reason a TLS 1.3 handshake (more state live at once than
