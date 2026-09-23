@@ -137,8 +137,14 @@ async fn main(spawner: Spawner) -> ! {
     let tls = embewi_agent_esp::tls::init();
 
     let (rx, tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
-    let mut wifi = WifiManager::new(peripherals.WIFI, peripherals.LPWR, tls, spawner);
-    wifi.reconnect_saved(storage).await;
+    let mut supervisor =
+        embewi_agent_esp::supervisor::ApplicationSupervisor::new(spawner, peripherals.LPWR, tls);
+    let mut wifi = WifiManager::new(peripherals.WIFI, spawner);
+    if wifi.reconnect_saved(storage).await {
+        if let Some(stack) = wifi.ip_stack() {
+            supervisor.on_ip_ready(stack, storage);
+        }
+    }
 
-    provisioning::run(rx, tx, wifi, storage).await
+    provisioning::run(rx, tx, wifi, supervisor, storage).await
 }
