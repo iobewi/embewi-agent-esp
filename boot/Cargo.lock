@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "atomic-boot"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/atomic-boot?rev=594ffbf#594ffbff9c62f7f986911c572fd6cb61d4e0ea22"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "bitfield"
 version = "0.19.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
