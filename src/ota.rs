@@ -41,7 +41,6 @@ use esp_bootloader_esp_idf::partitions::{AppPartitionSubType, DataPartitionSubTy
 use esp_nvs::Key;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::agent;
 use atomic_ota::{Action, BackendOutcome, TransactionState};
@@ -693,54 +692,148 @@ pub async fn prepare(storage: &SharedStorage, req: &PrepareRequest) -> PrepareRe
     PrepareResponse { accepted: true, target_slot: Some(slot_name(target.slot)), reason: None }
 }
 
-/// Flash sector size, and the unit [`WriteSession`] buffers before ever
-/// touching flash -- see its own doc comment.
+/// Flash sector size, and the unit [`EspArtifactStorage`] flushes to flash
+/// -- see its own doc comment. The generic engine
+/// (`atomic_ota::WriteSession`, held by [`WriteSession::engine`]) has no
+/// notion of this at all: it only ever offers whatever undurable tail it's
+/// holding and trusts the durable watermark this backend reports.
 const OTA_SECTOR: u32 = 0x1000;
+
+/// Nothing to report beyond pass/fail: the only thing that can go wrong
+/// here is the underlying `NorFlash` erase/program call, which
+/// [`EspArtifactStorage::flush_sector`]'s own `Option` already reduces to
+/// that -- matches what `flush_sector`'s pre-`atomic_ota` `bool` return
+/// carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FlashWriteFailed;
+
+/// Implements `atomic_ota::ArtifactStorage` over exactly the same
+/// sector-buffered `NorFlash` mechanism the pre-`atomic_ota` `WriteSession`
+/// always used: same sector size, same padding, same erase-then-program
+/// pair per sector, same target partition. Nothing about *how* flash is
+/// written changes here -- only *who* decides when to call it (the engine,
+/// via the `pending` tail it offers on every call, instead of this crate's
+/// own byte-accumulation loop).
+///
+/// Constructed fresh for each `append`/`finish` call, borrowing whichever
+/// `Storage` lock is currently held: it cannot be stored inside the
+/// persistent [`WriteSession`] the way `scratch` is, since `Storage`'s own
+/// lock is async and reacquired per call -- see
+/// `atomic_ota::WriteSession`'s own doc comment on why `append`/`finish`
+/// take a backend by `&mut` instead of owning one.
+struct EspArtifactStorage<'a> {
+    storage: &'a mut Storage,
+    partition_offset: u32,
+    /// The session's own scratch buffer ([`WriteSession::scratch`]),
+    /// borrowed for this call only -- not owned here, so no extra
+    /// allocation happens per chunk.
+    scratch: &'a mut [u8; OTA_SECTOR as usize],
+}
+
+impl EspArtifactStorage<'_> {
+    /// Erases and programs the sector at absolute flash offset `at` with
+    /// `self.scratch[..len]`, padded to the flash word size -- identical to
+    /// the pre-`atomic_ota` free function of the same name: one erase, one
+    /// program, the pad explicitly zeroed and never treated as image bytes.
+    ///
+    /// `NorFlash::write` (unlike the auto-RMW `embedded_storage::Storage`
+    /// trait this replaced, back before `atomic_ota` existed) requires both
+    /// the offset and the length to be a multiple of the flash word size (4
+    /// bytes here) -- always true for a full sector (`OTA_SECTOR` is 4096),
+    /// but the final, partial sector at `finish` rarely lands on a word
+    /// boundary.
+    ///
+    /// Invariant this keeps: padding is a hardware-write-granularity
+    /// detail, never part of the OTA payload -- the pad is explicitly
+    /// zeroed (never leftover, indeterminate buffer content) and never
+    /// counted by `atomic_ota::WriteSession`'s own `received`/`durable`/
+    /// digest, which only ever see the logical `len` bytes this function
+    /// was actually asked to write.
+    fn flush_sector(&mut self, at: u32, len: usize) -> Option<()> {
+        let padded = len.div_ceil(4) * 4;
+        debug_assert!(padded <= OTA_SECTOR as usize, "padding must never cross the sector it belongs to");
+        self.scratch[len..padded].fill(0);
+        self.storage
+            .with_raw_flash(|flash| -> Option<()> {
+                NorFlash::erase(flash, at, at + OTA_SECTOR).ok()?;
+                NorFlash::write(flash, at, &self.scratch[..padded]).ok()
+            })
+            .flatten()
+    }
+}
+
+impl atomic_ota::ArtifactStorage for EspArtifactStorage<'_> {
+    type Error = FlashWriteFailed;
+
+    /// Flushes every *whole* sector `pending` contains, one erase+program
+    /// per sector -- never more than once per sector, which is the entire
+    /// reason a session buffers before ever touching flash (esp-storage's
+    /// convenience `embedded_storage::Storage::write` does a
+    /// read-modify-erase-rewrite of the whole sector on every call that
+    /// isn't itself sector-aligned; with a 1 KiB HTTP read buffer, that
+    /// meant up to four full erase+reprogram cycles of the same sector
+    /// instead of one). Leaves any short-of-a-sector remainder in `pending`
+    /// untouched -- `durable_offset` is therefore always sector-aligned
+    /// here (only [`Self::finish`] ever sees or writes a partial sector).
+    fn write(&mut self, durable_offset: u64, pending: &[u8]) -> Result<u64, Self::Error> {
+        let mut consumed = 0u32;
+        while pending.len() - consumed as usize >= OTA_SECTOR as usize {
+            let chunk = &pending[consumed as usize..consumed as usize + OTA_SECTOR as usize];
+            self.scratch.copy_from_slice(chunk);
+            let sector_index = (durable_offset + u64::from(consumed)) / u64::from(OTA_SECTOR);
+            let at = self.partition_offset + sector_index as u32 * OTA_SECTOR;
+            self.flush_sector(at, OTA_SECTOR as usize).ok_or(FlashWriteFailed)?;
+            consumed += OTA_SECTOR;
+        }
+        Ok(durable_offset + u64::from(consumed))
+    }
+
+    /// Flushes whatever short-of-a-sector tail is left (see
+    /// [`Self::write`]'s own doc comment on why it's never more than that).
+    fn finish(&mut self, durable_offset: u64, pending: &[u8]) -> Result<u64, Self::Error> {
+        if pending.is_empty() {
+            return Ok(durable_offset);
+        }
+        debug_assert!(pending.len() < OTA_SECTOR as usize, "finish must only ever see a short-of-a-sector tail");
+        self.scratch[..pending.len()].copy_from_slice(pending);
+        let sector_index = durable_offset / u64::from(OTA_SECTOR);
+        let at = self.partition_offset + sector_index as u32 * OTA_SECTOR;
+        self.flush_sector(at, pending.len()).ok_or(FlashWriteFailed)?;
+        Ok(durable_offset + pending.len() as u64)
+    }
+}
 
 /// In-RAM write session (see the module doc comment for why this doesn't
 /// need to survive a reboot). One at a time, matching `firmware-c`'s own
 /// single static session -- this device only ever serves one HTTP
 /// connection at a time anyway.
-///
-/// Buffers one flash sector in RAM and only ever erases/programs it once
-/// full (or once, partially, at [`write_finish`]) -- not once per incoming
-/// HTTP chunk. `esp-storage`'s `embedded_storage::Storage::write` (the
-/// convenience trait the previous version of this session used) does a
-/// read-modify-erase-rewrite of the *whole* sector on every call that isn't
-/// itself sector-aligned; with a 1 KiB HTTP read buffer, writing one 4 KiB
-/// sector meant up to four full erase+reprogram cycles of that same sector
-/// instead of one.
 struct WriteSession {
     slot: AppPartitionSubType,
     /// Absolute flash offset of the target partition, resolved once in
     /// [`write_begin`] ([`WriteTarget`]) and cached for the whole session --
-    /// no partition-table re-parse per chunk. Nothing beyond `session.flushed
-    /// <= params.total <= target.size` (checked once, at `write_begin`) is
-    /// needed to stay inside the partition: no need to also carry its size.
+    /// no partition-table re-parse per chunk.
     partition_offset: u32,
-    /// One sector, filled from `sector_filled` on each chunk until full.
-    /// Heap-allocated (`Box`): 4 KiB is too large to risk on an embassy
-    /// task's stack (`#![deny(clippy::large_stack_frames)]`), and this way
-    /// nothing changes if `OTA_SECTOR` ever grows.
-    sector: Box<[u8; OTA_SECTOR as usize]>,
-    /// Bytes of `sector` filled so far (buffered, not yet on flash).
-    sector_filled: u32,
-    /// Bytes *durably* written to flash -- what `write_written`/resume/the
-    /// `partial` response report, distinct from bytes merely accepted into
-    /// the session. `flushed + sector_filled` is every byte accepted so far.
-    flushed: u32,
-    /// Hashed exactly up to `flushed`, never ahead of it: hashing happens
-    /// at flush time, not at receive time, specifically so a resume after a
-    /// dropped connection -- which re-sends from `flushed`, the only bytes
-    /// actually on flash -- never needs to un-hash bytes the (streaming,
-    /// one-way) hasher already consumed but that never reached flash.
-    hasher: Sha256,
+    /// One sector, filled from the engine's own undurable tail as
+    /// [`EspArtifactStorage`] flushes it. Heap-allocated (`Box`): 4 KiB is
+    /// too large to risk on an embassy task's stack
+    /// (`#![deny(clippy::large_stack_frames)]`), and this way nothing
+    /// changes if `OTA_SECTOR` ever grows. Allocated once here and reused
+    /// for the whole session (borrowed by a fresh `EspArtifactStorage` on
+    /// every call) -- never reallocated per chunk.
+    scratch: Box<[u8; OTA_SECTOR as usize]>,
+    /// The generic engine: received/durable byte counts, the undurable
+    /// tail, and the streaming digest -- see `atomic_ota::artifact`'s own
+    /// doc comment. Everything sector-shaped stays out here, in
+    /// [`EspArtifactStorage`]; the engine itself has no notion of it.
+    engine: atomic_ota::WriteSession,
     /// When `write_begin` opened this session -- purely diagnostic, logged
     /// by `write_finish` (contrat §4's own `written`/digest reply carries
     /// no timing field).
     started_at: Instant,
     /// How many sectors have been erased+programmed so far -- purely
-    /// diagnostic, alongside `started_at`.
+    /// diagnostic, alongside `started_at`. Derived from how far
+    /// `engine.durable()` moves on each call (always a whole number of
+    /// sectors, except `write_finish`'s own final partial one).
     sectors_flushed: u32,
     /// Frozen at the first PUT: what the image is (`deployment_id`,
     /// `digest`) and how big (`total`). Every later PUT of the session must
@@ -765,24 +858,23 @@ pub async fn write_in_progress() -> bool {
     WRITE_SESSION.lock().await.is_some()
 }
 
-/// Bytes durably on flash -- see [`WriteSession::flushed`]'s doc comment.
-/// This is what the JSON `written` field reports to the client: the point
-/// it's safe to resume *after a dropped connection* from.
+/// Bytes durably on flash -- see `atomic_ota::WriteSession::durable`'s own
+/// doc comment. This is what the JSON `written` field reports to the
+/// client: the point it's safe to resume *after a dropped connection* from.
 pub async fn write_written() -> u32 {
-    WRITE_SESSION.lock().await.as_ref().map_or(0, |s| s.flushed)
+    WRITE_SESSION.lock().await.as_ref().map_or(0, |s| s.engine.durable() as u32)
 }
 
-/// Bytes accepted into the session so far -- `flushed` plus whatever's
-/// buffered in the current, not-yet-full sector. Distinct from
-/// `write_written` and used only for `write_plan`'s Continue-vs-Resync
-/// decision: consecutive chunks of one *uninterrupted* PUT sequence declare
-/// their `start` as "how much I've sent so far", which -- unless the
-/// connection actually dropped -- is this, not `write_written` (which lags
-/// behind it by up to one sector). Conflating the two would spuriously
-/// 416 a live transfer whose chunk size doesn't happen to be a multiple of
-/// the flash sector size.
+/// Bytes accepted into the session so far. Distinct from `write_written`
+/// and used only for `write_plan`'s Continue-vs-Resync decision --
+/// consecutive chunks of one *uninterrupted* PUT sequence declare their
+/// `start` as "how much I've sent so far", which -- unless the connection
+/// actually dropped -- is this, not `write_written` (which lags behind it
+/// by up to one sector). Conflating the two would spuriously 416 a live
+/// transfer whose chunk size doesn't happen to be a multiple of the flash
+/// sector size.
 pub async fn write_received() -> u32 {
-    WRITE_SESSION.lock().await.as_ref().map_or(0, |s| s.flushed + s.sector_filled)
+    WRITE_SESSION.lock().await.as_ref().map_or(0, |s| s.engine.received() as u32)
 }
 
 /// `Content-Range` header parsing/shape-checking is transport-specific and
@@ -839,13 +931,20 @@ pub async fn write_begin(storage: &SharedStorage, params: SessionParams) -> Resu
     if params.total as usize > target.size {
         return Err(BeginError::TooLarge);
     }
+    // `params.digest` is already validated (`is_valid_digest`, in
+    // `ota_write.rs`, before `write_begin` is ever reached): parsing it
+    // here cannot actually fail. Handled as a real error rather than a
+    // panic regardless -- an internal invariant slipping should refuse the
+    // write, not crash the whole path.
+    let Some(expected_digest) = parse_digest(&params.digest) else {
+        warn!("ota: write_begin got an unparseable digest past validation, refusing");
+        return Err(BeginError::Busy);
+    };
     *WRITE_SESSION.lock().await = Some(WriteSession {
         slot: target.slot,
         partition_offset: target.offset,
-        sector: Box::new([0u8; OTA_SECTOR as usize]),
-        sector_filled: 0,
-        flushed: 0,
-        hasher: Sha256::new(),
+        scratch: Box::new([0u8; OTA_SECTOR as usize]),
+        engine: atomic_ota::WriteSession::begin(u64::from(params.total), expected_digest),
         started_at: Instant::now(),
         sectors_flushed: 0,
         params,
@@ -853,87 +952,34 @@ pub async fn write_begin(storage: &SharedStorage, params: SessionParams) -> Resu
     Ok(())
 }
 
-/// Erases and programs the sector at `sector_index` (0-based within the
-/// partition) with `session.sector[..len]`, `storage` already locked. One
-/// erase, one program: the whole point of buffering a sector before ever
-/// calling this.
-/// Flashes `session.sector[..len]` (`len` is the number of *real* image
-/// bytes in it) at `sector_index`, padded to the flash word size.
-///
-/// `NorFlash::write` (unlike the auto-RMW `embedded_storage::Storage` trait
-/// this replaces) requires both the offset and the length to be a multiple
-/// of the flash word size (4 bytes here) -- always true for a full sector
-/// (`OTA_SECTOR` is 4096), but the final, partial sector at `write_finish`
-/// rarely lands on a word boundary.
-///
-/// Invariant this keeps: padding is a hardware-write-granularity detail,
-/// never part of the OTA payload. Concretely, for a logical image of `N`
-/// bytes (`session.params.total`):
-///
-/// ```text
-/// flash program length = align_up(N, 4)   (this function, at most +3 bytes)
-/// digest                covers exactly [0, N)      -- hasher.update gets `len`, never `padded`
-/// write_received/write_written are bounded by N    -- `flushed`/`received` advance by `len`, never `padded`
-/// align_up(N, 4) <= partition_size                 -- checked below; total <= target.size at write_begin,
-///                                                      and partition sizes are themselves sector-aligned
-/// ```
-///
-/// So no *logical* OTA byte ever crosses `total`; only the NOR adapter may
-/// program the minimal hardware-required alignment padding, and that
-/// padding is explicitly zeroed (never leftover, indeterminate buffer
-/// content) before it's written.
-fn flush_sector(storage: &mut Storage, session: &mut WriteSession, sector_index: u32, len: u32) -> bool {
-    let base = session.partition_offset + sector_index * OTA_SECTOR;
-    let padded = (len as usize).div_ceil(4) * 4;
-    debug_assert!(padded <= OTA_SECTOR as usize, "padding must never cross the sector it belongs to");
-    session.sector[len as usize..padded].fill(0);
-    storage
-        .with_raw_flash(|flash| -> Option<()> {
-            NorFlash::erase(flash, base, base + OTA_SECTOR).ok()?;
-            NorFlash::write(flash, base, &session.sector[..padded]).ok()
-        })
-        .flatten()
-        .is_some()
-}
-
 /// Appends `data` to the session, flushing whole sectors to flash as they
-/// fill (see [`WriteSession`]'s doc comment). Handles `data` of any length,
-/// not just the HTTP handler's own read-buffer size -- it may span several
-/// sectors in one call.
-pub async fn write_chunk(storage: &SharedStorage, mut data: &[u8]) -> bool {
+/// fill (see [`WriteSession`]'s and [`EspArtifactStorage`]'s doc comments).
+/// Handles `data` of any length, not just the HTTP handler's own
+/// read-buffer size -- it may span several sectors in one call.
+pub async fn write_chunk(storage: &SharedStorage, data: &[u8]) -> bool {
     let mut session_guard = WRITE_SESSION.lock().await;
     let Some(session) = session_guard.as_mut() else {
         return false;
     };
 
-    // Never accept more than the size the session declared.
-    let received = session.flushed + session.sector_filled;
-    if u32::try_from(data.len()).ok().and_then(|len| received.checked_add(len)).is_none_or(|end| end > session.params.total)
+    // Never touch flash for a chunk the session would refuse anyway --
+    // `engine.append` checks this too (`Error::TooLarge`), but checking it
+    // here first avoids locking storage at all for a chunk that's already
+    // doomed, same as the pre-`atomic_ota` code did.
+    let received = session.engine.received();
+    if u64::try_from(data.len()).ok().and_then(|len| received.checked_add(len)).is_none_or(|end| end > u64::from(session.params.total))
     {
         return false;
     }
 
-    let mut storage = storage.lock().await;
-    while !data.is_empty() {
-        let space = (OTA_SECTOR - session.sector_filled) as usize;
-        let take = space.min(data.len());
-        session.sector[session.sector_filled as usize..session.sector_filled as usize + take]
-            .copy_from_slice(&data[..take]);
-        session.sector_filled += take as u32;
-        data = &data[take..];
-
-        if session.sector_filled == OTA_SECTOR {
-            let sector_index = session.flushed / OTA_SECTOR;
-            if !flush_sector(&mut storage, session, sector_index, OTA_SECTOR) {
-                return false;
-            }
-            session.hasher.update(&session.sector[..OTA_SECTOR as usize]);
-            session.flushed += OTA_SECTOR;
-            session.sector_filled = 0;
-            session.sectors_flushed += 1;
-        }
-    }
-    true
+    let mut storage_guard = storage.lock().await;
+    let mut backend =
+        EspArtifactStorage { storage: &mut storage_guard, partition_offset: session.partition_offset, scratch: &mut *session.scratch };
+    let before = session.engine.durable();
+    let ok = session.engine.append(&mut backend, data).is_ok();
+    let after = session.engine.durable();
+    session.sectors_flushed += ((after - before) as u32).div_ceil(OTA_SECTOR);
+    ok
 }
 
 pub struct WriteFinishOk {
@@ -957,72 +1003,62 @@ pub enum WriteFinishError {
 /// (contrat §6). Both the expected digest and the `deployment_id` come
 /// from the session -- fixed by its first PUT, not by the last request.
 pub async fn write_finish(storage: &SharedStorage) -> Result<WriteFinishOk, WriteFinishError> {
-    let Some(mut session) = WRITE_SESSION.lock().await.take() else {
+    let Some(session) = WRITE_SESSION.lock().await.take() else {
         return Err(WriteFinishError::NotWriting);
     };
+    let WriteSession { slot, partition_offset, mut scratch, engine, started_at, mut sectors_flushed, params } = session;
 
-    // The image's own size rarely lands on a sector boundary: flush
-    // whatever's left buffered (a final, partial sector) before checking
-    // completeness (see `flush_sector`'s own comment on the padding this
-    // needs).
-    if session.sector_filled > 0 {
+    // The image's own size rarely lands on a sector boundary: `finish`
+    // flushes whatever's left buffered (a final, partial sector) before
+    // checking completeness and the digest (see `EspArtifactStorage`'s own
+    // comment on the padding this needs).
+    let before = engine.durable();
+    let committed = {
         let mut storage_guard = storage.lock().await;
-        let sector_index = session.flushed / OTA_SECTOR;
-        let len = session.sector_filled;
-        if !flush_sector(&mut storage_guard, &mut session, sector_index, len) {
-            return Err(WriteFinishError::Incomplete);
+        let mut backend =
+            EspArtifactStorage { storage: &mut storage_guard, partition_offset, scratch: &mut *scratch };
+        match engine.finish(&mut backend) {
+            Ok(committed) => committed,
+            Err(atomic_ota::Error::DigestMismatch(computed)) => {
+                warn!("ota: digest mismatch, attendu={} calculé={}", params.digest, format_digest(&computed));
+                return Err(WriteFinishError::DigestMismatch);
+            }
+            Err(atomic_ota::Error::Incomplete { durable }) => {
+                warn!("ota: session ended at {durable} of {} octets", params.total);
+                return Err(WriteFinishError::Incomplete);
+            }
+            Err(e) => {
+                warn!("ota: write finish failed ({e:?})");
+                return Err(WriteFinishError::Incomplete);
+            }
         }
-        drop(storage_guard);
-        session.hasher.update(&session.sector[..len as usize]);
-        session.flushed += len;
-        session.sector_filled = 0;
-        session.sectors_flushed += 1;
-    }
+    };
+    sectors_flushed += ((committed.size - before) as u32).div_ceil(OTA_SECTOR);
 
-    if session.flushed != session.params.total {
-        warn!("ota: session ended at {} of {} octets", session.flushed, session.params.total);
-        return Err(WriteFinishError::Incomplete);
-    }
-
-    let digest_bytes: [u8; 32] = session.hasher.finalize().into();
-    let mut digest = String::from("sha256:");
-    for b in digest_bytes {
-        let _ = write!(digest, "{b:02x}");
-    }
-
-    if !digest.eq_ignore_ascii_case(&session.params.digest) {
-        warn!("ota: digest mismatch, attendu={} calculé={digest}", session.params.digest);
-        return Err(WriteFinishError::DigestMismatch);
-    }
-
-    let Some(target) = Target::from_subtype(session.slot) else {
+    let digest = format_digest(&committed.digest);
+    let Some(target) = Target::from_subtype(slot) else {
         // Can't happen (`write_target_locked` only ever hands out Ota0/
         // Ota1), kept as a real error rather than a panic.
         return Err(WriteFinishError::Storage(StorageError::Write));
     };
     let record = OtaTransaction::staged(
-        session.params.deployment_id.clone(),
-        atomic_ota::ArtifactRecord {
-            id: ArtifactKind::Firmware,
-            size: u64::from(session.flushed),
-            digest: atomic_ota::Digest(digest_bytes),
-            target,
-        },
+        params.deployment_id.clone(),
+        atomic_ota::ArtifactRecord { id: ArtifactKind::Firmware, size: committed.size, digest: committed.digest, target },
     );
     {
         let mut storage_guard = storage.lock().await;
         let mut meta = NvsTransactionMetadata { storage: &mut storage_guard };
         atomic_ota::TransactionMetadata::commit(&mut meta, Some(&record)).map_err(WriteFinishError::Storage)?;
     }
-    let elapsed = session.started_at.elapsed();
+    let elapsed = started_at.elapsed();
     info!(
         "ota: write OK {} octets ({} secteurs erase+program) en {}ms slot={} -> staged=written",
-        session.flushed,
-        session.sectors_flushed,
+        committed.size,
+        sectors_flushed,
         elapsed.as_millis(),
-        slot_name(session.slot)
+        slot_name(slot)
     );
-    Ok(WriteFinishOk { written: session.flushed, digest })
+    Ok(WriteFinishOk { written: committed.size as u32, digest })
 }
 
 /// `POST /v1alpha1/ota/activate` (contrat §4): points the bootloader at the

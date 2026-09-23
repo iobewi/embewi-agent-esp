@@ -103,7 +103,7 @@ dependencies = [
 [[package]]
 name = "atomic-ota"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/atomic-ota?rev=e1092bb#e1092bb3bfd86da299a83022d76da527641582c5"
+source = "git+https://github.com/iobewi/atomic-ota?rev=0388c16#0388c166f6694350d536080c6cc6581665fd1fff"
 dependencies = [
  "sha2",
 ]
@@ -982,7 +982,6 @@ dependencies = [
  "rand_core 0.10.1",
  "serde",
  "serde_json",
- "sha2",
  "smart-leds",
  "smoltcp",
  "sntpc",
