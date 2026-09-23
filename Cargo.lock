@@ -101,6 +101,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic-boot"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/atomic-boot?rev=594ffbf#594ffbff9c62f7f986911c572fd6cb61d4e0ea22"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "atomic-ota"
 version = "0.1.0"
 source = "git+https://github.com/iobewi/atomic-ota?rev=0388c16#0388c166f6694350d536080c6cc6581665fd1fff"
@@ -972,7 +980,7 @@ dependencies = [
  "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
  "embedded-storage",
- "embewi-boot-core",
+ "atomic-boot",
  "esp-alloc",
  "esp-backtrace",
  "esp-bootloader-esp-idf",
@@ -1000,13 +1008,6 @@ dependencies = [
  "sntpc-time-embassy",
  "static_cell",
  "subtle",
-]
-
-[[package]]
-name = "embewi-boot-core"
-version = "0.1.0"
-dependencies = [
- "sha2",
 ]
 
 [[package]]
