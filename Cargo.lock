@@ -1466,7 +1466,7 @@ dependencies = [
 [[package]]
 name = "esp-wifi-manager"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/esp-wifi-manager?rev=c38ffd2#c38ffd290821e6188c5bd1fe6073e99744226a39"
+source = "git+https://github.com/iobewi/esp-wifi-manager?rev=b322df0#b322df0d1043e59b4f096f8b2caf64c586b171bd"
 dependencies = [
  "embassy-executor",
  "embassy-net",
