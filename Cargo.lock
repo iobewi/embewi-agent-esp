@@ -109,6 +109,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic-ota-esp"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/atomic-ota-esp?rev=ab07071#ab070711ad2f9d7d9c9a4460096e412afa8bec47"
+dependencies = [
+ "atomic-ota",
+ "embedded-storage",
+ "esp-bootloader-esp-idf",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -950,6 +960,7 @@ name = "embewi-agent-esp"
 version = "0.1.0"
 dependencies = [
  "atomic-ota",
+ "atomic-ota-esp",
  "critical-section",
  "edge-http",
  "edge-ws",
