@@ -50,6 +50,9 @@ atomic-ota-esp = { git = "https://github.com/iobewi/atomic-ota-esp", rev = "ab07
 improv-serial = { git = "https://github.com/iobewi/improv-serial", rev = "8e9d2c4" }
 # Single owner for raw ESP flash + cached NVS. Application keys remain local.
 esp-storage-manager = { git = "https://github.com/iobewi/esp-storage-manager", rev = "c5d572f", features = ["esp32c3"] }
+# Reusable Wi-Fi station transport. Credential persistence and application
+# service supervision remain local to this firmware.
+esp-wifi-manager = { git = "https://github.com/iobewi/esp-wifi-manager", rev = "c38ffd2", features = ["esp32c3"] }
 
 esp-hal = { version = "~1.1.0", features = ["esp32c3", "log-04", "unstable"] }
 
@@ -85,13 +88,6 @@ embassy-executor = { version = "0.10.0", features = ["log"] }
 embassy-time = { version = "0.5.0", features = ["log"] }
 esp-hal-smartled2 = "0.29.0"
 smart-leds        = "0.4"
-esp-radio = { version = "0.18.0", features = [
-  "esp-alloc",
-  "esp32c3",
-  "log-04",
-  "unstable",
-  "wifi",
-] }
 smoltcp = { version = "0.13.0", default-features = false, features = [
   "log",
   "medium-ethernet",
