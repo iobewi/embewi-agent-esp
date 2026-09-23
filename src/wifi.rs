@@ -1,68 +1,50 @@
-//! Wi-Fi transport manager.
+//! Embewi Wi-Fi connector policy.
 //!
-//! Owns only radio/network mechanics: lazy station initialization, scanning,
-//! association, DHCP and the Embassy network runner. It intentionally does
-//! not start HTTP, SNTP, heartbeat or log-stream tasks; those belong to the
-//! application supervisor.
+//! Reusable radio/network mechanics live in `esp-wifi-manager`. This module
+//! retains only application policy: persisted SSID/password and the socket-set
+//! size required by the currently enabled Embewi IP services.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use embassy_executor::Spawner;
-use embassy_net::{Runner, Stack, StackResources};
+use embassy_net::{Stack, StackResources};
 use esp_hal::peripherals::WIFI;
 use esp_storage_manager::Key;
-use esp_radio::wifi::{
-    AuthenticationMethod, Config, Interface, WifiController, scan::ScanConfig, sta::StationConfig,
-};
 use log::{info, warn};
 use static_cell::StaticCell;
 
 use crate::storage::SharedStorage;
 
+pub use esp_wifi_manager::Network;
+
 const NAMESPACE: Key = Key::from_str("wifi");
 const KEY_SSID: Key = Key::from_str("ssid");
 const KEY_PASSWORD: Key = Key::from_str("password");
 
-/// An access point found by [`WifiManager::scan`].
-pub struct Network {
-    pub ssid: String,
-    pub signal_strength: i8,
-    pub secured: bool,
-}
-
-struct Radio {
-    controller: WifiController<'static>,
-    stack: Stack<'static>,
-}
+// DHCP (1) + admin HTTP/HTTPS (1) + SNTP UDP (1) + transient outbound DNS
+// (1) + heartbeat TCP (1) + log-stream WS/TCP (1), with headroom for OTA.
+// This sizing is Embewi application policy, so it intentionally stays out of
+// `esp-wifi-manager`.
+const SOCKETS: usize = 8;
+static RESOURCES: StaticCell<StackResources<SOCKETS>> = StaticCell::new();
 
 pub struct WifiManager {
-    peripheral: Option<WIFI<'static>>,
-    /// Internal runner task for this transport only. Application services
-    /// are started by `ApplicationSupervisor`, never from this manager.
-    spawner: Spawner,
-    radio: Option<Radio>,
-    /// Strongest BSSID seen per SSID in the last [`Self::scan`], so
-    /// [`Self::connect`] can pin to that specific access point instead of
-    /// letting the radio associate with any AP sharing the same SSID (common
-    /// with mesh/multi-AP setups repeating one network per floor).
-    strongest_bssid: Vec<(String, [u8; 6])>,
+    transport: esp_wifi_manager::WifiManager<SOCKETS>,
 }
 
 impl WifiManager {
     pub fn new(peripheral: WIFI<'static>, spawner: Spawner) -> Self {
         Self {
-            peripheral: Some(peripheral),
-            spawner,
-            radio: None,
-            strongest_bssid: Vec::new(),
+            transport: esp_wifi_manager::WifiManager::new(
+                peripheral,
+                spawner,
+                RESOURCES.init(StackResources::new()),
+            ),
         }
     }
 
-    /// Reconnects using previously saved credentials, if any. Meant to be
-    /// called once at boot, before serving Improv, so a reboot (losing the
-    /// RAM-only radio state) recovers on its own instead of sitting
-    /// unprovisioned until the browser reconnects.
+    /// Reconnects using credentials persisted by this application.
     pub async fn reconnect_saved(&mut self, storage: &'static SharedStorage) -> bool {
         let (ssid, password) = {
             let mut storage = storage.lock().await;
@@ -74,185 +56,45 @@ impl WifiManager {
             };
             (ssid, password)
         };
+
         info!("Wi-Fi: reconnecting to saved SSID={ssid}");
-        self.connect(&ssid, password).await
+        self.transport.connect(&ssid, password).await
     }
 
-    /// Connects with newly-provided credentials and, on success, saves them
-    /// so [`Self::reconnect_saved`] can use them after a reboot.
+    /// Connects with newly provided credentials and persists them only after
+    /// association + DHCP succeeded.
     pub async fn provision(
         &mut self,
         storage: &'static SharedStorage,
         ssid: &str,
         password: String,
     ) -> bool {
-        if self.connect(ssid, password.clone()).await {
-            let mut storage = storage.lock().await;
-            // Connected either way; but if the credentials couldn't be
-            // saved they won't survive a reboot, which must not go unnoticed.
-            if storage.set_string(&NAMESPACE, &KEY_SSID, ssid).is_err()
-                || storage.set_string(&NAMESPACE, &KEY_PASSWORD, &password).is_err()
-            {
-                warn!("Wi-Fi: connected, but credentials could not be saved to NVS");
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    /// The device's current IPv4 address, if online.
-    pub fn ip(&self) -> Option<embassy_net::Ipv4Address> {
-        Some(self.radio.as_ref()?.stack.config_v4()?.address.address())
-    }
-
-    /// Starts the radio in station mode on first use, so that it can scan.
-    /// Failures are logged and return `None` rather than panicking, which
-    /// would halt the chip and take provisioning down with it.
-    fn radio(&mut self) -> Option<&mut Radio> {
-        if self.radio.is_none() {
-            let (mut controller, interfaces) =
-                match esp_radio::wifi::new(self.peripheral.take()?, Default::default()) {
-                    Ok(parts) => parts,
-                    Err(e) => {
-                        warn!("Wi-Fi init failed: {e:?}");
-                        return None;
-                    }
-                };
-            if let Err(e) = controller.set_config(&Config::Station(StationConfig::default())) {
-                warn!("Wi-Fi start failed: {e:?}");
-                return None;
-            }
-
-            // DHCP (1) + HTTP/HTTPS server's TcpSocket (1) + SNTP's
-            // UdpSocket (1) + a transient socket for each outbound DNS
-            // query (heartbeat/log stream resolving `ctrl_url`'s host,
-            // `embassy_net::dns::DnsSocket`, 1) + the heartbeat's own
-            // TcpSocket (1) + the log stream's long-lived WS TcpSocket (1)
-            // -- 3 was enough before SNTP, panicked ("adding a socket to a
-            // full SocketSet") once it needed a 4th concurrently. +1
-            // headroom for OTA.
-            static RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();
-            let seed = esp_hal::time::Instant::now().duration_since_epoch().as_micros() as u64;
-            let (stack, runner) = embassy_net::new(
-                interfaces.station,
-                embassy_net::Config::dhcpv4(Default::default()),
-                RESOURCES.init(StackResources::new()),
-                seed,
-            );
-            self.spawner.spawn(net_task(runner).unwrap());
-
-            self.radio = Some(Radio { controller, stack });
-        }
-        self.radio.as_mut()
-    }
-
-    /// Scans for networks, one entry per SSID (the strongest signal, when
-    /// several access points share an SSID -- common with mesh/multi-AP
-    /// setups repeating one network per floor). Empty if the radio is
-    /// unavailable or the scan failed.
-    pub async fn scan(&mut self) -> Vec<Network> {
-        let Some(radio) = self.radio() else {
-            return Vec::new();
-        };
-        let access_points = match radio
-            .controller
-            .scan_async(&ScanConfig::default().with_max(20))
-            .await
-        {
-            Ok(access_points) => access_points,
-            Err(e) => {
-                warn!("Wi-Fi scan failed: {e:?}");
-                return Vec::new();
-            }
-        };
-
-        // One entry per SSID, keeping whichever access point has the best
-        // signal; this also becomes `strongest_bssid`, so `connect` can pin
-        // to that specific access point instead of letting the radio
-        // associate with any AP sharing the same SSID.
-        let mut strongest: Vec<(String, [u8; 6], i8, bool)> = Vec::new();
-        for ap in &access_points {
-            let ssid = ap.ssid.as_str();
-            if ssid.is_empty() {
-                continue;
-            }
-            let secured = !matches!(ap.auth_method, None | Some(AuthenticationMethod::None));
-            match strongest.iter_mut().find(|(known_ssid, ..)| known_ssid == ssid) {
-                Some((_, _, signal_strength, _)) if *signal_strength >= ap.signal_strength => {}
-                Some(entry) => *entry = (String::from(ssid), ap.bssid, ap.signal_strength, secured),
-                None => strongest.push((String::from(ssid), ap.bssid, ap.signal_strength, secured)),
-            }
-        }
-
-        self.strongest_bssid = strongest
-            .iter()
-            .map(|(ssid, bssid, ..)| (ssid.clone(), *bssid))
-            .collect();
-
-        strongest
-            .into_iter()
-            .map(|(ssid, _, signal_strength, secured)| Network {
-                ssid,
-                signal_strength,
-                secured,
-            })
-            .collect()
-    }
-
-    /// Connects and waits for DHCP. `false` if the radio is unavailable or
-    /// the access point refused us. Pins to the strongest BSSID seen for
-    /// this SSID in the last [`Self::scan`], if any. Doesn't persist
-    /// credentials -- see [`Self::provision`] and [`Self::reconnect_saved`].
-    /// Application services are deliberately not started here: this manager
-    /// reports only transport state. The caller may hand the resulting IP
-    /// stack to `ApplicationSupervisor` or another consumer.
-    async fn connect(&mut self, ssid: &str, password: String) -> bool {
-        let bssid = self
-            .strongest_bssid
-            .iter()
-            .find(|(known_ssid, _)| known_ssid == ssid)
-            .map(|(_, bssid)| *bssid);
-        if bssid.is_none() {
-            warn!("Wi-Fi: no scan result for {ssid}, letting the radio pick an access point");
-        }
-
-        let Some(radio) = self.radio() else {
-            return false;
-        };
-        let mut config = StationConfig::default()
-            .with_ssid(ssid)
-            .with_password(password);
-        if let Some(bssid) = bssid {
-            config = config.with_bssid(bssid);
-        }
-        let config = Config::Station(config);
-        if radio.controller.set_config(&config).is_err()
-            || radio.controller.connect_async().await.is_err()
-        {
-            warn!("Wi-Fi: connection to {ssid} failed");
+        if !self.transport.connect(ssid, password.clone()).await {
             return false;
         }
 
-        radio.stack.wait_config_up().await;
-        info!("Wi-Fi connected, ip = {:?}", radio.stack.config_v4());
+        let mut storage = storage.lock().await;
+        if storage.set_string(&NAMESPACE, &KEY_SSID, ssid).is_err()
+            || storage.set_string(&NAMESPACE, &KEY_PASSWORD, &password).is_err()
+        {
+            warn!("Wi-Fi: connected, but credentials could not be saved to NVS");
+        }
         true
     }
 
-    /// Returns the IP-capable network stack once DHCP has configured it.
-    /// Consumers must not infer application-service state from this alone.
+    pub async fn scan(&mut self) -> Vec<Network> {
+        self.transport.scan().await
+    }
+
+    pub fn ip(&self) -> Option<embassy_net::Ipv4Address> {
+        self.transport.ip()
+    }
+
     pub fn ip_stack(&self) -> Option<Stack<'static>> {
-        let radio = self.radio.as_ref()?;
-        radio.stack.config_v4()?;
-        Some(radio.stack)
+        self.transport.ip_stack()
     }
 
     pub fn is_online(&self) -> bool {
-        self.ip_stack().is_some()
+        self.transport.is_online()
     }
-}
-
-#[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, Interface<'static>>) -> ! {
-    runner.run().await
 }
