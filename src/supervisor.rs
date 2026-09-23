@@ -48,6 +48,7 @@ impl ApplicationSupervisor {
         storage: &'static SharedStorage,
     ) {
         if self.ip_services_started {
+            log::info!("supervisor: IP services already started, ignoring duplicate readiness");
             return;
         }
 
