@@ -524,6 +524,16 @@ impl atomic_ota::TransactionMetadata for NvsTransactionMetadata<'_> {
     /// and new body fields) -- so it is refused here rather than assumed
     /// safe. The caller (`write_finish`) must `commit(None)` first if it
     /// really means to replace a different, already-staged transaction.
+    ///
+    /// HTTP-adaptation debt, deliberately not paid down yet (no HTTP
+    /// surface changes this step): this refusal surfaces to
+    /// `write_finish`'s caller as `StorageError::Write`, which
+    /// `WriteFinishError::Storage` maps to the same generic `500
+    /// nvs_write_failed` any other NVS failure gets. It is really a state
+    /// conflict, not a storage failure -- a future step giving it a
+    /// distinct `409`-shaped response (once `ota_write.rs` is touched
+    /// again, e.g. for the `ArtifactStorage` swap) should not need to
+    /// change anything here beyond that mapping.
     fn commit(&mut self, record: Option<&Self::Record>) -> Result<(), Self::Error> {
         let current = self.load()?;
         if let (Some(a), Some(b)) = (&current, record) {
