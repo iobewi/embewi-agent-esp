@@ -1,11 +1,16 @@
-//! Wi-Fi station: the radio is only brought up the first time it's needed.
+//! Wi-Fi transport manager.
+//!
+//! Owns only radio/network mechanics: lazy station initialization, scanning,
+//! association, DHCP and the Embassy network runner. It intentionally does
+//! not start HTTP, SNTP, heartbeat or log-stream tasks; those belong to the
+//! application supervisor.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use embassy_executor::Spawner;
 use embassy_net::{Runner, Stack, StackResources};
-use esp_hal::peripherals::{LPWR, WIFI};
+use esp_hal::peripherals::WIFI;
 use esp_storage_manager::Key;
 use esp_radio::wifi::{
     AuthenticationMethod, Config, Interface, WifiController, scan::ScanConfig, sta::StationConfig,
@@ -33,15 +38,8 @@ struct Radio {
 
 pub struct WifiManager {
     peripheral: Option<WIFI<'static>>,
-    /// Handed to the HTTP config server the first time it's spawned (see
-    /// `connect`), which needs it to reset the board via the RTC watchdog
-    /// instead of `esp_hal::system::software_reset()` -- see
-    /// `http::reboot_after_delay` for why that matters for native USB.
-    lpwr: Option<LPWR<'static>>,
-    /// The global MbedTLS instance (`tls::init`, called once in
-    /// `src/bin/main.rs`), handed to the admin server so it can wrap
-    /// incoming connections in TLS once a certificate is configured.
-    tls: crate::tls::TlsReferenceStatic,
+    /// Internal runner task for this transport only. Application services
+    /// are started by `ApplicationSupervisor`, never from this manager.
     spawner: Spawner,
     radio: Option<Radio>,
     /// Strongest BSSID seen per SSID in the last [`Self::scan`], so
@@ -52,16 +50,9 @@ pub struct WifiManager {
 }
 
 impl WifiManager {
-    pub fn new(
-        peripheral: WIFI<'static>,
-        lpwr: LPWR<'static>,
-        tls: crate::tls::TlsReferenceStatic,
-        spawner: Spawner,
-    ) -> Self {
+    pub fn new(peripheral: WIFI<'static>, spawner: Spawner) -> Self {
         Self {
             peripheral: Some(peripheral),
-            lpwr: Some(lpwr),
-            tls,
             spawner,
             radio: None,
             strongest_bssid: Vec::new(),
@@ -84,7 +75,7 @@ impl WifiManager {
             (ssid, password)
         };
         info!("Wi-Fi: reconnecting to saved SSID={ssid}");
-        self.connect(storage, &ssid, password).await
+        self.connect(&ssid, password).await
     }
 
     /// Connects with newly-provided credentials and, on success, saves them
@@ -95,7 +86,7 @@ impl WifiManager {
         ssid: &str,
         password: String,
     ) -> bool {
-        if self.connect(storage, ssid, password.clone()).await {
+        if self.connect(ssid, password.clone()).await {
             let mut storage = storage.lock().await;
             // Connected either way; but if the credentials couldn't be
             // saved they won't survive a reboot, which must not go unnoticed.
@@ -213,8 +204,10 @@ impl WifiManager {
     /// the access point refused us. Pins to the strongest BSSID seen for
     /// this SSID in the last [`Self::scan`], if any. Doesn't persist
     /// credentials -- see [`Self::provision`] and [`Self::reconnect_saved`].
-    /// Spawns the HTTP config server on first success.
-    async fn connect(&mut self, storage: &'static SharedStorage, ssid: &str, password: String) -> bool {
+    /// Application services are deliberately not started here: this manager
+    /// reports only transport state. The caller may hand the resulting IP
+    /// stack to `ApplicationSupervisor` or another consumer.
+    async fn connect(&mut self, ssid: &str, password: String) -> bool {
         let bssid = self
             .strongest_bssid
             .iter()
@@ -243,38 +236,19 @@ impl WifiManager {
 
         radio.stack.wait_config_up().await;
         info!("Wi-Fi connected, ip = {:?}", radio.stack.config_v4());
-        let stack = radio.stack;
-
-        if let Some(lpwr) = self.lpwr.take() {
-            // `http::run` picks the one-shot provisioning UI or the
-            // `/v1alpha1/*` JSON API internally, based on whether the
-            // device is locked yet (see that module's doc comment for why
-            // it's one task branching internally, not two tasks). Always
-            // on the fixed admin port, never `agent::app_port` -- contrat
-            // §4's `app_port`/`POST /app/port` is the TCP port of a
-            // *separate* business-layer service, not this admin/Kube-facing
-            // server.
-            self.spawner
-                .spawn(crate::http::run(stack, storage, self.spawner, lpwr, self.tls).unwrap());
-            // SNTP (contrat §5): starts as soon as the network is up, same
-            // one-shot guard as the HTTP server above.
-            self.spawner.spawn(crate::time::sync_task(stack).unwrap());
-            // Heartbeat (contrat §5): same guard, silent on its own until
-            // ctrl_url is provisioned.
-            self.spawner
-                .spawn(crate::heartbeat::run(stack, storage, self.tls).unwrap());
-            // ESP_LOGx streaming (contrat §5): same guard.
-            self.spawner
-                .spawn(crate::log_stream::run(stack, storage, self.tls).unwrap());
-        }
-
         true
     }
 
+    /// Returns the IP-capable network stack once DHCP has configured it.
+    /// Consumers must not infer application-service state from this alone.
+    pub fn ip_stack(&self) -> Option<Stack<'static>> {
+        let radio = self.radio.as_ref()?;
+        radio.stack.config_v4()?;
+        Some(radio.stack)
+    }
+
     pub fn is_online(&self) -> bool {
-        self.radio
-            .as_ref()
-            .is_some_and(|radio| radio.stack.config_v4().is_some())
+        self.ip_stack().is_some()
     }
 }
 
