@@ -14,9 +14,7 @@
 //! ```text
 //! Embewi OTA adapter (this module)
 //! ├── HTTP / contrat v1alpha1        (ota_write.rs; prepare/activate below)
-//! ├── ESP flash backend              (EspArtifactStorage, same
-//! │                                    sector-buffered NorFlash writes
-//! │                                    this module always used)
+//! ├── ESP slot-selection policy      (EWBT decides which OTA slot is safe)
 //! ├── NVS transaction metadata       (NvsTransactionMetadata, same
 //! │                                    five-key staged/digest/slot/
 //! │                                    deployment_id/size layout this
@@ -29,6 +27,10 @@
 //! ├── transaction state machine      (TransactionRecord/TransactionState)
 //! ├── post-reboot reconciliation     (reconcile, driven from on_boot)
 //! └── streaming WriteSession         (digest-verified, resumable)
+//!
+//! atomic_ota_esp (external crate)
+//! ├── ota_0/ota_1 partition lookup
+//! └── sector-aware ESP ArtifactStorage backend
 //! ```
 //!
 //! `otadata` itself -- which slot is active, what to write to activate,
@@ -77,6 +79,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent;
 use atomic_ota::{Action, BackendOutcome, TransactionState};
+use atomic_ota_esp::{AppPartition, AppSlot, EspArtifactStorage, find_app_partition};
 
 use crate::storage::{SharedStorage, Storage, StorageError};
 
@@ -153,11 +156,18 @@ fn slot_index(slot: AppPartitionSubType) -> Option<u8> {
     }
 }
 
-fn slot_from_index(i: u8) -> Option<AppPartitionSubType> {
+fn app_slot_from_index(i: u8) -> Option<AppSlot> {
     match i {
-        0 => Some(AppPartitionSubType::Ota0),
-        1 => Some(AppPartitionSubType::Ota1),
+        0 => Some(AppSlot::Ota0),
+        1 => Some(AppSlot::Ota1),
         _ => None,
+    }
+}
+
+fn app_slot_to_subtype(slot: AppSlot) -> AppPartitionSubType {
+    match slot {
+        AppSlot::Ota0 => AppPartitionSubType::Ota0,
+        AppSlot::Ota1 => AppPartitionSubType::Ota1,
     }
 }
 
@@ -210,33 +220,17 @@ fn read_otadata_locked(storage: &mut Storage) -> Option<[boot_core::Raw; SLOT_CO
     storage.with_raw_flash(|flash| read_otadata_raw(flash, &mut table_buffer()).map(|(_, e)| e)).flatten()
 }
 
-/// Where a new OTA image is currently allowed to go: the slot `otadata`
-/// does *not* call `Valid`. `None` if that can't be determined -- `otadata`
-/// unreadable, or with no `Valid` entry yet (a device `embewi-boot` hasn't
-/// seeded, or one caught mid self-check with nothing confirmed at all,
-/// neither of which should reach an HTTP handler in practice).
-struct WriteTarget {
-    slot: AppPartitionSubType,
-    /// Absolute flash offset of the partition -- resolved here, once, and
-    /// from here on cached by callers (`write_begin` puts it in the
-    /// `WriteSession`) instead of re-parsing the partition table on every
-    /// chunk. Safe to cache for a whole session: nothing else can move
-    /// `otadata`'s active slot while a write is in flight (`activate` only
-    /// ever runs after a session has already finished, once
-    /// `staged.stage == Written`).
-    offset: u32,
-    size: usize,
-}
-
-fn write_target_locked(storage: &mut Storage) -> Option<WriteTarget> {
+/// Where a new OTA image is currently allowed to go: the slot EWBT does
+/// not identify as the active Valid/Pending slot. EWBT owns that selection
+/// policy; `atomic-ota-esp` only resolves the already-chosen `ota_0` or
+/// `ota_1` slot to its physical ESP partition.
+fn write_target_locked(storage: &mut Storage) -> Option<AppPartition> {
     storage
         .with_raw_flash(|flash| {
             let mut buffer = table_buffer();
             let (_, entries) = read_otadata_raw(flash, &mut buffer)?;
-            let slot = slot_from_index(1 - otadata_active_slot(&entries)?)?;
-            let table = esp_bootloader_esp_idf::partitions::read_partition_table(flash, &mut *buffer).ok()?;
-            let app = table.find_partition(PartitionType::App(slot)).ok().flatten()?;
-            Some(WriteTarget { slot, offset: app.offset(), size: app.len() as usize })
+            let slot = app_slot_from_index(1 - otadata_active_slot(&entries)?)?;
+            find_app_partition(flash, &mut *buffer, slot).ok()
         })
         .flatten()
 }
@@ -725,118 +719,13 @@ pub async fn prepare(storage: &SharedStorage, req: &PrepareRequest) -> PrepareRe
             return refuse("busy");
         }
     }
-    PrepareResponse { accepted: true, target_slot: Some(slot_name(target.slot)), reason: None }
+    PrepareResponse { accepted: true, target_slot: Some(target.slot.as_str()), reason: None }
 }
 
-/// Flash sector size, and the unit [`EspArtifactStorage`] flushes to flash
-/// -- see its own doc comment. The generic engine
-/// (`atomic_ota::WriteSession`, held by [`WriteSession::engine`]) has no
-/// notion of this at all: it only ever offers whatever undurable tail it's
-/// holding and trusts the durable watermark this backend reports.
-const OTA_SECTOR: u32 = 0x1000;
-
-/// Nothing to report beyond pass/fail: the only thing that can go wrong
-/// here is the underlying `NorFlash` erase/program call, which
-/// [`EspArtifactStorage::flush_sector`]'s own `Option` already reduces to
-/// that -- matches what `flush_sector`'s pre-`atomic_ota` `bool` return
-/// carried.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FlashWriteFailed;
-
-/// Implements `atomic_ota::ArtifactStorage` over exactly the same
-/// sector-buffered `NorFlash` mechanism the pre-`atomic_ota` `WriteSession`
-/// always used: same sector size, same padding, same erase-then-program
-/// pair per sector, same target partition. Nothing about *how* flash is
-/// written changes here -- only *who* decides when to call it (the engine,
-/// via the `pending` tail it offers on every call, instead of this crate's
-/// own byte-accumulation loop).
-///
-/// Constructed fresh for each `append`/`finish` call, borrowing whichever
-/// `Storage` lock is currently held: it cannot be stored inside the
-/// persistent [`WriteSession`] the way `scratch` is, since `Storage`'s own
-/// lock is async and reacquired per call -- see
-/// `atomic_ota::WriteSession`'s own doc comment on why `append`/`finish`
-/// take a backend by `&mut` instead of owning one.
-struct EspArtifactStorage<'a> {
-    storage: &'a mut Storage,
-    partition_offset: u32,
-    /// The session's own scratch buffer ([`WriteSession::scratch`]),
-    /// borrowed for this call only -- not owned here, so no extra
-    /// allocation happens per chunk.
-    scratch: &'a mut [u8; OTA_SECTOR as usize],
-}
-
-impl EspArtifactStorage<'_> {
-    /// Erases and programs the sector at absolute flash offset `at` with
-    /// `self.scratch[..len]`, padded to the flash word size -- identical to
-    /// the pre-`atomic_ota` free function of the same name: one erase, one
-    /// program, the pad explicitly zeroed and never treated as image bytes.
-    ///
-    /// `NorFlash::write` (unlike the auto-RMW `embedded_storage::Storage`
-    /// trait this replaced, back before `atomic_ota` existed) requires both
-    /// the offset and the length to be a multiple of the flash word size (4
-    /// bytes here) -- always true for a full sector (`OTA_SECTOR` is 4096),
-    /// but the final, partial sector at `finish` rarely lands on a word
-    /// boundary.
-    ///
-    /// Invariant this keeps: padding is a hardware-write-granularity
-    /// detail, never part of the OTA payload -- the pad is explicitly
-    /// zeroed (never leftover, indeterminate buffer content) and never
-    /// counted by `atomic_ota::WriteSession`'s own `received`/`durable`/
-    /// digest, which only ever see the logical `len` bytes this function
-    /// was actually asked to write.
-    fn flush_sector(&mut self, at: u32, len: usize) -> Option<()> {
-        let padded = len.div_ceil(4) * 4;
-        debug_assert!(padded <= OTA_SECTOR as usize, "padding must never cross the sector it belongs to");
-        self.scratch[len..padded].fill(0);
-        self.storage
-            .with_raw_flash(|flash| -> Option<()> {
-                NorFlash::erase(flash, at, at + OTA_SECTOR).ok()?;
-                NorFlash::write(flash, at, &self.scratch[..padded]).ok()
-            })
-            .flatten()
-    }
-}
-
-impl atomic_ota::ArtifactStorage for EspArtifactStorage<'_> {
-    type Error = FlashWriteFailed;
-
-    /// Flushes every *whole* sector `pending` contains, one erase+program
-    /// per sector -- never more than once per sector, which is the entire
-    /// reason a session buffers before ever touching flash (esp-storage's
-    /// convenience `embedded_storage::Storage::write` does a
-    /// read-modify-erase-rewrite of the whole sector on every call that
-    /// isn't itself sector-aligned; with a 1 KiB HTTP read buffer, that
-    /// meant up to four full erase+reprogram cycles of the same sector
-    /// instead of one). Leaves any short-of-a-sector remainder in `pending`
-    /// untouched -- `durable_offset` is therefore always sector-aligned
-    /// here (only [`Self::finish`] ever sees or writes a partial sector).
-    fn write(&mut self, durable_offset: u64, pending: &[u8]) -> Result<u64, Self::Error> {
-        let mut consumed = 0u32;
-        while pending.len() - consumed as usize >= OTA_SECTOR as usize {
-            let chunk = &pending[consumed as usize..consumed as usize + OTA_SECTOR as usize];
-            self.scratch.copy_from_slice(chunk);
-            let sector_index = (durable_offset + u64::from(consumed)) / u64::from(OTA_SECTOR);
-            let at = self.partition_offset + sector_index as u32 * OTA_SECTOR;
-            self.flush_sector(at, OTA_SECTOR as usize).ok_or(FlashWriteFailed)?;
-            consumed += OTA_SECTOR;
-        }
-        Ok(durable_offset + u64::from(consumed))
-    }
-
-    /// Flushes whatever short-of-a-sector tail is left (see
-    /// [`Self::write`]'s own doc comment on why it's never more than that).
-    fn finish(&mut self, durable_offset: u64, pending: &[u8]) -> Result<u64, Self::Error> {
-        if pending.is_empty() {
-            return Ok(durable_offset);
-        }
-        debug_assert!(pending.len() < OTA_SECTOR as usize, "finish must only ever see a short-of-a-sector tail");
-        self.scratch[..pending.len()].copy_from_slice(pending);
-        let sector_index = durable_offset / u64::from(OTA_SECTOR);
-        let at = self.partition_offset + sector_index as u32 * OTA_SECTOR;
-        self.flush_sector(at, pending.len()).ok_or(FlashWriteFailed)?;
-        Ok(durable_offset + pending.len() as u64)
-    }
+/// Physical erase-block size used only for diagnostics and scratch allocation.
+/// The actual erase/write mechanics and bounds checks live in `atomic-ota-esp`.
+fn ota_erase_size() -> usize {
+    <esp_storage_manager::FlashStorage<'static> as NorFlash>::ERASE_SIZE
 }
 
 /// In-RAM write session (see the module doc comment for why this doesn't
@@ -844,19 +733,13 @@ impl atomic_ota::ArtifactStorage for EspArtifactStorage<'_> {
 /// single static session -- this device only ever serves one HTTP
 /// connection at a time anyway.
 struct WriteSession {
-    slot: AppPartitionSubType,
-    /// Absolute flash offset of the target partition, resolved once in
-    /// [`write_begin`] ([`WriteTarget`]) and cached for the whole session --
-    /// no partition-table re-parse per chunk.
-    partition_offset: u32,
-    /// One sector, filled from the engine's own undurable tail as
-    /// [`EspArtifactStorage`] flushes it. Heap-allocated (`Box`): 4 KiB is
-    /// too large to risk on an embassy task's stack
-    /// (`#![deny(clippy::large_stack_frames)]`), and this way nothing
-    /// changes if `OTA_SECTOR` ever grows. Allocated once here and reused
-    /// for the whole session (borrowed by a fresh `EspArtifactStorage` on
-    /// every call) -- never reallocated per chunk.
-    scratch: Box<[u8; OTA_SECTOR as usize]>,
+    /// Physical ESP partition selected once at begin. EWBT chooses the slot;
+    /// `atomic-ota-esp` resolves that slot to this offset/size descriptor.
+    partition: AppPartition,
+    /// One erase block, heap-allocated so it never consumes an Embassy task
+    /// stack frame. The external backend borrows and reuses it on every
+    /// append/finish call; padding remains a physical-write detail only.
+    scratch: Box<[u8]>,
     /// The generic engine: received/durable byte counts, the undurable
     /// tail, and the streaming digest -- see `atomic_ota::artifact`'s own
     /// doc comment. Everything sector-shaped stays out here, in
@@ -1014,9 +897,8 @@ pub async fn write_begin(storage: &SharedStorage, params: SessionParams) -> Resu
     }
 
     *WRITE_SESSION.lock().await = Some(WriteSession {
-        slot: target.slot,
-        partition_offset: target.offset,
-        scratch: Box::new([0u8; OTA_SECTOR as usize]),
+        partition: target,
+        scratch: alloc::vec![0u8; ota_erase_size()].into_boxed_slice(),
         engine: atomic_ota::WriteSession::begin(u64::from(params.total), expected_digest),
         started_at: Instant::now(),
         sectors_flushed: 0,
@@ -1025,8 +907,8 @@ pub async fn write_begin(storage: &SharedStorage, params: SessionParams) -> Resu
     Ok(())
 }
 
-/// Appends `data` to the session, flushing whole sectors to flash as they
-/// fill (see [`WriteSession`]'s and [`EspArtifactStorage`]'s doc comments).
+/// Appends `data` to the session. `atomic-ota` owns streaming/durability;
+/// `atomic-ota-esp::EspArtifactStorage` owns the physical erase/program work.
 /// Handles `data` of any length, not just the HTTP handler's own
 /// read-buffer size -- it may span several sectors in one call.
 pub async fn write_chunk(storage: &SharedStorage, data: &[u8]) -> bool {
@@ -1046,12 +928,17 @@ pub async fn write_chunk(storage: &SharedStorage, data: &[u8]) -> bool {
     }
 
     let mut storage_guard = storage.lock().await;
-    let mut backend =
-        EspArtifactStorage { storage: &mut storage_guard, partition_offset: session.partition_offset, scratch: &mut *session.scratch };
     let before = session.engine.durable();
-    let ok = session.engine.append(&mut backend, data).is_ok();
+    let ok = storage_guard
+        .with_raw_flash(|flash| {
+            let Ok(mut backend) = EspArtifactStorage::new(flash, session.partition, session.scratch.as_mut()) else {
+                return false;
+            };
+            session.engine.append(&mut backend, data).is_ok()
+        })
+        .unwrap_or(false);
     let after = session.engine.durable();
-    session.sectors_flushed += ((after - before) as u32).div_ceil(OTA_SECTOR);
+    session.sectors_flushed += (after - before).div_ceil(ota_erase_size() as u64) as u32;
     ok
 }
 
@@ -1079,34 +966,45 @@ pub async fn write_finish(storage: &SharedStorage) -> Result<WriteFinishOk, Writ
     let Some(session) = WRITE_SESSION.lock().await.take() else {
         return Err(WriteFinishError::NotWriting);
     };
-    let WriteSession { slot, partition_offset, mut scratch, engine, started_at, mut sectors_flushed, params } = session;
+    let WriteSession { partition, mut scratch, engine, started_at, mut sectors_flushed, params } = session;
+    let slot = app_slot_to_subtype(partition.slot);
 
     // The image's own size rarely lands on a sector boundary: `finish`
     // flushes whatever's left buffered (a final, partial sector) before
-    // checking completeness and the digest (see `EspArtifactStorage`'s own
-    // comment on the padding this needs).
+    // checking completeness and the digest. The external ESP backend owns
+    // the final-block padding and erase/program geometry.
     let before = engine.durable();
     let committed = {
         let mut storage_guard = storage.lock().await;
-        let mut backend =
-            EspArtifactStorage { storage: &mut storage_guard, partition_offset, scratch: &mut *scratch };
-        match engine.finish(&mut backend) {
-            Ok(committed) => committed,
-            Err(atomic_ota::Error::DigestMismatch(computed)) => {
+        let result = storage_guard
+            .with_raw_flash(|flash| {
+                let Ok(mut backend) = EspArtifactStorage::new(flash, partition, scratch.as_mut()) else {
+                    return None;
+                };
+                Some(engine.finish(&mut backend))
+            })
+            .flatten();
+        match result {
+            Some(Ok(committed)) => committed,
+            Some(Err(atomic_ota::Error::DigestMismatch(computed))) => {
                 warn!("ota: digest mismatch, attendu={} calculé={}", params.digest, format_digest(&computed));
                 return Err(WriteFinishError::DigestMismatch);
             }
-            Err(atomic_ota::Error::Incomplete { durable }) => {
+            Some(Err(atomic_ota::Error::Incomplete { durable })) => {
                 warn!("ota: session ended at {durable} of {} octets", params.total);
                 return Err(WriteFinishError::Incomplete);
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 warn!("ota: write finish failed ({e:?})");
+                return Err(WriteFinishError::Incomplete);
+            }
+            None => {
+                warn!("ota: ESP artifact backend could not be constructed");
                 return Err(WriteFinishError::Incomplete);
             }
         }
     };
-    sectors_flushed += ((committed.size - before) as u32).div_ceil(OTA_SECTOR);
+    sectors_flushed += (committed.size - before).div_ceil(ota_erase_size() as u64) as u32;
 
     let digest = format_digest(&committed.digest);
     let Some(target) = Target::from_subtype(slot) else {
