@@ -194,6 +194,7 @@ pub(super) async fn reboot_after_delay(lpwr: LPWR<'static>) -> ! {
 pub(super) async fn serve(
     stack: Stack<'static>,
     storage: &'static SharedStorage,
+    tls_config: &'static crate::tls::TlsConfigSpace,
     tls: crate::tls::TlsReferenceStatic,
     router: &picoserve::Router<impl PathRouter>,
 ) -> ! {
