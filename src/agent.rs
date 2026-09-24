@@ -12,8 +12,6 @@ use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use config_space_manager::{Budget, ConfigSpace};
-use esp_storage_manager::Key;
-use log::{info, warn};
 use picoserve::extract::FromRequestParts;
 use picoserve::request::RequestParts;
 use serde::{Deserialize, Serialize};
@@ -27,11 +25,6 @@ use crate::storage::{ConfigSetResult, SharedStorage, StorageError};
 pub const API_VERSIONS: &[&str] = &["v1alpha1"];
 pub const FW_NAME: &str = "embewi-agent-esp";
 pub const FW_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-const LEGACY_NAMESPACE: Key = Key::from_str("agent");
-const LEGACY_KEY_NODE_ID: Key = Key::from_str("node_id");
-const LEGACY_KEY_CTRL_URL: Key = Key::from_str("ctrl_url");
-const LEGACY_KEY_TOKEN: Key = Key::from_str("token");
 
 const CONFIG_MAGIC: &[u8; 4] = b"AGC1";
 const CONFIG_HEADER_LEN: usize = 10;
@@ -117,52 +110,6 @@ async fn load_config(space: &AgentConfigSpace) -> Result<AgentConfig, AgentConfi
         Ok(Some(snapshot)) => AgentConfig::decode(&snapshot.data).ok_or(AgentConfigError::InvalidValue),
         Ok(None) => Ok(AgentConfig::default()),
         Err(_) => Err(AgentConfigError::Persistence),
-    }
-}
-
-/// One-way migration bridge from the former application-owned NVS keys.
-/// The ConfigSpace blob is committed first and legacy keys are removed only
-/// afterwards, so a power cut cannot erase the only usable representation.
-pub async fn migrate_legacy_config(storage: &'static SharedStorage, space: &AgentConfigSpace) {
-    match space.load().await {
-        Ok(Some(_)) => return,
-        Err(e) => {
-            warn!("agent: config-space load failed before legacy migration: {e:?}");
-            return;
-        }
-        Ok(None) => {}
-    }
-
-    let legacy = {
-        let mut storage = storage.lock().await;
-        AgentConfig {
-            node_id: storage.get_string(&LEGACY_NAMESPACE, &LEGACY_KEY_NODE_ID).unwrap_or_default(),
-            ctrl_url: storage.get_string(&LEGACY_NAMESPACE, &LEGACY_KEY_CTRL_URL).unwrap_or_default(),
-            token: storage.get_string(&LEGACY_NAMESPACE, &LEGACY_KEY_TOKEN).unwrap_or_default(),
-        }
-    };
-    if legacy.node_id.is_empty() && legacy.ctrl_url.is_empty() && legacy.token.is_empty() {
-        return;
-    }
-    let Some(encoded) = legacy.encode() else {
-        warn!("agent: legacy identity does not fit the new config-space schema");
-        return;
-    };
-    match space.commit(&encoded).await {
-        Ok(generation) => {
-            let mut storage = storage.lock().await;
-            let mut cleanup_failed = false;
-            for key in [&LEGACY_KEY_NODE_ID, &LEGACY_KEY_CTRL_URL, &LEGACY_KEY_TOKEN] {
-                if storage.delete(&LEGACY_NAMESPACE, key).is_err() {
-                    cleanup_failed = true;
-                }
-            }
-            if cleanup_failed {
-                warn!("agent: migrated config but could not remove all legacy keys");
-            }
-            info!("agent: migrated legacy identity to config space generation={generation}");
-        }
-        Err(e) => warn!("agent: legacy identity migration failed: {e:?}"),
     }
 }
 
