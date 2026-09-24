@@ -21,6 +21,7 @@ use embewi_agent_esp::agent;
 use embewi_agent_esp::app_config;
 use embewi_agent_esp::hardware;
 use embewi_agent_esp::status;
+use embewi_agent_esp::tls;
 use embewi_agent_esp::storage::Storage;
 use config_space_manager::ConfigManager;
 use embewi_agent_esp::config::NvsConfigBackend;
@@ -116,6 +117,12 @@ async fn main(spawner: Spawner) -> ! {
     static AGENT_CONFIG: StaticCell<agent::AgentConfigSpace> = StaticCell::new();
     let agent_config = &*AGENT_CONFIG.init(agent_config);
 
+    let tls_config = config_manager
+        .claim("tls", tls::CONFIG_BUDGET)
+        .expect("NVS capacity insufficient for TLS config");
+    static TLS_CONFIG: StaticCell<tls::TlsConfigSpace> = StaticCell::new();
+    let tls_config = &*TLS_CONFIG.init(tls_config);
+
     let wifi_config = config_manager
         .claim("wifi", wifi::CONFIG_BUDGET)
         .expect("NVS capacity insufficient for Wi-Fi config");
@@ -170,6 +177,7 @@ async fn main(spawner: Spawner) -> ! {
         agent_config,
         app_config,
         hardware_config,
+        tls_config,
     );
 
     let mut wifi = WifiManager::new(peripherals.WIFI, spawner, wifi_config);
