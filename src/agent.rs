@@ -11,13 +11,16 @@ use core::convert::Infallible;
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU8, Ordering};
 
+use config_space_manager::{Budget, ConfigSpace};
 use esp_storage_manager::Key;
+use log::{info, warn};
 use picoserve::extract::FromRequestParts;
 use picoserve::request::RequestParts;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
-use crate::storage::{ConfigSetResult, SharedStorage, StorageError};
+use crate::config::NvsConfigBackend;
+use crate::storage::{ConfigSetResult, SharedStorage};
 
 /// Versions of the `/v1alpha1`-style protocol this agent answers, highest
 /// first (contrat §4, "Découverte de version d'API").
@@ -25,45 +28,163 @@ pub const API_VERSIONS: &[&str] = &["v1alpha1"];
 pub const FW_NAME: &str = "embewi-agent-esp";
 pub const FW_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const NAMESPACE: Key = Key::from_str("agent");
-const KEY_NODE_ID: Key = Key::from_str("node_id");
-const KEY_CTRL_URL: Key = Key::from_str("ctrl_url");
-const KEY_TOKEN: Key = Key::from_str("token");
+const LEGACY_NAMESPACE: Key = Key::from_str("agent");
+const LEGACY_KEY_NODE_ID: Key = Key::from_str("node_id");
+const LEGACY_KEY_CTRL_URL: Key = Key::from_str("ctrl_url");
+const LEGACY_KEY_TOKEN: Key = Key::from_str("token");
 
-/// The device's `node_id` (contrat §1a): the NVS value if provisioned, else
-/// a temporary MAC-derived ID (`embewi-AABBCC`) -- explicitly *not* a stable
-/// identity, callers shouldn't persist it Core-side as a long-term key.
-pub async fn node_id(storage: &SharedStorage) -> String {
-    if let Some(id) = storage.lock().await.get_string(&NAMESPACE, &KEY_NODE_ID) {
-        return id;
+const CONFIG_MAGIC: &[u8; 4] = b"AGC1";
+const CONFIG_HEADER_LEN: usize = 10;
+const MAX_NODE_ID_LEN: usize = 64;
+const MAX_CTRL_URL_LEN: usize = 192;
+const MAX_TOKEN_LEN: usize = 64;
+
+/// Reserved opaque storage for the agent identity/configuration domain.
+/// The component owns the schema; config-space-manager only owns isolation,
+/// capacity admission and complete-value replacement.
+pub const CONFIG_BUDGET: Budget = Budget::new(384);
+pub type AgentConfigSpace = ConfigSpace<NvsConfigBackend>;
+
+#[derive(Clone, Default)]
+struct AgentConfig {
+    node_id: String,
+    ctrl_url: String,
+    token: String,
+}
+
+impl AgentConfig {
+    fn encode(&self) -> Option<alloc::vec::Vec<u8>> {
+        if self.node_id.len() > MAX_NODE_ID_LEN
+            || self.ctrl_url.len() > MAX_CTRL_URL_LEN
+            || self.token.len() > MAX_TOKEN_LEN
+        {
+            return None;
+        }
+        let node_len = u16::try_from(self.node_id.len()).ok()?;
+        let ctrl_len = u16::try_from(self.ctrl_url.len()).ok()?;
+        let token_len = u16::try_from(self.token.len()).ok()?;
+        let total = CONFIG_HEADER_LEN
+            .checked_add(self.node_id.len())?
+            .checked_add(self.ctrl_url.len())?
+            .checked_add(self.token.len())?;
+        if total > CONFIG_BUDGET.max_bytes() {
+            return None;
+        }
+
+        let mut out = alloc::vec::Vec::with_capacity(total);
+        out.extend_from_slice(CONFIG_MAGIC);
+        out.extend_from_slice(&node_len.to_le_bytes());
+        out.extend_from_slice(&ctrl_len.to_le_bytes());
+        out.extend_from_slice(&token_len.to_le_bytes());
+        out.extend_from_slice(self.node_id.as_bytes());
+        out.extend_from_slice(self.ctrl_url.as_bytes());
+        out.extend_from_slice(self.token.as_bytes());
+        Some(out)
+    }
+
+    fn decode(raw: &[u8]) -> Option<Self> {
+        if raw.len() < CONFIG_HEADER_LEN || &raw[..4] != CONFIG_MAGIC {
+            return None;
+        }
+        let node_len = u16::from_le_bytes([raw[4], raw[5]]) as usize;
+        let ctrl_len = u16::from_le_bytes([raw[6], raw[7]]) as usize;
+        let token_len = u16::from_le_bytes([raw[8], raw[9]]) as usize;
+        if node_len > MAX_NODE_ID_LEN || ctrl_len > MAX_CTRL_URL_LEN || token_len > MAX_TOKEN_LEN {
+            return None;
+        }
+        let node_end = CONFIG_HEADER_LEN.checked_add(node_len)?;
+        let ctrl_end = node_end.checked_add(ctrl_len)?;
+        let token_end = ctrl_end.checked_add(token_len)?;
+        if token_end != raw.len() {
+            return None;
+        }
+        Some(Self {
+            node_id: String::from(core::str::from_utf8(&raw[CONFIG_HEADER_LEN..node_end]).ok()?),
+            ctrl_url: String::from(core::str::from_utf8(&raw[node_end..ctrl_end]).ok()?),
+            token: String::from(core::str::from_utf8(&raw[ctrl_end..token_end]).ok()?),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub enum AgentConfigError {
+    Persistence,
+    InvalidValue,
+}
+
+async fn load_config(space: &AgentConfigSpace) -> Result<AgentConfig, AgentConfigError> {
+    match space.load().await {
+        Ok(Some(snapshot)) => AgentConfig::decode(&snapshot.data).ok_or(AgentConfigError::InvalidValue),
+        Ok(None) => Ok(AgentConfig::default()),
+        Err(_) => Err(AgentConfigError::Persistence),
+    }
+}
+
+/// One-way migration bridge from the former application-owned NVS keys.
+/// The ConfigSpace blob is committed first and legacy keys are removed only
+/// afterwards, so a power cut cannot erase the only usable representation.
+pub async fn migrate_legacy_config(storage: &'static SharedStorage, space: &AgentConfigSpace) {
+    match space.load().await {
+        Ok(Some(_)) => return,
+        Err(e) => {
+            warn!("agent: config-space load failed before legacy migration: {e:?}");
+            return;
+        }
+        Ok(None) => {}
+    }
+
+    let legacy = {
+        let mut storage = storage.lock().await;
+        AgentConfig {
+            node_id: storage.get_string(&LEGACY_NAMESPACE, &LEGACY_KEY_NODE_ID).unwrap_or_default(),
+            ctrl_url: storage.get_string(&LEGACY_NAMESPACE, &LEGACY_KEY_CTRL_URL).unwrap_or_default(),
+            token: storage.get_string(&LEGACY_NAMESPACE, &LEGACY_KEY_TOKEN).unwrap_or_default(),
+        }
+    };
+    if legacy.node_id.is_empty() && legacy.ctrl_url.is_empty() && legacy.token.is_empty() {
+        return;
+    }
+    let Some(encoded) = legacy.encode() else {
+        warn!("agent: legacy identity does not fit the new config-space schema");
+        return;
+    };
+    match space.commit(&encoded).await {
+        Ok(generation) => {
+            let mut storage = storage.lock().await;
+            let mut cleanup_failed = false;
+            for key in [&LEGACY_KEY_NODE_ID, &LEGACY_KEY_CTRL_URL, &LEGACY_KEY_TOKEN] {
+                if storage.delete(&LEGACY_NAMESPACE, key).is_err() {
+                    cleanup_failed = true;
+                }
+            }
+            if cleanup_failed {
+                warn!("agent: migrated config but could not remove all legacy keys");
+            }
+            info!("agent: migrated legacy identity to config space generation={generation}");
+        }
+        Err(e) => warn!("agent: legacy identity migration failed: {e:?}"),
+    }
+}
+
+/// The device's `node_id` (contrat §1a): the ConfigSpace value if
+/// provisioned, else a temporary MAC-derived ID.
+pub async fn node_id(space: &AgentConfigSpace) -> String {
+    if let Ok(config) = load_config(space).await
+        && !config.node_id.is_empty()
+    {
+        return config.node_id;
     }
     let mac = esp_hal::efuse::base_mac_address();
     let mac = mac.as_bytes();
     format!("embewi-{:02x}{:02x}{:02x}", mac[3], mac[4], mac[5])
 }
 
-/// The Kubernetes controller URL (contrat §1a), empty if not yet
-/// provisioned. Outbound flows (heartbeat/logs, once built) should treat an
-/// empty `ctrl_url` as "nothing to talk to yet" and stay quiet, same as the
-/// reference implementation.
-pub async fn ctrl_url(storage: &SharedStorage) -> String {
-    storage
-        .lock()
-        .await
-        .get_string(&NAMESPACE, &KEY_CTRL_URL)
-        .unwrap_or_default()
+pub async fn ctrl_url(space: &AgentConfigSpace) -> String {
+    load_config(space).await.map(|c| c.ctrl_url).unwrap_or_default()
 }
 
-/// The current Bearer token, empty if none has been provisioned yet.
-/// Deliberately readable, not just comparable: `http/mod.rs`'s save flow
-/// shows it once, on the confirmation page served right before the device
-/// locks and reboots.
-pub async fn token(storage: &SharedStorage) -> String {
-    storage
-        .lock()
-        .await
-        .get_string(&NAMESPACE, &KEY_TOKEN)
-        .unwrap_or_default()
+pub async fn token(space: &AgentConfigSpace) -> String {
+    load_config(space).await.map(|c| c.token).unwrap_or_default()
 }
 
 /// 128-bit random token, hex-encoded (contrat §1a: "token vide → généré
@@ -89,23 +210,22 @@ fn generate_token() -> String {
 /// one-shot save, there's nothing to rotate to yet), so in practice this
 /// only ever generates on first provisioning.
 pub async fn save_identity(
-    storage: &SharedStorage,
+    space: &AgentConfigSpace,
     node_id: &str,
     ctrl_url: &str,
     presented_token: &str,
-) -> Result<(), StorageError> {
-    let mut storage = storage.lock().await;
-    storage.set_string(&NAMESPACE, &KEY_NODE_ID, node_id)?;
-    storage.set_string(&NAMESPACE, &KEY_CTRL_URL, ctrl_url)?;
-
+) -> Result<(), AgentConfigError> {
+    let mut config = load_config(space).await?;
+    config.node_id = String::from(node_id);
+    config.ctrl_url = String::from(ctrl_url);
     if !presented_token.is_empty() {
-        storage.set_string(&NAMESPACE, &KEY_TOKEN, presented_token)
-    } else if storage.get_string(&NAMESPACE, &KEY_TOKEN).is_none() {
-        let token = generate_token();
-        storage.set_string(&NAMESPACE, &KEY_TOKEN, &token)
-    } else {
-        Ok(())
+        config.token = String::from(presented_token);
+    } else if config.token.is_empty() {
+        config.token = generate_token();
     }
+    let encoded = config.encode().ok_or(AgentConfigError::InvalidValue)?;
+    space.commit(&encoded).await.map_err(|_| AgentConfigError::Persistence)?;
+    Ok(())
 }
 
 /// Extracts the raw Bearer token from the `Authorization` header, if any
@@ -135,10 +255,11 @@ impl<'r, State> FromRequestParts<'r, State> for Bearer {
 /// constant time (contrat §1: "pas de fuite du token octet par octet").
 /// `false` -- refusing every inbound call -- when no token has been
 /// provisioned yet (contrat §1a).
-pub async fn is_authorized(storage: &SharedStorage, presented: &str) -> bool {
-    let Some(token) = storage.lock().await.get_string(&NAMESPACE, &KEY_TOKEN) else {
+pub async fn is_authorized(space: &AgentConfigSpace, presented: &str) -> bool {
+    let token = token(space).await;
+    if token.is_empty() {
         return false;
-    };
+    }
     token.as_bytes().ct_eq(presented.as_bytes()).into()
 }
 
@@ -160,15 +281,15 @@ pub enum RotateTokenError {
 /// see [`is_authorized`]. An empty token is refused up front: rotation
 /// never doubles as a way to disable auth (§4: "on ne désactive pas l'auth
 /// par rotation").
-pub async fn rotate_token(storage: &SharedStorage, new_token: &str) -> Result<(), RotateTokenError> {
+pub async fn rotate_token(space: &AgentConfigSpace, new_token: &str) -> Result<(), RotateTokenError> {
     if !(8..=64).contains(&new_token.len()) {
         return Err(RotateTokenError::InvalidLength);
     }
-    let mut storage = storage.lock().await;
-    storage
-        .set_string(&NAMESPACE, &KEY_TOKEN, new_token)
-        .map_err(|_| RotateTokenError::WriteFailed)?;
-    if storage.get_string(&NAMESPACE, &KEY_TOKEN).as_deref() == Some(new_token) {
+    let mut config = load_config(space).await.map_err(|_| RotateTokenError::WriteFailed)?;
+    config.token = String::from(new_token);
+    let encoded = config.encode().ok_or(RotateTokenError::WriteFailed)?;
+    space.commit(&encoded).await.map_err(|_| RotateTokenError::WriteFailed)?;
+    if token(space).await == new_token {
         Ok(())
     } else {
         Err(RotateTokenError::WriteFailed)
@@ -322,7 +443,7 @@ pub struct Info {
     app_port: u16,
 }
 
-pub async fn info(storage: &SharedStorage) -> Info {
+pub async fn info(storage: &SharedStorage, agent_config: &AgentConfigSpace) -> Info {
     let (config_generation, app_port) = {
         let mut storage = storage.lock().await;
         (storage.cfg_generation(), storage.load_app_port())
@@ -330,7 +451,7 @@ pub async fn info(storage: &SharedStorage) -> Info {
     let staged = crate::ota::staged(storage).await;
     let dram = esp_metadata_generated::memory_range!("DRAM");
     Info {
-        node_id: node_id(storage).await,
+        node_id: node_id(agent_config).await,
         api_versions: API_VERSIONS,
         chip: esp_metadata_generated::chip_pretty!(),
         ram_size: (dram.end - dram.start) as u32,
