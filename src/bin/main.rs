@@ -27,6 +27,7 @@ use config_space_manager::ConfigManager;
 use embewi_agent_esp::config::NvsConfigBackend;
 use embewi_agent_esp::wifi::{self, WifiManager};
 use embewi_agent_esp::provisioning;
+use embewi_agent_esp::runtime_config;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -117,6 +118,16 @@ async fn main(spawner: Spawner) -> ! {
     static AGENT_CONFIG: StaticCell<agent::AgentConfigSpace> = StaticCell::new();
     let agent_config = &*AGENT_CONFIG.init(agent_config);
 
+    let runtime_space = config_manager
+        .claim("runtime", runtime_config::CONFIG_BUDGET)
+        .expect("NVS capacity insufficient for runtime config");
+    static RUNTIME_CONFIG: StaticCell<runtime_config::RuntimeConfig> = StaticCell::new();
+    let runtime_config = &*RUNTIME_CONFIG.init(
+        runtime_config::RuntimeConfig::new(runtime_space)
+            .await
+            .expect("runtime config unavailable"),
+    );
+
     let tls_config = config_manager
         .claim("tls", tls::CONFIG_BUDGET)
         .expect("NVS capacity insufficient for TLS config");
@@ -178,6 +189,7 @@ async fn main(spawner: Spawner) -> ! {
         app_config,
         hardware_config,
         tls_config,
+        runtime_config,
     );
 
     let mut wifi = WifiManager::new(peripherals.WIFI, spawner, wifi_config);

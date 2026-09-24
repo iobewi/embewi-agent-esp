@@ -23,6 +23,7 @@ pub struct ApplicationSupervisor {
     app_config: &'static crate::app_config::AppConfigSpace,
     hardware_config: &'static crate::hardware::HardwareConfigSpace,
     tls_config: &'static crate::tls::TlsConfigSpace,
+    runtime_config: &'static crate::runtime_config::RuntimeConfig,
     ip_services_started: bool,
 }
 
@@ -35,6 +36,7 @@ impl ApplicationSupervisor {
         app_config: &'static crate::app_config::AppConfigSpace,
         hardware_config: &'static crate::hardware::HardwareConfigSpace,
         tls_config: &'static crate::tls::TlsConfigSpace,
+        runtime_config: &'static crate::runtime_config::RuntimeConfig,
     ) -> Self {
         Self {
             spawner,
@@ -44,6 +46,7 @@ impl ApplicationSupervisor {
             app_config,
             hardware_config,
             tls_config,
+            runtime_config,
             ip_services_started: false,
         }
     }
@@ -77,13 +80,13 @@ impl ApplicationSupervisor {
 
         // Admin/config server. It internally selects provisioning UI or API.
         self.spawner
-            .spawn(crate::http::run(stack, storage, self.agent_config, self.app_config, self.hardware_config, self.tls_config, self.spawner, lpwr, self.tls).unwrap());
+            .spawn(crate::http::run(stack, storage, self.agent_config, self.app_config, self.hardware_config, self.tls_config, self.runtime_config, self.spawner, lpwr, self.tls).unwrap());
 
         // Services that require an IP stack. Heartbeat/log-stream remain
         // silent until their own application configuration is available.
         self.spawner.spawn(crate::time::sync_task(stack).unwrap());
         self.spawner
-            .spawn(crate::heartbeat::run(stack, storage, self.agent_config, self.tls_config, self.tls).unwrap());
+            .spawn(crate::heartbeat::run(stack, storage, self.agent_config, self.runtime_config, self.tls_config, self.tls).unwrap());
         self.spawner
             .spawn(crate::log_stream::run(stack, self.agent_config, self.tls_config, self.tls).unwrap());
     }

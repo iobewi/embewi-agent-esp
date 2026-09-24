@@ -37,6 +37,7 @@ pub async fn serve(
     agent_config: &'static agent::AgentConfigSpace,
     app_config: &'static crate::app_config::AppConfigSpace,
     tls_config: &'static crate::tls::TlsConfigSpace,
+    runtime_config: &'static crate::runtime_config::RuntimeConfig,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
@@ -56,7 +57,7 @@ pub async fn serve(
                 if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
-                json_ok(serde_json::to_string(&agent::info(storage, agent_config, app_config).await).unwrap_or_default())
+                json_ok(serde_json::to_string(&agent::info(storage, agent_config, app_config, runtime_config).await).unwrap_or_default())
             }),
         )
         .route(
@@ -74,19 +75,24 @@ pub async fn serve(
                 if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
-                json_ok(serde_json::to_string(&agent::config(storage).await).unwrap_or_default())
+                match runtime_config.view().await {
+                    Ok(view) => json_ok(serde_json::to_string(&view).unwrap_or_default()),
+                    Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"error\":\"nvs_read_failed\"}"),
+                }
             })
             .post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
                 if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
-                let Ok(push) = serde_json::from_str::<agent::ConfigPush>(&body) else {
+                let Ok(push) = serde_json::from_str::<crate::runtime_config::ConfigPush>(&body) else {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_data_field\"}");
                 };
-                if agent::push_config(storage, &push).await.is_err() {
-                    return json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"error\":\"nvs_write_failed\"}");
-                }
-                let generation = storage.lock().await.cfg_generation();
+                let generation = match runtime_config.apply(&push).await {
+                    Ok(generation) => generation,
+                    Err(_) => {
+                        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"error\":\"nvs_write_failed\"}");
+                    }
+                };
                 json_ok(format!(
                     "{{\"status\":\"saved\",\"generation\":{generation},\"note\":\"effective_after_reboot\"}}"
                 ))

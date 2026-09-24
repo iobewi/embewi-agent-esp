@@ -4,7 +4,6 @@
 //! Physical flash ownership, cached NVS coordination and bounded raw-flash
 //! access live in the reusable `esp-storage-manager` crate.
 
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -33,32 +32,18 @@ const PARTITION_SIZE: usize = 0x6000;
 const SYSTEM_NAMESPACE: Key = Key::from_str("system");
 const KEY_LOCKED: Key = Key::from_str("locked");
 
-const CFG_NAMESPACE: Key = Key::from_str("cfg");
-const KEY_CFG_GENERATION: Key = Key::from_str("_gen");
-/// `esp-nvs` keys are capped at 15 bytes.
-const MAX_CFG_KEY_LEN: usize = 15;
-
 pub struct Storage {
     backend: StorageManager,
-    /// McuConfigMap snapshot taken once at boot. It intentionally does not
-    /// change when live NVS values are updated later through the admin API.
-    active_cfg: BTreeMap<String, String>,
-    active_cfg_generation: u32,
 }
 
 impl Storage {
     pub fn new(flash: FLASH<'static>) -> Self {
-        let mut storage = Self {
+        Self {
             backend: StorageManager::new(
                 flash,
                 NvsPartition::new(PARTITION_OFFSET, PARTITION_SIZE),
             ),
-            active_cfg: BTreeMap::new(),
-            active_cfg_generation: 0,
-        };
-        storage.active_cfg_generation = storage.cfg_generation();
-        storage.active_cfg = storage.cfg_entries();
-        storage
+        }
     }
 
     /// Bounded raw access used by the OTA adapter. The agent preserves the
@@ -169,46 +154,5 @@ impl Storage {
     }
 
 
-    pub fn cfg_generation(&mut self) -> u32 {
-        self.get_u32(&CFG_NAMESPACE, &KEY_CFG_GENERATION).unwrap_or(0)
-    }
 
-    pub fn active_cfg_generation(&self) -> u32 {
-        self.active_cfg_generation
-    }
-
-    pub fn active_cfg(&self) -> &BTreeMap<String, String> {
-        &self.active_cfg
-    }
-
-    pub fn cfg_set(&mut self, key: &str, value: &str) -> Result<ConfigSetResult, StorageError> {
-        if key.is_empty() || key.len() > MAX_CFG_KEY_LEN || key.starts_with('_') {
-            return Ok(ConfigSetResult::Rejected);
-        }
-        let key = Key::from_str(key);
-        if value.is_empty() {
-            self.delete(&CFG_NAMESPACE, &key)?;
-            Ok(ConfigSetResult::Deleted)
-        } else {
-            self.set_string(&CFG_NAMESPACE, &key, value)?;
-            Ok(ConfigSetResult::Stored)
-        }
-    }
-
-    pub fn cfg_bump_generation(&mut self) -> Result<u32, StorageError> {
-        let next = self.cfg_generation().wrapping_add(1);
-        self.set_u32(&CFG_NAMESPACE, &KEY_CFG_GENERATION, next)?;
-        Ok(next)
-    }
-
-    pub fn cfg_entries(&mut self) -> BTreeMap<String, String> {
-        let mut out = BTreeMap::new();
-        for (key, value) in self.backend.string_entries(&CFG_NAMESPACE) {
-            if key.as_str().starts_with('_') {
-                continue;
-            }
-            out.insert(String::from(key.as_str()), value);
-        }
-        out
-    }
 }

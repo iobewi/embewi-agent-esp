@@ -4,7 +4,6 @@
 //! `src/ota.rs` (contrat §3/§6) -- this module just assembles the JSON
 //! shapes, `ota.rs` owns the actual OTA state machine.
 
-use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use core::convert::Infallible;
@@ -14,11 +13,11 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use config_space_manager::{Budget, ConfigSpace};
 use picoserve::extract::FromRequestParts;
 use picoserve::request::RequestParts;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use subtle::ConstantTimeEq;
 
 use crate::config::NvsConfigBackend;
-use crate::storage::{ConfigSetResult, SharedStorage, StorageError};
+use crate::storage::SharedStorage;
 
 /// Versions of the `/v1alpha1`-style protocol this agent answers, highest
 /// first (contrat §4, "Découverte de version d'API").
@@ -249,53 +248,6 @@ pub async fn app_port(space: &crate::app_config::AppConfigSpace) -> u16 {
     crate::app_config::port(space).await
 }
 
-/// `GET /v1alpha1/config` response body (contrat §4a).
-#[derive(Serialize)]
-pub struct Config {
-    generation: u32,
-    active_generation: u32,
-    active: BTreeMap<String, String>,
-    nvs: BTreeMap<String, String>,
-}
-
-pub async fn config(storage: &SharedStorage) -> Config {
-    let mut storage = storage.lock().await;
-    Config {
-        generation: storage.cfg_generation(),
-        active_generation: storage.active_cfg_generation(),
-        active: storage.active_cfg().clone(),
-        nvs: storage.cfg_entries(),
-    }
-}
-
-/// `POST /v1alpha1/config` request body (contrat §4a): merge-on-key, an
-/// empty value erases that key back to its build default.
-#[derive(Deserialize)]
-pub struct ConfigPush {
-    data: BTreeMap<String, String>,
-}
-
-/// Applies a McuConfigMap push. `Ok(None)` if `data` was empty or every key
-/// in it was rejected (internal `_`-prefixed or malformed) -- a true no-op,
-/// so the generation isn't bumped for nothing (contrat: bumped "à chaque
-/// `POST /config`", but an all-rejected push saved nothing to bump for).
-///
-/// Stops at the first NVS failure and returns it, without bumping the
-/// generation: keys applied before the failure stay in NVS (the push isn't
-/// atomic), but the Core is told it failed and can simply retry it.
-pub async fn push_config(storage: &SharedStorage, push: &ConfigPush) -> Result<Option<u32>, StorageError> {
-    let mut storage = storage.lock().await;
-    let mut changed = false;
-    for (key, value) in &push.data {
-        // Internal (`_`-prefixed) and malformed keys come back `Rejected`.
-        match storage.cfg_set(key, value)? {
-            ConfigSetResult::Stored | ConfigSetResult::Deleted => changed = true,
-            ConfigSetResult::Rejected => {}
-        }
-    }
-    if changed { storage.cfg_bump_generation().map(Some) } else { Ok(None) }
-}
-
 /// Contrat §2's device state machine. Drives both `GET /info`/`GET /health`
 /// and the heartbeat's `state`/`ota_validated` (contrat §3/§5) -- one
 /// source of truth instead of independently-guessed literals drifting
@@ -386,12 +338,17 @@ pub struct Info {
     firmware: Firmware,
     staged: StagedInfo,
     state: &'static str,
-    config_generation: u32,
+    config_generation: u64,
     app_port: u16,
 }
 
-pub async fn info(storage: &SharedStorage, agent_config: &AgentConfigSpace, app_config: &crate::app_config::AppConfigSpace) -> Info {
-    let config_generation = storage.lock().await.cfg_generation();
+pub async fn info(
+    storage: &SharedStorage,
+    agent_config: &AgentConfigSpace,
+    app_config: &crate::app_config::AppConfigSpace,
+    runtime_config: &crate::runtime_config::RuntimeConfig,
+) -> Info {
+    let config_generation = runtime_config.generation().await;
     let app_port = crate::app_config::port(app_config).await;
     let staged = crate::ota::staged(storage).await;
     let dram = esp_metadata_generated::memory_range!("DRAM");

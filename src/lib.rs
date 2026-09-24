@@ -10,6 +10,7 @@ pub mod http;
 pub mod log_stream;
 pub mod ota;
 pub mod provisioning;
+pub mod runtime_config;
 pub mod stack_usage;
 pub mod status;
 pub mod storage;
