@@ -216,7 +216,7 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: Tl
         let stable = match connect_and_upgrade(tls, stack, storage, &mut rx_buffer, &mut tx_buffer, &host_c, port, &token).await {
             Ok(mut session) => {
                 let connected_at = Instant::now();
-                let err = pump_session(&mut session, storage).await;
+                let err = pump_session(&mut session, storage, &token).await;
                 warn!("logs: session ended: {err}");
                 connected_at.elapsed() >= STABLE_THRESHOLD
             }
@@ -329,8 +329,19 @@ async fn connect_and_upgrade<'h, 'buf>(
 /// ring-buffer drain are all exactly what they were, just moved out of
 /// [`connect_and_upgrade`] so [`run`] can time how long the session
 /// actually stayed up.
-async fn pump_session<'h, 'buf>(session: &mut Session<'h, TcpSocket<'buf>>, storage: &'static SharedStorage) -> AllocString {
+async fn pump_session<'h, 'buf>(
+    session: &mut Session<'h, TcpSocket<'buf>>,
+    storage: &'static SharedStorage,
+    token_snapshot: &str,
+) -> AllocString {
     loop {
+        // The Bearer credential is bound to the HTTP upgrade request. If a
+        // token rotation lands while this WebSocket is alive, reconnect so
+        // the next upgrade is authenticated with the new credential instead
+        // of keeping an already-authenticated old-token session indefinitely.
+        if agent::token(storage).await != token_snapshot {
+            return AllocString::from("bearer token changed, reconnecting");
+        }
         // Bounded read for whatever the server sent, mainly keepalive
         // Pings: a write-only client that never reads never answers them,
         // and real WS servers (confirmed against Python's `websockets`)
