@@ -17,6 +17,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_hal::usb_serial_jtag::UsbSerialJtag;
 use static_cell::StaticCell;
 
+use embewi_agent_esp::agent;
 use embewi_agent_esp::status;
 use embewi_agent_esp::storage::Storage;
 use config_space_manager::ConfigManager;
@@ -139,20 +140,34 @@ async fn main(spawner: Spawner) -> ! {
     let tls = embewi_agent_esp::tls::init();
 
     let (rx, tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
-    let mut supervisor =
-        embewi_agent_esp::supervisor::ApplicationSupervisor::new(spawner, peripherals.LPWR, tls);
 
     // Components claim isolated persistent configuration capabilities at
-    // boot. The manager knows capacities/ownership only; the Wi-Fi component
-    // owns the bytes and schema inside its space.
+    // boot. The manager knows capacities/ownership only; each component owns
+    // the schema inside its opaque space. Claims are completed in a fixed
+    // order before any application service is spawned.
     let config_backend = NvsConfigBackend::new(storage)
         .await
         .expect("NVS config backend unavailable");
     let mut config_manager = ConfigManager::new(config_backend);
+
+    let agent_config = config_manager
+        .claim("agent", agent::CONFIG_BUDGET)
+        .expect("NVS capacity insufficient for agent config");
+    static AGENT_CONFIG: StaticCell<agent::AgentConfigSpace> = StaticCell::new();
+    let agent_config = &*AGENT_CONFIG.init(agent_config);
+    agent::migrate_legacy_config(storage, agent_config).await;
+
     let wifi_config = config_manager
         .claim("wifi", wifi::CONFIG_BUDGET)
         .expect("NVS capacity insufficient for Wi-Fi config");
     wifi::migrate_legacy_config(storage, &wifi_config).await;
+
+    let mut supervisor = embewi_agent_esp::supervisor::ApplicationSupervisor::new(
+        spawner,
+        peripherals.LPWR,
+        tls,
+        agent_config,
+    );
 
     let mut wifi = WifiManager::new(peripherals.WIFI, spawner, wifi_config);
     if wifi.reconnect_saved().await {
