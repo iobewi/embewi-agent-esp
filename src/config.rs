@@ -109,17 +109,6 @@ impl NvsConfigBackend {
         Ok((generation, flags & FLAG_PRESENT != 0, &raw[HEADER_LEN..]))
     }
 
-    async fn current_generation(&self, key: &Key) -> Result<u64, NvsConfigError> {
-        let raw = self.storage.lock().await.read_blob(&NAMESPACE, key)?;
-        match raw {
-            None => Ok(0),
-            Some(raw) => {
-                let (generation, _, _) = Self::decode_record(&raw)?;
-                Ok(generation)
-            }
-        }
-    }
-
     async fn replace(
         &self,
         space: &str,
