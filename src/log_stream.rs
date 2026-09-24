@@ -200,13 +200,20 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: Tl
             Timer::after(BASE_BACKOFF).await;
             continue;
         };
+
+        let token = agent::token(storage).await;
+        if token.is_empty() {
+            drain_and_discard();
+            Timer::after(BASE_BACKOFF).await;
+            continue;
+        }
         let Ok(host_c) = CString::new(host) else {
             drain_and_discard();
             Timer::after(BASE_BACKOFF).await;
             continue;
         };
 
-        let stable = match connect_and_upgrade(tls, stack, storage, &mut rx_buffer, &mut tx_buffer, &host_c, port).await {
+        let stable = match connect_and_upgrade(tls, stack, storage, &mut rx_buffer, &mut tx_buffer, &host_c, port, &token).await {
             Ok(mut session) => {
                 let connected_at = Instant::now();
                 let err = pump_session(&mut session, storage).await;
@@ -240,6 +247,7 @@ async fn connect_and_upgrade<'h, 'buf>(
     tx_buffer: &'buf mut [u8],
     host: &'h core::ffi::CStr,
     port: u16,
+    token: &str,
 ) -> Result<Session<'h, TcpSocket<'buf>>, AllocString> {
     let mut session = crate::tls::connect_client(tls, stack, storage, rx_buffer, tx_buffer, host, port)
         .await
@@ -263,6 +271,7 @@ async fn connect_and_upgrade<'h, 'buf>(
             let _ = write!(request, "{name}: {value}\r\n");
         }
     }
+    let _ = write!(request, "Authorization: Bearer {token}\r\n");
     request.push_str("\r\n");
     session
         .write(request.as_bytes())
