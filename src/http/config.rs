@@ -85,6 +85,7 @@ fn page(led_gpio: Option<u8>, node_id: &str, ctrl_url: &str, message: Option<&st
 pub async fn serve(
     stack: Stack<'static>,
     storage: &'static SharedStorage,
+    agent_config: &'static agent::AgentConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
@@ -112,8 +113,8 @@ pub async fn serve(
                     return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
                         .with_content_type("text/html; charset=utf-8");
                 }
-                let node_id = agent::node_id(storage).await;
-                let ctrl_url = agent::ctrl_url(storage).await;
+                let node_id = agent::node_id(agent_config).await;
+                let ctrl_url = agent::ctrl_url(agent_config).await;
                 Response::ok(page(led_gpio, &node_id, &ctrl_url, None))
                     .with_content_type("text/html; charset=utf-8")
             })
@@ -148,7 +149,7 @@ pub async fn serve(
                 // page for good) unless every write actually reached NVS.
                 let saved = async {
                     storage.lock().await.save_led_gpio(gpio)?;
-                    agent::save_identity(storage, &form.node_id, &form.ctrl_url, "").await
+                    agent::save_identity(agent_config, &form.node_id, &form.ctrl_url, "").await
                 }
                 .await;
                 if saved.is_err() {
@@ -163,7 +164,7 @@ pub async fn serve(
                     )
                     .with_content_type("text/html; charset=utf-8");
                 }
-                let token = agent::token(storage).await;
+                let token = agent::token(agent_config).await;
                 if storage.lock().await.lock().is_err() {
                     return Response::new(
                         StatusCode::INTERNAL_SERVER_ERROR,
