@@ -10,5 +10,3 @@ categories = ["embedded", "no-std"]
 
 [dependencies]
 
-[dev-dependencies]
-futures = "0.3"
