@@ -173,7 +173,7 @@ pub async fn serve(
                 json_ok(serde_json::to_string(&resp).unwrap_or_default())
             }),
         )
-        .route("/v1alpha1/ota/write", put_service(OtaWrite { storage }))
+        .route("/v1alpha1/ota/write", put_service(OtaWrite { storage, agent_config }))
         .route(
             "/v1alpha1/ota/activate",
             post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
