@@ -119,7 +119,7 @@ dependencies = [
 [[package]]
 name = "atomic-ota-esp"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/atomic-ota-esp?rev=ab07071#ab070711ad2f9d7d9c9a4460096e412afa8bec47"
+source = "git+https://github.com/iobewi/atomic-ota-esp?rev=079153e#079153e0ec92b939dc58e413521ca52deb789e6c"
 dependencies = [
  "atomic-ota",
  "embedded-storage",
