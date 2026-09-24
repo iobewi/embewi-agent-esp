@@ -85,6 +85,6 @@ impl ApplicationSupervisor {
         self.spawner
             .spawn(crate::heartbeat::run(stack, storage, self.agent_config, self.tls_config, self.tls).unwrap());
         self.spawner
-            .spawn(crate::log_stream::run(stack, storage, self.agent_config, self.tls_config, self.tls).unwrap());
+            .spawn(crate::log_stream::run(stack, self.agent_config, self.tls_config, self.tls).unwrap());
     }
 }
