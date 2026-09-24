@@ -87,6 +87,7 @@ pub async fn serve(
     storage: &'static SharedStorage,
     agent_config: &'static agent::AgentConfigSpace,
     hardware_config: &'static crate::hardware::HardwareConfigSpace,
+    tls_config: &'static crate::tls::TlsConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
@@ -193,5 +194,5 @@ pub async fn serve(
             }),
         );
 
-    super::serve(stack, storage, tls, &router).await
+    super::serve(stack, storage, tls_config, tls, &router).await
 }
