@@ -47,6 +47,7 @@ fn parse_content_range(value: &str) -> Option<(u32, u32, u32)> {
 
 pub struct OtaWrite {
     pub storage: &'static SharedStorage,
+    pub agent_config: &'static agent::AgentConfigSpace,
 }
 
 impl RequestHandlerService for OtaWrite {
@@ -63,7 +64,7 @@ impl RequestHandlerService for OtaWrite {
             .and_then(|v| v.as_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .unwrap_or("");
-        if !agent::is_authorized(self.storage, token).await {
+        if !agent::is_authorized(self.agent_config, token).await {
             return unauthorized()
                 .write_to(request.body_connection.finalize().await?, response_writer)
                 .await;
