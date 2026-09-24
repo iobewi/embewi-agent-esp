@@ -44,7 +44,7 @@ fault-injection-freeze = []
 # here is reproducible without depending on a sibling checkout's layout.
 atomic-ota = { git = "https://github.com/iobewi/atomic-ota", rev = "0388c16" }
 # ESP partition lookup + sector-aware ArtifactStorage backend for atomic-ota.
-atomic-ota-esp = { git = "https://github.com/iobewi/atomic-ota-esp", rev = "ab07071", features = ["esp32c3"] }
+atomic-ota-esp = { git = "https://github.com/iobewi/atomic-ota-esp", rev = "079153e", features = ["esp32c3"] }
 # Transport-agnostic Improv Serial codec/parser extracted from this firmware.
 # Pinned by commit while its API is still pre-stable.
 improv-serial = { git = "https://github.com/iobewi/improv-serial", rev = "8e9d2c4" }
