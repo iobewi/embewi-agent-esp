@@ -1,13 +1,3 @@
-[workspace]
-# `crates/ota-logic` isolates the OTA write-session's pure decision logic
-# (contrat §4's `Content-Range` resume protocol) from everything
-# `esp-hal`-dependent, specifically so it can be unit-tested with a plain
-# `cargo test` -- see that crate's own doc comment. The root package below
-# is implicitly a workspace member too.
-members = ["crates/ota-logic"]
-# `boot/` (embewi-boot) is a separate Cargo project with its own linker script.
-exclude = ["boot"]
-
 [package]
 edition      = "2024"
 name         = "embewi-agent-esp"
@@ -39,7 +29,7 @@ fault-injection-freeze = []
 
 [dependencies]
 # Generic transactional OTA engine core, extracted from this crate's own
-# `ota.rs`/`ota-logic` -- see https://github.com/iobewi/atomic-ota. Pinned
+# `ota.rs` -- see https://github.com/iobewi/atomic-ota. Pinned
 # by commit (not a version yet: nothing in it is a stable API) so a build
 # here is reproducible without depending on a sibling checkout's layout.
 atomic-ota = { git = "https://github.com/iobewi/atomic-ota", rev = "0388c16" }
@@ -151,9 +141,6 @@ httparse = { version = "1", default-features = false }
 embassy-futures = "0.1"
 # Generic isolated configuration spaces; ESP/NVS mapping lives in src/config.rs.
 config-space-manager = { git = "https://github.com/iobewi/config-space-manager", rev = "c6e58f4" }
-# Pure write-session decision logic (Content-Range resume), unit-tested on
-# host -- see crates/ota-logic's own doc comment.
-ota-logic = { path = "crates/ota-logic" }
 # Power-cut-safe A/B boot-state machine and image validator shared with
 # embewi-boot (boot/). Pinned while the external API remains pre-stable.
 atomic-boot = { git = "https://github.com/iobewi/atomic-boot", rev = "0e05ac2" }
