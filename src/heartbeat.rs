@@ -93,7 +93,7 @@ fn split_host_port(ctrl_url: &str) -> Option<(&str, u16)> {
 }
 
 #[embassy_executor::task]
-pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_config: &'static agent::AgentConfigSpace, tls: TlsReferenceStatic) -> ! {
+pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_config: &'static agent::AgentConfigSpace, tls_config: &'static crate::tls::TlsConfigSpace, tls: TlsReferenceStatic) -> ! {
     // Declared once outside the reconnect loop, like `http::run`'s own
     // buffers -- reused across every reconnection attempt (not every
     // heartbeat -- there's only one connection attempt per many
@@ -136,7 +136,7 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_c
                 && let Ok(host_c) = CString::new(host)
             {
                 if let Err(e) =
-                    run_session(tls, stack, storage, agent_config, &mut rx_buffer, &mut tx_buffer, &host_c, port, &ctrl_url, &token).await
+                    run_session(tls, stack, storage, agent_config, tls_config, &mut rx_buffer, &mut tx_buffer, &host_c, port, &ctrl_url, &token).await
                 {
                     warn!("heartbeat: session ended: {e}");
                 }
@@ -158,6 +158,7 @@ async fn run_session(
     stack: Stack<'static>,
     storage: &'static SharedStorage,
     agent_config: &'static agent::AgentConfigSpace,
+    tls_config: &'static crate::tls::TlsConfigSpace,
     rx_buffer: &mut [u8],
     tx_buffer: &mut [u8],
     host: &core::ffi::CStr,
@@ -165,7 +166,7 @@ async fn run_session(
     ctrl_url_snapshot: &str,
     token_snapshot: &str,
 ) -> Result<(), String> {
-    let mut session = crate::tls::connect_client(tls, stack, storage, rx_buffer, tx_buffer, host, port)
+    let mut session = crate::tls::connect_client(tls, stack, tls_config, rx_buffer, tx_buffer, host, port)
         .await
         .map_err(|e| format!("connect to {host:?}:{port} failed: {e}"))?;
     let host_str = host.to_str().unwrap_or("");
