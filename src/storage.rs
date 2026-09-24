@@ -30,12 +30,8 @@ pub type SharedStorage = Mutex<CriticalSectionRawMutex, Storage>;
 const PARTITION_OFFSET: usize = 0x9000;
 const PARTITION_SIZE: usize = 0x6000;
 
-const HW_NAMESPACE: Key = Key::from_str("hw");
-const KEY_LED_GPIO: Key = Key::from_str("led_gpio");
-
 const SYSTEM_NAMESPACE: Key = Key::from_str("system");
 const KEY_LOCKED: Key = Key::from_str("locked");
-const KEY_APP_PORT: Key = Key::from_str("app_port");
 
 const CFG_NAMESPACE: Key = Key::from_str("cfg");
 const KEY_CFG_GENERATION: Key = Key::from_str("_gen");
@@ -172,24 +168,6 @@ impl Storage {
         self.backend.is_healthy()
     }
 
-    pub fn load_led_gpio(&mut self) -> Option<u8> {
-        self.get_u8(&HW_NAMESPACE, &KEY_LED_GPIO)
-    }
-
-    pub fn save_led_gpio(&mut self, gpio: Option<u8>) -> Result<(), StorageError> {
-        match gpio {
-            Some(gpio) => self.set_u8(&HW_NAMESPACE, &KEY_LED_GPIO, gpio),
-            None => self.delete(&HW_NAMESPACE, &KEY_LED_GPIO),
-        }
-    }
-
-    pub fn load_app_port(&mut self) -> u16 {
-        self.get_u16(&SYSTEM_NAMESPACE, &KEY_APP_PORT).unwrap_or(8080)
-    }
-
-    pub fn save_app_port(&mut self, port: u16) -> Result<(), StorageError> {
-        self.set_u16(&SYSTEM_NAMESPACE, &KEY_APP_PORT, port)
-    }
 
     pub fn cfg_generation(&mut self) -> u32 {
         self.get_u32(&CFG_NAMESPACE, &KEY_CFG_GENERATION).unwrap_or(0)
