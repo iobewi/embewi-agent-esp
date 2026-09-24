@@ -22,6 +22,7 @@ pub struct ApplicationSupervisor {
     agent_config: &'static crate::agent::AgentConfigSpace,
     app_config: &'static crate::app_config::AppConfigSpace,
     hardware_config: &'static crate::hardware::HardwareConfigSpace,
+    tls_config: &'static crate::tls::TlsConfigSpace,
     ip_services_started: bool,
 }
 
@@ -33,6 +34,7 @@ impl ApplicationSupervisor {
         agent_config: &'static crate::agent::AgentConfigSpace,
         app_config: &'static crate::app_config::AppConfigSpace,
         hardware_config: &'static crate::hardware::HardwareConfigSpace,
+        tls_config: &'static crate::tls::TlsConfigSpace,
     ) -> Self {
         Self {
             spawner,
@@ -41,6 +43,7 @@ impl ApplicationSupervisor {
             agent_config,
             app_config,
             hardware_config,
+            tls_config,
             ip_services_started: false,
         }
     }
@@ -74,14 +77,14 @@ impl ApplicationSupervisor {
 
         // Admin/config server. It internally selects provisioning UI or API.
         self.spawner
-            .spawn(crate::http::run(stack, storage, self.agent_config, self.app_config, self.hardware_config, self.spawner, lpwr, self.tls).unwrap());
+            .spawn(crate::http::run(stack, storage, self.agent_config, self.app_config, self.hardware_config, self.tls_config, self.spawner, lpwr, self.tls).unwrap());
 
         // Services that require an IP stack. Heartbeat/log-stream remain
         // silent until their own application configuration is available.
         self.spawner.spawn(crate::time::sync_task(stack).unwrap());
         self.spawner
-            .spawn(crate::heartbeat::run(stack, storage, self.agent_config, self.tls).unwrap());
+            .spawn(crate::heartbeat::run(stack, storage, self.agent_config, self.tls_config, self.tls).unwrap());
         self.spawner
-            .spawn(crate::log_stream::run(stack, storage, self.agent_config, self.tls).unwrap());
+            .spawn(crate::log_stream::run(stack, storage, self.agent_config, self.tls_config, self.tls).unwrap());
     }
 }
