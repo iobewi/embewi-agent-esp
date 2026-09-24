@@ -14,14 +14,6 @@ use esp_storage_manager::{FlashStorage, Key, NvsPartition, StorageManager};
 
 pub use esp_storage_manager::StorageError;
 
-/// Outcome of [`Storage::cfg_set`] when NVS itself did not fail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigSetResult {
-    Stored,
-    Deleted,
-    Rejected,
-}
-
 /// `Storage` shared between asynchronous agent tasks.
 pub type SharedStorage = Mutex<CriticalSectionRawMutex, Storage>;
 
