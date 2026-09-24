@@ -98,6 +98,11 @@ run_safe() {
     check "partition_layout" "$(jget "$info" partition_layout)" "embewi-ab-v1"
     check "state == running" "$(jget "$info" state)" "running"
     check_ne "active_slot non vide (MMU, pas otadata)" "$(jget "$info" active_slot)" ""
+    # `boot` est lu directement dans `otadata` (EWBT), indépendamment de `active_slot`
+    # (MMU) : un rollback se voit ici comme boot.slot != active_slot / boot.state invalid.
+    check "boot.slot == active_slot (otadata == MMU)" "$(jget "$info" boot.slot)" "$(jget "$info" active_slot)"
+    check "boot.state == valid (EWBT)" "$(jget "$info" boot.state)" "valid"
+    check_ne "boot.seq > 0" "$(jget "$info" boot.seq)" "0"
     check_ne "firmware.name non vide" "$(jget "$info" firmware.name)" ""
     check_ne "ram_size non vide" "$(jget "$info" ram_size)" ""
 

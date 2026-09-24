@@ -691,6 +691,56 @@ async fn current_ota_image(flash: &SharedFlash) -> BackendOutcome {
     }
 }
 
+/// What the bootloader's own `otadata` says, read straight from flash for
+/// `GET /info`'s `boot` block -- deliberately not derived from `agent::State`,
+/// `staged` or any RAM-held memory of what this run did.
+pub struct BootEntry {
+    pub slot: &'static str,
+    pub seq: u32,
+    pub state: &'static str,
+}
+
+/// The entry with the highest sequence among the ones that decode exactly,
+/// i.e. the one `embewi-boot`'s planning would treat as newest. After a
+/// rollback that is an `invalid`/`aborted` entry whose `slot` differs from
+/// `active_slot` (the MMU's answer), which is precisely what makes a
+/// rollback observable. `unknown` when `otadata` can't be read or holds no
+/// valid entry.
+pub async fn boot_info(flash: &SharedFlash) -> BootEntry {
+    const UNKNOWN: BootEntry = BootEntry { slot: "", seq: 0, state: "unknown" };
+    // Held only across this synchronous read: ConfigSpace/NVS take the same
+    // non-reentrant mutex, so nothing else may be awaited under it.
+    let entries = {
+        let mut flash_guard = flash.lock().await;
+        read_otadata_locked(&mut flash_guard)
+    };
+    let Some(entries) = entries else { return UNKNOWN };
+    let newest = entries
+        .iter()
+        .filter_map(|raw| match boot_core::decode(raw) {
+            Decoded::Ok(e) => Some(e),
+            _ => None,
+        })
+        .max_by_key(|e| e.seq);
+    let Some(entry) = newest else { return UNKNOWN };
+    BootEntry {
+        slot: match boot_core::slot_of(entry.seq, SLOT_COUNT) {
+            0 => "ota_0",
+            1 => "ota_1",
+            _ => "",
+        },
+        seq: entry.seq,
+        state: match entry.state {
+            boot_core::state::NEW => "new",
+            boot_core::state::PENDING_VERIFY => "pending_verify",
+            boot_core::state::VALID => "valid",
+            boot_core::state::INVALID => "invalid",
+            boot_core::state::ABORTED => "aborted",
+            _ => "unknown",
+        },
+    }
+}
+
 /// `POST /v1alpha1/ota/prepare` request body (contrat §4). `artifact` and
 /// `idf_version` are accepted but not declared here -- this agent isn't
 /// ESP-IDF, so there's no meaningful running version to compare `idf_version`

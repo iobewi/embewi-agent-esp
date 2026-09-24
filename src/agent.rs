@@ -310,6 +310,16 @@ struct Firmware {
 /// Contrat §4's `staged` object: `{"state":"none"}` alone when nothing's
 /// staged (`slot`/`digest`/`deployment_id` omitted, not sent empty), the
 /// full object once `/ota/write` has landed something.
+/// The bootloader's `otadata` (EWBT) as read from flash: newest entry's slot,
+/// sequence and state. Independent of `active_slot` (what the MMU is running)
+/// so a rollback shows up as the two disagreeing.
+#[derive(Serialize)]
+struct BootInfo {
+    slot: &'static str,
+    seq: u32,
+    state: &'static str,
+}
+
 #[derive(Serialize)]
 struct StagedInfo {
     state: &'static str,
@@ -335,6 +345,7 @@ pub struct Info {
     ram_size: u32,
     partition_layout: &'static str,
     active_slot: String,
+    boot: BootInfo,
     firmware: Firmware,
     staged: StagedInfo,
     state: &'static str,
@@ -360,6 +371,10 @@ pub async fn info(
         ram_size: (dram.end - dram.start) as u32,
         partition_layout: crate::ota::PARTITION_LAYOUT,
         active_slot: crate::ota::active_slot(flash).await,
+        boot: {
+            let boot = crate::ota::boot_info(flash).await;
+            BootInfo { slot: boot.slot, seq: boot.seq, state: boot.state }
+        },
         firmware: Firmware {
             name: FW_NAME,
             version: FW_VERSION,
