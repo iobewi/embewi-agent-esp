@@ -11,10 +11,12 @@
 #   scripts/test-api.sh <url> <token> push-cert <cert.pem> <key.pem>  # POST /tls/cert -- bascule le serveur admin en HTTPS:443
 #   scripts/test-api.sh <url> <token> push-ca <ca.pem>                 # POST /tls/ca -- CA à vérifier pour heartbeat/logs sortants
 #   scripts/test-api.sh <url> <token> push-firmware <image.bin> [deployment-id]
-#       # prepare + écriture chunkée (16 Ko) d'une vraie image -- piloté par
-#       # written=N que le device rapporte à chaque réponse (partial ou 416),
-#       # jamais par un compteur local : un accroc réseau se resynchronise
-#       # tout seul au lieu de désynchroniser silencieusement le transfert.
+#       # prepare + un PUT streaming unique : chemin normal/rapide, une seule
+#       # connexion TCP+TLS pour toute l'image.
+#   scripts/test-api.sh <url> <token> push-firmware-resumable <image.bin> [deployment-id]
+#       # mode de test de reprise : écriture Content-Range chunkée (16 Ko),
+#       # pilotée par written=N que le device rapporte (partial ou 416).
+#       # Plus lent par construction car chaque chunk utilise un curl séparé.
 #
 # `safe` ne laisse aucun effet de bord dangereux : il stage un faux binaire
 # de test sur le slot inactif (visible dans `GET /info`'s `staged` jusqu'au
@@ -302,6 +304,57 @@ run_push_firmware() {
     local file="${1:?Usage: $0 <url> <token> push-firmware <image.bin> [deployment-id]}"
     local dep="${2:-push-$(date +%s)}"
     local total; total=$(stat -c%s "$file")
+    local digest; digest="sha256:$(sha256sum "$file" | cut -d" " -f1)"
+    echo "deployment_id=$dep total=$total digest=$digest"
+
+    local info; info=$(auth_get /v1alpha1/info)
+    local chip; chip=$(jget "$info" chip)
+    echo "== POST /v1alpha1/ota/prepare =="
+    local prep; prep=$(auth_post /v1alpha1/ota/prepare \
+        "{\"deployment_id\":\"$dep\",\"digest\":\"$digest\",\"size\":$total,\"chip\":\"$chip\",\"partition_layout\":\"embewi-ab-v1\"}")
+    echo "  target_slot=$(jget "$prep" target_slot)"
+    [[ "$(jget "$prep" accepted)" == "True" ]] || { echo "prepare refusé: $prep"; return 1; }
+
+    echo "== PUT /v1alpha1/ota/write (streaming, connexion unique) =="
+    local body; body=$(mktemp)
+    local code
+    code=$(curl -sk -m 180 -o "$body" -w "%{http_code}" -X PUT \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "X-Embewi-Deployment-Id: $dep" \
+        -H "X-Embewi-Digest: $digest" \
+        --data-binary @"$file" \
+        "$URL/v1alpha1/ota/write" 2>/dev/null || echo "000")
+    local resp; resp=$(cat "$body" 2>/dev/null)
+    rm -f "$body"
+
+    [[ "$code" == "200" ]] || {
+        echo "échec PUT monolithique (code=$code resp=$resp)"
+        echo "Pour tester explicitement la reprise Content-Range : push-firmware-resumable"
+        return 1
+    }
+
+    local status; status=$(jget "$resp" status)
+    case "$status" in
+        written)
+            check "written == taille image" "$(jget "$resp" written)" "$total"
+            check "digest final == attendu" "$(jget "$resp" digest)" "$digest"
+            echo "OK: $total octets écrits en une connexion, deployment_id=$dep"
+            ;;
+        digest_mismatch)
+            echo "digest_mismatch -- le contenu envoyé ne correspond pas au digest annoncé."
+            return 1
+            ;;
+        *)
+            echo "réponse OTA inattendue: $resp"
+            return 1
+            ;;
+    esac
+}
+
+run_push_firmware_resumable() {
+    local file="${1:?Usage: $0 <url> <token> push-firmware-resumable <image.bin> [deployment-id]}"
+    local dep="${2:-push-$(date +%s)}"
+    local total; total=$(stat -c%s "$file")
     local digest; digest="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
     echo "deployment_id=$dep total=$total digest=$digest"
 
@@ -379,5 +432,6 @@ case "$MODE" in
     push-cert) run_push_cert "${4:-}" "${5:-}" ;;
     push-ca) run_push_ca "${4:-}" ;;
     push-firmware) run_push_firmware "${4:-}" "${5:-}" ;;
-    *) echo "Mode inconnu: $MODE (safe|reboot|rotate-token|ota-activate|push-cert|push-ca|push-firmware)" >&2; exit 1 ;;
+    push-firmware-resumable) run_push_firmware_resumable "${4:-}" "${5:-}" ;;
+    *) echo "Mode inconnu: $MODE (safe|reboot|rotate-token|ota-activate|push-cert|push-ca|push-firmware|push-firmware-resumable)" >&2; exit 1 ;;
 esac
