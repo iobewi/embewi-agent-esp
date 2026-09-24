@@ -84,14 +84,15 @@ pub async fn run(
     agent_config: &'static crate::agent::AgentConfigSpace,
     app_config: &'static crate::app_config::AppConfigSpace,
     hardware_config: &'static crate::hardware::HardwareConfigSpace,
+    tls_config: &'static crate::tls::TlsConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
 ) -> ! {
     if storage.lock().await.is_locked() {
-        api::serve(stack, storage, agent_config, app_config, spawner, lpwr, tls).await
+        api::serve(stack, storage, agent_config, app_config, tls_config, spawner, lpwr, tls).await
     } else {
-        config::serve(stack, storage, agent_config, hardware_config, spawner, lpwr, tls).await
+        config::serve(stack, storage, agent_config, hardware_config, tls_config, spawner, lpwr, tls).await
     }
 }
 
@@ -215,8 +216,8 @@ pub(super) async fn serve(
         // the next loop iteration onward (see `ADMIN_PORT_HTTPS`'s doc
         // comment) -- acceptable: that push itself completes over the
         // current HTTP connection, which ends this iteration anyway.
-        let tls_config = crate::tls::server_config(storage).await;
-        let port = if tls_config.is_some() { ADMIN_PORT_HTTPS } else { ADMIN_PORT_HTTP };
+        let tls_server_config = crate::tls::server_config(tls_config).await;
+        let port = if tls_server_config.is_some() { ADMIN_PORT_HTTPS } else { ADMIN_PORT_HTTP };
 
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
         if let Err(e) = socket.accept(port).await {
@@ -226,7 +227,7 @@ pub(super) async fn serve(
         socket.set_keep_alive(Some(Duration::from_secs(30)));
         socket.set_timeout(Some(Duration::from_secs(45)));
 
-        match tls_config {
+        match tls_server_config {
             Some(tls_config) => {
                 let mut session = match esp_hal_mbedtls::mbedtls_rs::Session::new(tls, socket, &tls_config) {
                     Ok(session) => session,
