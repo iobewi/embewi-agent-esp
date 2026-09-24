@@ -19,6 +19,7 @@ pub struct ApplicationSupervisor {
     spawner: Spawner,
     lpwr: Option<LPWR<'static>>,
     tls: crate::tls::TlsReferenceStatic,
+    agent_config: &'static crate::agent::AgentConfigSpace,
     ip_services_started: bool,
 }
 
@@ -27,11 +28,13 @@ impl ApplicationSupervisor {
         spawner: Spawner,
         lpwr: LPWR<'static>,
         tls: crate::tls::TlsReferenceStatic,
+        agent_config: &'static crate::agent::AgentConfigSpace,
     ) -> Self {
         Self {
             spawner,
             lpwr: Some(lpwr),
             tls,
+            agent_config,
             ip_services_started: false,
         }
     }
@@ -65,14 +68,14 @@ impl ApplicationSupervisor {
 
         // Admin/config server. It internally selects provisioning UI or API.
         self.spawner
-            .spawn(crate::http::run(stack, storage, self.spawner, lpwr, self.tls).unwrap());
+            .spawn(crate::http::run(stack, storage, self.agent_config, self.spawner, lpwr, self.tls).unwrap());
 
         // Services that require an IP stack. Heartbeat/log-stream remain
         // silent until their own application configuration is available.
         self.spawner.spawn(crate::time::sync_task(stack).unwrap());
         self.spawner
-            .spawn(crate::heartbeat::run(stack, storage, self.tls).unwrap());
+            .spawn(crate::heartbeat::run(stack, storage, self.agent_config, self.tls).unwrap());
         self.spawner
-            .spawn(crate::log_stream::run(stack, storage, self.tls).unwrap());
+            .spawn(crate::log_stream::run(stack, storage, self.agent_config, self.tls).unwrap());
     }
 }
