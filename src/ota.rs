@@ -1244,7 +1244,7 @@ async fn mark_invalid_and_reboot(flash: &'static SharedFlash) -> ! {
 // -- not any earlier: `TimerGroup::new`'s first use of TIMG0 resets the
 // whole peripheral block (`PeripheralClockControl`'s refcount going 0 -> 1),
 // which would silently wipe out a watchdog armed before that call. From
-// there it covers everything through `on_boot`'s decision -- `Storage::new`,
+// there it covers everything through `on_boot`'s decision -- physical flash initialization,
 // not just the bounded self-check race inside `on_boot` itself. `on_boot`
 // disables it again within milliseconds for every outcome except
 // a genuine `pending_verify` self-check, where [`feed_boot_watchdog`] keeps

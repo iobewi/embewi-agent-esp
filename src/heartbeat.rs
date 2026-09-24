@@ -222,7 +222,6 @@ async fn run_session(
 /// context upstream.
 async fn send_heartbeat<'h, 'buf>(
     session: &mut Session<'h, TcpSocket<'buf>>,
-    storage: &'static SharedStorage,
     agent_config: &'static agent::AgentConfigSpace,
     runtime_config: &'static crate::runtime_config::RuntimeConfig,
     ota_config: &'static crate::ota::OtaConfigSpace,

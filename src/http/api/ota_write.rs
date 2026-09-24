@@ -34,7 +34,7 @@ fn is_valid_digest(value: &str) -> bool {
 /// Parses Content-Range: bytes <start>-<end>/<total>.
 ///
 /// This is deliberately HTTP-local. Resume/session decisions themselves
-/// remain in atomic-ota; only the wire syntax belongs to this route.
+/// remain in FiBeWI; only the wire syntax belongs to this route.
 fn parse_content_range(value: &str) -> Option<(u32, u32, u32)> {
     let value = value.strip_prefix("bytes ")?;
     let (range, total) = value.split_once('/')?;
