@@ -79,7 +79,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent;
 use atomic_ota::{Action, BackendOutcome, TransactionState};
-use atomic_ota_esp::{AppPartition, AppSlot, EspArtifactStorage, find_app_partition};
+use atomic_ota_esp::{AppPartition, AppSlot, EspArtifactStorage, erase_partition_range, find_app_partition};
 
 use crate::storage::{SharedStorage, Storage, StorageError};
 
@@ -728,6 +728,18 @@ fn ota_erase_size() -> usize {
     <esp_storage_manager::FlashStorage<'static> as NorFlash>::ERASE_SIZE
 }
 
+/**
+ * Native ESP flash block-erase size. OTA partitions are 64 KiB-aligned
+ * (see partitions.csv), so erasing one of these ranges lets esp-storage use
+ * the ROM block-erase command instead of sixteen 4 KiB sector erases.
+ *
+ * Durability stays sector-sized: only the erase is batched. Programming and
+ * atomic-ota's durable watermark still advance every 4 KiB.
+ */
+fn ota_erase_batch_size() -> u64 {
+    <esp_storage_manager::FlashStorage<'static>>::BLOCK_SIZE as u64
+}
+
 /// In-RAM write session (see the module doc comment for why this doesn't
 /// need to survive a reboot). One at a time, matching `firmware-c`'s own
 /// single static session -- this device only ever serves one HTTP
@@ -754,6 +766,15 @@ struct WriteSession {
     /// `engine.durable()` moves on each call (always a whole number of
     /// sectors, except `write_finish`'s own final partial one).
     sectors_flushed: u32,
+    /// Logical prefix already erased in large flash blocks. This is advanced
+    /// ahead of programming but never published as durable data: atomic-ota's
+    /// own durable watermark remains sector-sized and only moves after the
+    /// corresponding program operation succeeds.
+    erased_through: u64,
+    /// Number of native flash block erase operations requested, diagnostic
+    /// only (the final range may be shorter only if partition geometry ever
+    /// changes; the current A/B layout is block-aligned).
+    erase_batches: u32,
     /// Frozen at the first PUT: what the image is (`deployment_id`,
     /// `digest`) and how big (`total`). Every later PUT of the session must
     /// repeat them exactly ([`write_params_match`]) and `write_finish`
@@ -902,6 +923,8 @@ pub async fn write_begin(storage: &SharedStorage, params: SessionParams) -> Resu
         engine: atomic_ota::WriteSession::begin(u64::from(params.total), expected_digest),
         started_at: Instant::now(),
         sectors_flushed: 0,
+        erased_through: 0,
+        erase_batches: 0,
         params,
     });
     Ok(())
@@ -927,11 +950,40 @@ pub async fn write_chunk(storage: &SharedStorage, data: &[u8]) -> bool {
         return false;
     }
 
+    // Erase ahead in native 64 KiB flash blocks, but keep the actual write
+    // and durable watermark sector-sized. This removes the dominant cost of
+    // issuing one 4 KiB sector erase for every 4 KiB programmed while
+    // preserving Content-Range resume precision and the power-cut invariant.
+    let end_received = received + data.len() as u64;
+    let erase_batch = ota_erase_batch_size();
+    let desired_erased = end_received
+        .div_ceil(erase_batch)
+        .saturating_mul(erase_batch)
+        .min(session.partition.size as u64);
+
     let mut storage_guard = storage.lock().await;
     let before = session.engine.durable();
     let ok = storage_guard
         .with_raw_flash(|flash| {
-            let Ok(mut backend) = EspArtifactStorage::new(flash, session.partition, session.scratch.as_mut()) else {
+            if desired_erased > session.erased_through {
+                if erase_partition_range(
+                    flash,
+                    session.partition,
+                    session.erased_through,
+                    desired_erased,
+                )
+                .is_err()
+                {
+                    return false;
+                }
+                session.erase_batches +=
+                    ((desired_erased - session.erased_through) / erase_batch) as u32;
+                session.erased_through = desired_erased;
+            }
+
+            let Ok(mut backend) =
+                EspArtifactStorage::new_pre_erased(flash, session.partition, session.scratch.as_mut())
+            else {
                 return false;
             };
             session.engine.append(&mut backend, data).is_ok()
@@ -966,8 +1018,28 @@ pub async fn write_finish(storage: &SharedStorage) -> Result<WriteFinishOk, Writ
     let Some(session) = WRITE_SESSION.lock().await.take() else {
         return Err(WriteFinishError::NotWriting);
     };
-    let WriteSession { partition, mut scratch, engine, started_at, mut sectors_flushed, params } = session;
+    let WriteSession {
+        partition,
+        mut scratch,
+        engine,
+        started_at,
+        mut sectors_flushed,
+        erased_through,
+        erase_batches,
+        params,
+    } = session;
     let slot = app_slot_to_subtype(partition.slot);
+
+    // Every accepted byte passed through write_chunk first, which erases the
+    // containing native flash block before the engine can program it.
+    if engine.received() > erased_through {
+        warn!(
+            "ota: internal erase watermark {} behind received {}",
+            erased_through,
+            engine.received()
+        );
+        return Err(WriteFinishError::Incomplete);
+    }
 
     // The image's own size rarely lands on a sector boundary: `finish`
     // flushes whatever's left buffered (a final, partial sector) before
@@ -978,7 +1050,7 @@ pub async fn write_finish(storage: &SharedStorage) -> Result<WriteFinishOk, Writ
         let mut storage_guard = storage.lock().await;
         let result = storage_guard
             .with_raw_flash(|flash| {
-                let Ok(mut backend) = EspArtifactStorage::new(flash, partition, scratch.as_mut()) else {
+                let Ok(mut backend) = EspArtifactStorage::new_pre_erased(flash, partition, scratch.as_mut()) else {
                     return None;
                 };
                 Some(engine.finish(&mut backend))
@@ -1023,9 +1095,11 @@ pub async fn write_finish(storage: &SharedStorage) -> Result<WriteFinishOk, Writ
     }
     let elapsed = started_at.elapsed();
     info!(
-        "ota: write OK {} octets ({} secteurs erase+program) en {}ms slot={} -> staged=written",
+        "ota: write OK {} octets ({} secteurs programmés, {} blocs erase de {} KiB) en {}ms slot={} -> staged=written",
         committed.size,
         sectors_flushed,
+        erase_batches,
+        ota_erase_batch_size() / 1024,
         elapsed.as_millis(),
         slot_name(slot)
     );
