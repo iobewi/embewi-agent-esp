@@ -49,7 +49,7 @@ atomic-ota-esp = { git = "https://github.com/iobewi/atomic-ota-esp", rev = "0791
 # Pinned by commit while its API is still pre-stable.
 improv-serial = { git = "https://github.com/iobewi/improv-serial", rev = "8e9d2c4" }
 # Single owner for raw ESP flash + cached NVS. Application keys remain local.
-esp-storage-manager = { git = "https://github.com/iobewi/esp-storage-manager", rev = "c5d572f", features = ["esp32c3"] }
+esp-storage-manager = { git = "https://github.com/iobewi/esp-storage-manager", rev = "d311937", features = ["esp32c3"] }
 # Reusable Wi-Fi station transport. Credential persistence and application
 # service supervision remain local to this firmware.
 esp-wifi-manager = { git = "https://github.com/iobewi/esp-wifi-manager", rev = "b322df0", features = ["esp32c3"] }
@@ -149,6 +149,8 @@ httparse = { version = "1", default-features = false }
 
 # Races the self-check against contrat §3's bounded deadline.
 embassy-futures = "0.1"
+# Generic isolated configuration spaces; ESP/NVS mapping lives in src/config.rs.
+config-space-manager = { path = "crates/config-space-manager" }
 # Pure write-session decision logic (Content-Range resume), unit-tested on
 # host -- see crates/ota-logic's own doc comment.
 ota-logic = { path = "crates/ota-logic" }
