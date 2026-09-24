@@ -4,9 +4,6 @@
 //! is owned by this component through one isolated config-space-manager
 //! capability; embewi-agent no longer reads or writes Wi-Fi credentials on
 //! the normal path.
-//!
-//! The legacy NVS keys remain here only as a one-way migration bridge for
-//! devices upgrading from firmware that stored ssid/password directly.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -15,18 +12,12 @@ use config_space_manager::{Budget, ConfigSpace};
 use embassy_executor::Spawner;
 use embassy_net::{Stack, StackResources};
 use esp_hal::peripherals::WIFI;
-use esp_storage_manager::Key;
 use log::{info, warn};
 use static_cell::StaticCell;
 
 use crate::config::NvsConfigBackend;
-use crate::storage::SharedStorage;
 
 pub use esp_wifi_manager::Network;
-
-const LEGACY_NAMESPACE: Key = Key::from_str("wifi");
-const LEGACY_KEY_SSID: Key = Key::from_str("ssid");
-const LEGACY_KEY_PASSWORD: Key = Key::from_str("password");
 
 const CONFIG_MAGIC: &[u8; 4] = b"WFC1";
 const CONFIG_HEADER_LEN: usize = 6;
@@ -95,56 +86,6 @@ impl WifiConfig {
 }
 
 type WifiConfigSpace = ConfigSpace<NvsConfigBackend>;
-
-/// One-way upgrade bridge from the old application-owned NVS keys.
-///
-/// The new blob is committed first; legacy keys are deleted only after that
-/// succeeds. A power cut therefore leaves either the old representation, the
-/// new one, or briefly both -- never no usable credentials.
-pub async fn migrate_legacy_config(
-    storage: &'static SharedStorage,
-    space: &WifiConfigSpace,
-) {
-    match space.load().await {
-        Ok(Some(_)) => return,
-        Err(e) => {
-            warn!("Wi-Fi: config-space load failed before legacy migration: {e:?}");
-            return;
-        }
-        Ok(None) => {}
-    }
-
-    let legacy = {
-        let mut storage = storage.lock().await;
-        let ssid = storage.get_string(&LEGACY_NAMESPACE, &LEGACY_KEY_SSID);
-        let password = storage.get_string(&LEGACY_NAMESPACE, &LEGACY_KEY_PASSWORD);
-        ssid.zip(password)
-    };
-    let Some((ssid, password)) = legacy else {
-        return;
-    };
-
-    let config = WifiConfig { ssid, password };
-    let Some(encoded) = config.encode() else {
-        warn!("Wi-Fi: legacy credentials do not fit the new config space");
-        return;
-    };
-
-    match space.commit(&encoded).await {
-        Ok(generation) => {
-            let mut storage = storage.lock().await;
-            if storage.delete(&LEGACY_NAMESPACE, &LEGACY_KEY_SSID).is_err()
-                || storage.delete(&LEGACY_NAMESPACE, &LEGACY_KEY_PASSWORD).is_err()
-            {
-                // Harmless: the config-space value wins on every later boot,
-                // so leftover legacy keys can never overwrite it.
-                warn!("Wi-Fi: migrated config but could not remove all legacy keys");
-            }
-            info!("Wi-Fi: migrated legacy credentials to config space generation={generation}");
-        }
-        Err(e) => warn!("Wi-Fi: legacy credential migration failed: {e:?}"),
-    }
-}
 
 pub struct WifiManager {
     transport: esp_wifi_manager::WifiManager<SOCKETS>,
