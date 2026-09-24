@@ -36,6 +36,7 @@ pub async fn serve(
     storage: &'static SharedStorage,
     agent_config: &'static agent::AgentConfigSpace,
     app_config: &'static crate::app_config::AppConfigSpace,
+    tls_config: &'static crate::tls::TlsConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
@@ -224,7 +225,7 @@ pub async fn serve(
                 let Ok(req) = serde_json::from_str::<CertBody>(&body) else {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_cert_or_key\"}");
                 };
-                match crate::tls::save_cert(storage, &req.cert_pem, &req.key_pem).await {
+                match crate::tls::save_cert(tls_config, &req.cert_pem, &req.key_pem).await {
                     Ok(()) => json_ok(String::from("{\"status\":\"saved\"}")),
                     Err(crate::tls::SaveCertError::Invalid) => {
                         json_error(StatusCode::BAD_REQUEST, "{\"error\":\"invalid_certificate\"}")
@@ -251,7 +252,7 @@ pub async fn serve(
                 let Ok(req) = serde_json::from_str::<CaBody>(&body) else {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_ca\"}");
                 };
-                match crate::tls::save_ca(storage, &req.ca_pem).await {
+                match crate::tls::save_ca(tls_config, &req.ca_pem).await {
                     Ok(()) => json_ok(String::from("{\"status\":\"saved\"}")),
                     Err(crate::tls::SaveCertError::Storage) => {
                         json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"error\":\"nvs_write_failed\"}")
@@ -261,5 +262,5 @@ pub async fn serve(
             }),
         );
 
-    super::serve(stack, storage, tls, &router).await
+    super::serve(stack, storage, tls_config, tls, &router).await
 }
