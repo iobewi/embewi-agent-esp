@@ -84,7 +84,7 @@ pub enum ClaimError {
     EmptyName,
     ZeroBudget,
     DuplicateName,
-    UnsupportedBudget,
+    UnsupportedClaim,
     CapacityOverflow,
     NoCapacity {
         requested_units: usize,
@@ -163,7 +163,7 @@ where
         let units = self
             .backend
             .reservation_units(name, budget)
-            .ok_or(ClaimError::UnsupportedBudget)?;
+            .ok_or(ClaimError::UnsupportedClaim)?;
         let next_used = self
             .used_units
             .checked_add(units)
