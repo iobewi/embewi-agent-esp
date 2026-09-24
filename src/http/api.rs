@@ -35,6 +35,7 @@ pub async fn serve(
     stack: Stack<'static>,
     storage: &'static SharedStorage,
     agent_config: &'static agent::AgentConfigSpace,
+    app_config: &'static crate::app_config::AppConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
@@ -54,7 +55,7 @@ pub async fn serve(
                 if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
-                json_ok(serde_json::to_string(&agent::info(storage, agent_config).await).unwrap_or_default())
+                json_ok(serde_json::to_string(&agent::info(storage, agent_config, app_config).await).unwrap_or_default())
             }),
         )
         .route(
@@ -148,7 +149,7 @@ pub async fn serve(
                 if !(1024..=65535).contains(&req.port) {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"port must be 1024-65535\"}");
                 }
-                if storage.lock().await.save_app_port(req.port as u16).is_err() {
+                if crate::app_config::save_port(app_config, req.port as u16).await.is_err() {
                     return json_error(StatusCode::INTERNAL_SERVER_ERROR, "{\"error\":\"nvs_write_failed\"}");
                 }
                 json_ok(format!(
