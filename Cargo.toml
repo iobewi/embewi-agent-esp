@@ -136,8 +136,8 @@ httparse = { version = "1", default-features = false }
 # Races the self-check against contrat §3's bounded deadline.
 embassy-futures = "0.1"
 # Generic isolated configuration spaces and their ESP/NVS backend.
-config-space-manager = { git = "https://github.com/iobewi/config-space-manager", rev = "5316e4c" }
-config-space-manager-esp-nvs = { git = "https://github.com/iobewi/config-space-manager", rev = "5316e4c", package = "config-space-manager-esp-nvs", features = ["esp32c3"] }
+config-space-manager = { git = "https://github.com/iobewi/config-space-manager", rev = "23954ff" }
+config-space-manager-esp-nvs = { git = "https://github.com/iobewi/config-space-manager", rev = "23954ff", package = "config-space-manager-esp-nvs", features = ["esp32c3"] }
 # ESP HAL + MbedTLS integration extracted from this firmware. Owns the
 # hardware RNG adapter, time hooks, PEM validation/config construction,
 # Embassy client handshake and picoserve TLS socket. Application NVS/SNTP
