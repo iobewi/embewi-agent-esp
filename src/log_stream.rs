@@ -178,7 +178,7 @@ fn split_host_port(ctrl_url: &str) -> Option<(&str, u16)> {
 }
 
 #[embassy_executor::task]
-pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: TlsReferenceStatic) -> ! {
+pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_config: &'static agent::AgentConfigSpace, tls: TlsReferenceStatic) -> ! {
     // Declared once outside the reconnect loop, like `http::run`'s own
     // buffers -- reused across every reconnection attempt. Raw TCP socket
     // buffers (the ciphertext in transit), not the WS frame payload itself
@@ -191,7 +191,7 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: Tl
     let mut backoff = BASE_BACKOFF;
 
     loop {
-        let ctrl_url = agent::ctrl_url(storage).await;
+        let ctrl_url = agent::ctrl_url(agent_config).await;
         let Some((host, port)) = split_host_port(&ctrl_url) else {
             // Nothing provisioned (or malformed) -- not a failure, so this
             // doesn't touch `backoff` at all, only how long until the next
@@ -201,7 +201,7 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: Tl
             continue;
         };
 
-        let token = agent::token(storage).await;
+        let token = agent::token(agent_config).await;
         if token.is_empty() {
             drain_and_discard();
             Timer::after(BASE_BACKOFF).await;
@@ -216,7 +216,7 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: Tl
         let stable = match connect_and_upgrade(tls, stack, storage, &mut rx_buffer, &mut tx_buffer, &host_c, port, &token).await {
             Ok(mut session) => {
                 let connected_at = Instant::now();
-                let err = pump_session(&mut session, storage, &token).await;
+                let err = pump_session(&mut session, agent_config, &token).await;
                 warn!("logs: session ended: {err}");
                 connected_at.elapsed() >= STABLE_THRESHOLD
             }
@@ -331,7 +331,7 @@ async fn connect_and_upgrade<'h, 'buf>(
 /// actually stayed up.
 async fn pump_session<'h, 'buf>(
     session: &mut Session<'h, TcpSocket<'buf>>,
-    storage: &'static SharedStorage,
+    agent_config: &'static agent::AgentConfigSpace,
     token_snapshot: &str,
 ) -> AllocString {
     loop {
@@ -339,7 +339,7 @@ async fn pump_session<'h, 'buf>(
         // token rotation lands while this WebSocket is alive, reconnect so
         // the next upgrade is authenticated with the new credential instead
         // of keeping an already-authenticated old-token session indefinitely.
-        if agent::token(storage).await != token_snapshot {
+        if agent::token(agent_config).await != token_snapshot {
             return AllocString::from("bearer token changed, reconnecting");
         }
         // Bounded read for whatever the server sent, mainly keepalive
@@ -375,7 +375,7 @@ async fn pump_session<'h, 'buf>(
         }
 
         while let Some(line) = pop_line() {
-            let node_id = agent::node_id(storage).await;
+            let node_id = agent::node_id(agent_config).await;
             let ts = crate::time::now().unwrap_or(0);
             let frame =
                 LogFrame { ts, node: &node_id, workload: agent::FW_NAME, level: "raw", msg: &line };
