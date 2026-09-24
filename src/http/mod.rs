@@ -81,14 +81,15 @@ pub mod config;
 pub async fn run(
     stack: Stack<'static>,
     storage: &'static SharedStorage,
+    agent_config: &'static crate::agent::AgentConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
 ) -> ! {
     if storage.lock().await.is_locked() {
-        api::serve(stack, storage, spawner, lpwr, tls).await
+        api::serve(stack, storage, agent_config, spawner, lpwr, tls).await
     } else {
-        config::serve(stack, storage, spawner, lpwr, tls).await
+        config::serve(stack, storage, agent_config, spawner, lpwr, tls).await
     }
 }
 
