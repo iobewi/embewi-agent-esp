@@ -15,10 +15,7 @@
 //! Embewi OTA adapter (this module)
 //! ├── HTTP / contrat v1alpha1        (ota_write.rs; prepare/activate below)
 //! ├── ESP slot-selection policy      (EWBT decides which OTA slot is safe)
-//! ├── NVS transaction metadata       (NvsTransactionMetadata, same
-//! │                                    five-key staged/digest/slot/
-//! │                                    deployment_id/size layout this
-//! │                                    module always used)
+//! ├── ConfigSpace transaction metadata (one atomic OTA object)
 //! ├── EWBT / bootloader adapter      (otadata_confirm/reject/activate,
 //! │                                    via atomic_boot -- see below)
 //! └── watchdog / self-check          (arm_boot_watchdog, selfcheck_task)
@@ -912,9 +909,6 @@ pub enum BeginError {
 /// published), never NVS claiming an artifact that flash no longer holds
 /// intact. An `Activating` transaction is refused outright: it is already
 /// handed to the backend and racing a reboot into it. This is what makes
-/// `NvsTransactionMetadata::commit`'s own `Some -> Some` refusal
-/// unreachable in normal operation from here on -- that guard stays as a
-/// genuine invariant check, not a path this function is expected to hit.
 pub async fn write_begin(storage: &SharedStorage, ota_config: &OtaConfigSpace, params: SessionParams) -> Result<(), BeginError> {
     let target = {
         let mut storage = storage.lock().await;
@@ -1132,13 +1126,13 @@ pub async fn write_finish(storage: &SharedStorage, ota_config: &OtaConfigSpace) 
 
 /// `POST /v1alpha1/ota/activate` (contrat §4): points the bootloader at the
 /// staged slot and arms `OtaImageState::New` (which it promotes to
-/// `PendingVerify` on the next boot). Reads the target slot from the NVS
-/// `staged` state, not the in-RAM write session -- matches `firmware-c`'s
+/// `PendingVerify` on the next boot). Reads the target slot from the persisted
+/// ConfigSpace `staged` state, not the in-RAM write session -- matches `firmware-c`'s
 /// own fallback ("Reprise après reboot de l'agent entre write et
 /// activate"), and works identically whether or not this device rebooted
 /// since `/ota/write` finished.
 pub async fn activate(storage: &SharedStorage, ota_config: &OtaConfigSpace, deployment_id: &str) -> Result<&'static str, ActivateError> {
-    // Record the intent first: if NVS refuses it, nothing has changed yet
+    // Record the intent first: if ConfigSpace persistence refuses it, nothing has changed yet
     // and the caller gets an error instead of a reboot into a slot whose
     // staged record disagrees with `otadata`. `atomic_ota::activate` checks
     // `Staged` + identity (against the *transaction's* id, i.e.

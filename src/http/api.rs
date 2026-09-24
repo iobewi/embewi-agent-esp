@@ -38,6 +38,7 @@ pub async fn serve(
     app_config: &'static crate::app_config::AppConfigSpace,
     tls_config: &'static crate::tls::TlsConfigSpace,
     runtime_config: &'static crate::runtime_config::RuntimeConfig,
+    ota_config: &'static crate::ota::OtaConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
@@ -57,7 +58,7 @@ pub async fn serve(
                 if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
-                json_ok(serde_json::to_string(&agent::info(storage, agent_config, app_config, runtime_config).await).unwrap_or_default())
+                json_ok(serde_json::to_string(&agent::info(storage, agent_config, app_config, runtime_config, ota_config).await).unwrap_or_default())
             }),
         )
         .route(
@@ -177,11 +178,11 @@ pub async fn serve(
                 let Ok(req) = serde_json::from_str::<ota::PrepareRequest>(&body) else {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"bad_request\"}");
                 };
-                let resp = ota::prepare(storage, &req).await;
+                let resp = ota::prepare(storage, ota_config, &req).await;
                 json_ok(serde_json::to_string(&resp).unwrap_or_default())
             }),
         )
-        .route("/v1alpha1/ota/write", put_service(OtaWrite { storage, agent_config }))
+        .route("/v1alpha1/ota/write", put_service(OtaWrite { storage, ota_config, agent_config }))
         .route(
             "/v1alpha1/ota/activate",
             post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
@@ -195,7 +196,7 @@ pub async fn serve(
                 let Ok(req) = serde_json::from_str::<ActivateBody>(&body) else {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_deployment_id\"}");
                 };
-                let target_slot = match ota::activate(storage, &req.deployment_id).await {
+                let target_slot = match ota::activate(storage, ota_config, &req.deployment_id).await {
                     Ok(slot) => slot,
                     Err(ota::ActivateError::DeploymentMismatch) => {
                         return json_error(StatusCode::CONFLICT, "{\"error\":\"deployment_mismatch\"}");

@@ -47,6 +47,7 @@ fn parse_content_range(value: &str) -> Option<(u32, u32, u32)> {
 
 pub struct OtaWrite {
     pub storage: &'static SharedStorage,
+    pub ota_config: &'static ota::OtaConfigSpace,
     pub agent_config: &'static agent::AgentConfigSpace,
 }
 
@@ -133,7 +134,7 @@ impl RequestHandlerService for OtaWrite {
         // dropped connection.
         let received_so_far = ota::write_received().await;
         match ota::write_plan(has_range, start, in_progress, received_so_far) {
-            ota::Plan::Begin => match ota::write_begin(self.storage, params).await {
+            ota::Plan::Begin => match ota::write_begin(self.storage, self.ota_config, params).await {
                 Ok(()) => {}
                 Err(ota::BeginError::TooLarge) => {
                     return json_error(StatusCode::PAYLOAD_TOO_LARGE, "{\"error\":\"size_too_large\"}")
@@ -207,7 +208,7 @@ impl RequestHandlerService for OtaWrite {
                 .await;
         }
 
-        let response: JsonResponse = match ota::write_finish(self.storage).await {
+        let response: JsonResponse = match ota::write_finish(self.storage, self.ota_config).await {
             Ok(result) => json_ok(format!(
                 "{{\"written\":{},\"digest\":\"{}\",\"status\":\"written\"}}",
                 result.written, result.digest

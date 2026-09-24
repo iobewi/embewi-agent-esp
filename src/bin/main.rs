@@ -125,6 +125,12 @@ async fn main(spawner: Spawner) -> ! {
         StaticCell::new();
     let lifecycle_config = &*LIFECYCLE_CONFIG.init(lifecycle_config);
 
+    let ota_config = config_manager
+        .claim("ota", embewi_agent_esp::ota::CONFIG_BUDGET)
+        .expect("NVS capacity insufficient for OTA metadata");
+    static OTA_CONFIG: StaticCell<embewi_agent_esp::ota::OtaConfigSpace> = StaticCell::new();
+    let ota_config = &*OTA_CONFIG.init(ota_config);
+
     let runtime_space = config_manager
         .claim("runtime", runtime_config::CONFIG_BUDGET)
         .expect("NVS capacity insufficient for runtime config");
@@ -181,7 +187,7 @@ async fn main(spawner: Spawner) -> ! {
     // bounded self-check that validates it or rolls it back -- before
     // Wi-Fi/HTTP come up, since this is a purely local safety net that
     // must run regardless of network state.
-    embewi_agent_esp::ota::on_boot(storage, spawner).await;
+    embewi_agent_esp::ota::on_boot(storage, ota_config, spawner).await;
 
     // Admin server TLS: one global MbedTLS instance for the whole program.
     let tls = embewi_agent_esp::tls::init();
@@ -198,6 +204,7 @@ async fn main(spawner: Spawner) -> ! {
         tls_config,
         runtime_config,
         lifecycle_config,
+        ota_config,
     );
 
     let mut wifi = WifiManager::new(peripherals.WIFI, spawner, wifi_config);

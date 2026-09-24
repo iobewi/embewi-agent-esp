@@ -93,7 +93,7 @@ fn split_host_port(ctrl_url: &str) -> Option<(&str, u16)> {
 }
 
 #[embassy_executor::task]
-pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_config: &'static agent::AgentConfigSpace, runtime_config: &'static crate::runtime_config::RuntimeConfig, tls_config: &'static crate::tls::TlsConfigSpace, tls: TlsReferenceStatic) -> ! {
+pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_config: &'static agent::AgentConfigSpace, runtime_config: &'static crate::runtime_config::RuntimeConfig, ota_config: &'static crate::ota::OtaConfigSpace, tls_config: &'static crate::tls::TlsConfigSpace, tls: TlsReferenceStatic) -> ! {
     // Declared once outside the reconnect loop, like `http::run`'s own
     // buffers -- reused across every reconnection attempt (not every
     // heartbeat -- there's only one connection attempt per many
@@ -136,7 +136,7 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_c
                 && let Ok(host_c) = CString::new(host)
             {
                 if let Err(e) =
-                    run_session(tls, stack, storage, agent_config, runtime_config, tls_config, &mut rx_buffer, &mut tx_buffer, &host_c, port, &ctrl_url, &token).await
+                    run_session(tls, stack, storage, agent_config, runtime_config, ota_config, tls_config, &mut rx_buffer, &mut tx_buffer, &host_c, port, &ctrl_url, &token).await
                 {
                     warn!("heartbeat: session ended: {e}");
                 }
@@ -159,6 +159,7 @@ async fn run_session(
     storage: &'static SharedStorage,
     agent_config: &'static agent::AgentConfigSpace,
     runtime_config: &'static crate::runtime_config::RuntimeConfig,
+    ota_config: &'static crate::ota::OtaConfigSpace,
     tls_config: &'static crate::tls::TlsConfigSpace,
     rx_buffer: &mut [u8],
     tx_buffer: &mut [u8],
@@ -198,7 +199,7 @@ async fn run_session(
             return Ok(());
         }
 
-        if let Err(e) = send_heartbeat(&mut session, storage, agent_config, runtime_config, stack, host_str, token_snapshot).await {
+        if let Err(e) = send_heartbeat(&mut session, storage, agent_config, runtime_config, ota_config, stack, host_str, token_snapshot).await {
             return Err(format!("send to {host_str} failed: {e}"));
         }
 
@@ -226,6 +227,7 @@ async fn send_heartbeat<'h, 'buf>(
     storage: &'static SharedStorage,
     agent_config: &'static agent::AgentConfigSpace,
     runtime_config: &'static crate::runtime_config::RuntimeConfig,
+    ota_config: &'static crate::ota::OtaConfigSpace,
     stack: Stack<'static>,
     host_str: &str,
     token: &str,
@@ -246,8 +248,8 @@ async fn send_heartbeat<'h, 'buf>(
         ip: &ip,
         ts,
         state: state.as_str(),
-        deployment_id: crate::ota::active_deployment_id(storage).await,
-        firmware_digest: crate::ota::active_digest(storage).await,
+        deployment_id: crate::ota::active_deployment_id(ota_config).await,
+        firmware_digest: crate::ota::active_digest(ota_config).await,
         // contrat §3: distinguishes `pending_verify` (false) from every
         // other state -- the only state a heartbeat is still sent from
         // before `mark_valid` has run.

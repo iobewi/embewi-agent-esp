@@ -347,10 +347,11 @@ pub async fn info(
     agent_config: &AgentConfigSpace,
     app_config: &crate::app_config::AppConfigSpace,
     runtime_config: &crate::runtime_config::RuntimeConfig,
+    ota_config: &crate::ota::OtaConfigSpace,
 ) -> Info {
     let config_generation = runtime_config.generation().await;
     let app_port = crate::app_config::port(app_config).await;
-    let staged = crate::ota::staged(storage).await;
+    let staged = crate::ota::staged(ota_config).await;
     let dram = esp_metadata_generated::memory_range!("DRAM");
     Info {
         node_id: node_id(agent_config).await,
@@ -362,7 +363,7 @@ pub async fn info(
         firmware: Firmware {
             name: FW_NAME,
             version: FW_VERSION,
-            digest: crate::ota::active_digest(storage).await,
+            digest: crate::ota::active_digest(ota_config).await,
         },
         staged: StagedInfo {
             state: staged.stage.as_str(),

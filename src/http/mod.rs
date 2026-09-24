@@ -87,12 +87,13 @@ pub async fn run(
     tls_config: &'static crate::tls::TlsConfigSpace,
     runtime_config: &'static crate::runtime_config::RuntimeConfig,
     lifecycle_config: &'static crate::lifecycle::LifecycleConfigSpace,
+    ota_config: &'static crate::ota::OtaConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
 ) -> ! {
     if crate::lifecycle::is_locked(lifecycle_config).await {
-        api::serve(stack, storage, agent_config, app_config, tls_config, runtime_config, spawner, lpwr, tls).await
+        api::serve(stack, storage, agent_config, app_config, tls_config, runtime_config, ota_config, spawner, lpwr, tls).await
     } else {
         config::serve(stack, agent_config, hardware_config, tls_config, lifecycle_config, spawner, lpwr, tls).await
     }
