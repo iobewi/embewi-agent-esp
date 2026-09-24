@@ -171,7 +171,7 @@ async fn handle(
             status::set(Status::Connecting);
             send(tx, &improv::state_frame(*state)).await;
 
-            if wifi.provision(storage, &settings.ssid, settings.password).await {
+            if wifi.provision(&settings.ssid, settings.password).await {
                 if let Some(stack) = wifi.ip_stack() {
                     supervisor.on_ip_ready(stack, storage);
                 } else {
