@@ -40,7 +40,6 @@ use log::{Level, LevelFilter, Metadata, Record, info, warn};
 use serde::Serialize;
 
 use crate::agent;
-use crate::storage::SharedStorage;
 use crate::tls::TlsReferenceStatic;
 
 const LINE_MAX: usize = 160;
@@ -178,7 +177,7 @@ fn split_host_port(ctrl_url: &str) -> Option<(&str, u16)> {
 }
 
 #[embassy_executor::task]
-pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_config: &'static agent::AgentConfigSpace, tls_config: &'static crate::tls::TlsConfigSpace, tls: TlsReferenceStatic) -> ! {
+pub async fn run(stack: Stack<'static>, agent_config: &'static agent::AgentConfigSpace, tls_config: &'static crate::tls::TlsConfigSpace, tls: TlsReferenceStatic) -> ! {
     // Declared once outside the reconnect loop, like `http::run`'s own
     // buffers -- reused across every reconnection attempt. Raw TCP socket
     // buffers (the ciphertext in transit), not the WS frame payload itself
