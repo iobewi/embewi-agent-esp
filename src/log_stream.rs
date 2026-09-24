@@ -178,7 +178,7 @@ fn split_host_port(ctrl_url: &str) -> Option<(&str, u16)> {
 }
 
 #[embassy_executor::task]
-pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_config: &'static agent::AgentConfigSpace, tls: TlsReferenceStatic) -> ! {
+pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_config: &'static agent::AgentConfigSpace, tls_config: &'static crate::tls::TlsConfigSpace, tls: TlsReferenceStatic) -> ! {
     // Declared once outside the reconnect loop, like `http::run`'s own
     // buffers -- reused across every reconnection attempt. Raw TCP socket
     // buffers (the ciphertext in transit), not the WS frame payload itself
@@ -213,7 +213,7 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_c
             continue;
         };
 
-        let stable = match connect_and_upgrade(tls, stack, storage, &mut rx_buffer, &mut tx_buffer, &host_c, port, &token).await {
+        let stable = match connect_and_upgrade(tls, stack, tls_config, &mut rx_buffer, &mut tx_buffer, &host_c, port, &token).await {
             Ok(mut session) => {
                 let connected_at = Instant::now();
                 let err = pump_session(&mut session, agent_config, &token).await;
@@ -242,14 +242,14 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_c
 async fn connect_and_upgrade<'h, 'buf>(
     tls: TlsReferenceStatic,
     stack: Stack<'static>,
-    storage: &'static SharedStorage,
+    tls_config: &'static crate::tls::TlsConfigSpace,
     rx_buffer: &'buf mut [u8],
     tx_buffer: &'buf mut [u8],
     host: &'h core::ffi::CStr,
     port: u16,
     token: &str,
 ) -> Result<Session<'h, TcpSocket<'buf>>, AllocString> {
-    let mut session = crate::tls::connect_client(tls, stack, storage, rx_buffer, tx_buffer, host, port)
+    let mut session = crate::tls::connect_client(tls, stack, tls_config, rx_buffer, tx_buffer, host, port)
         .await
         .map_err(|e| format!("connect to {host:?}:{port} failed: {e}"))?;
 
