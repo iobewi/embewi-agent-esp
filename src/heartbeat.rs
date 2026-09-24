@@ -93,7 +93,7 @@ fn split_host_port(ctrl_url: &str) -> Option<(&str, u16)> {
 }
 
 #[embassy_executor::task]
-pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: TlsReferenceStatic) -> ! {
+pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, agent_config: &'static agent::AgentConfigSpace, tls: TlsReferenceStatic) -> ! {
     // Declared once outside the reconnect loop, like `http::run`'s own
     // buffers -- reused across every reconnection attempt (not every
     // heartbeat -- there's only one connection attempt per many
@@ -108,7 +108,7 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: Tl
 
     let mut last_ctrl_url_empty = None;
     loop {
-        let ctrl_url = agent::ctrl_url(storage).await;
+        let ctrl_url = agent::ctrl_url(agent_config).await;
         if ctrl_url.is_empty() {
             // Logged once on the empty<->non-empty transition, not every
             // tick: contrat §2's "silence is worse than wrong" is about the
@@ -125,7 +125,7 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: Tl
             }
             last_ctrl_url_empty = Some(false);
 
-            let token = agent::token(storage).await;
+            let token = agent::token(agent_config).await;
             if token.is_empty() {
                 warn!("heartbeat: token not provisioned, staying quiet");
                 Timer::after(PERIOD).await;
@@ -136,7 +136,7 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: Tl
                 && let Ok(host_c) = CString::new(host)
             {
                 if let Err(e) =
-                    run_session(tls, stack, storage, &mut rx_buffer, &mut tx_buffer, &host_c, port, &ctrl_url, &token).await
+                    run_session(tls, stack, storage, agent_config, &mut rx_buffer, &mut tx_buffer, &host_c, port, &ctrl_url, &token).await
                 {
                     warn!("heartbeat: session ended: {e}");
                 }
@@ -157,6 +157,7 @@ async fn run_session(
     tls: TlsReferenceStatic,
     stack: Stack<'static>,
     storage: &'static SharedStorage,
+    agent_config: &'static agent::AgentConfigSpace,
     rx_buffer: &mut [u8],
     tx_buffer: &mut [u8],
     host: &core::ffi::CStr,
@@ -184,18 +185,18 @@ async fn run_session(
         // checked once per heartbeat rather than once per connection, so a
         // change takes effect within one `PERIOD` instead of waiting for
         // the connection to drop on its own.
-        if agent::ctrl_url(storage).await != ctrl_url_snapshot {
+        if agent::ctrl_url(agent_config).await != ctrl_url_snapshot {
             info!("heartbeat: ctrl_url changed, closing this connection to reconnect to the new one");
             let _ = session.close().await;
             return Ok(());
         }
-        if agent::token(storage).await != token_snapshot {
+        if agent::token(agent_config).await != token_snapshot {
             info!("heartbeat: bearer token changed, closing this connection to reconnect with the new credential");
             let _ = session.close().await;
             return Ok(());
         }
 
-        if let Err(e) = send_heartbeat(&mut session, storage, stack, host_str, token_snapshot).await {
+        if let Err(e) = send_heartbeat(&mut session, storage, agent_config, stack, host_str, token_snapshot).await {
             return Err(format!("send to {host_str} failed: {e}"));
         }
 
@@ -221,11 +222,12 @@ async fn run_session(
 async fn send_heartbeat<'h, 'buf>(
     session: &mut Session<'h, TcpSocket<'buf>>,
     storage: &'static SharedStorage,
+    agent_config: &'static agent::AgentConfigSpace,
     stack: Stack<'static>,
     host_str: &str,
     token: &str,
 ) -> Result<(), String> {
-    let node_id = agent::node_id(storage).await;
+    let node_id = agent::node_id(agent_config).await;
     let ip = stack.config_v4().map(|c| format!("{}", c.address.address())).unwrap_or_default();
 
     // `connect_client` refuses to connect before SNTP has converged (TLS
