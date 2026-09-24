@@ -817,13 +817,6 @@ pub async fn write_received() -> u32 {
     WRITE_SESSION.lock().await.as_ref().map_or(0, |s| s.engine.received() as u32)
 }
 
-/// `Content-Range` header parsing/shape-checking is transport-specific and
-/// stays pure enough to unit-test with a plain `cargo test` (no ESP32
-/// hardware involved) in `ota-logic` (workspace crate, `crates/ota-logic`).
-/// Re-exported so callers keep writing `ota::parse_content_range` as if it
-/// were still defined in this module.
-pub use ota_logic::{is_valid_digest, parse_content_range, range_len};
-
 /// `PUT /v1alpha1/ota/write`'s resume decision itself (contrat §4's
 /// `Content-Range` protocol, decoupled from `Content-Range`'s own wire
 /// format) is `atomic_ota::resume_plan`/`atomic_ota::is_complete` --
