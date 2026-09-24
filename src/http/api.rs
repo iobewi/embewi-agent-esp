@@ -34,6 +34,7 @@ use ota_write::OtaWrite;
 pub async fn serve(
     stack: Stack<'static>,
     storage: &'static SharedStorage,
+    agent_config: &'static agent::AgentConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
@@ -50,16 +51,16 @@ pub async fn serve(
         .route(
             "/v1alpha1/info",
             get(move |agent::Bearer(token): agent::Bearer| async move {
-                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
-                json_ok(serde_json::to_string(&agent::info(storage).await).unwrap_or_default())
+                json_ok(serde_json::to_string(&agent::info(storage, agent_config).await).unwrap_or_default())
             }),
         )
         .route(
             "/v1alpha1/health",
             get(move |agent::Bearer(token): agent::Bearer| async move {
-                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
                 json_ok(serde_json::to_string(&agent::health(storage).await).unwrap_or_default())
@@ -68,13 +69,13 @@ pub async fn serve(
         .route(
             "/v1alpha1/config",
             get(move |agent::Bearer(token): agent::Bearer| async move {
-                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
                 json_ok(serde_json::to_string(&agent::config(storage).await).unwrap_or_default())
             })
             .post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
-                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
                 let Ok(push) = serde_json::from_str::<agent::ConfigPush>(&body) else {
@@ -92,7 +93,7 @@ pub async fn serve(
         .route(
             "/v1alpha1/token",
             post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
-                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
                 #[derive(serde::Deserialize)]
@@ -102,7 +103,7 @@ pub async fn serve(
                 let Ok(req) = serde_json::from_str::<TokenBody>(&body) else {
                     return json_error(StatusCode::BAD_REQUEST, "{\"error\":\"missing_token\"}");
                 };
-                match agent::rotate_token(storage, &req.token).await {
+                match agent::rotate_token(agent_config, &req.token).await {
                     Ok(()) => json_ok(String::from("{\"status\":\"rotated\"}")),
                     Err(agent::RotateTokenError::InvalidLength) => {
                         json_error(StatusCode::BAD_REQUEST, "{\"error\":\"token must be 8-64 chars\"}")
@@ -117,7 +118,7 @@ pub async fn serve(
         .route(
             "/v1alpha1/reboot",
             post(move |agent::Bearer(token): agent::Bearer| async move {
-                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
                 // Same one-shot `lpwr_cell` as `/ota/activate` below --
@@ -134,7 +135,7 @@ pub async fn serve(
         .route(
             "/v1alpha1/app/port",
             post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
-                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
                 #[derive(serde::Deserialize)]
@@ -162,7 +163,7 @@ pub async fn serve(
         .route(
             "/v1alpha1/ota/prepare",
             post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
-                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
                 let Ok(req) = serde_json::from_str::<ota::PrepareRequest>(&body) else {
@@ -176,7 +177,7 @@ pub async fn serve(
         .route(
             "/v1alpha1/ota/activate",
             post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
-                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
                 #[derive(serde::Deserialize)]
@@ -211,7 +212,7 @@ pub async fn serve(
         .route(
             "/v1alpha1/tls/cert",
             post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
-                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
                 #[derive(serde::Deserialize)]
@@ -239,7 +240,7 @@ pub async fn serve(
         .route(
             "/v1alpha1/tls/ca",
             post(move |agent::Bearer(token): agent::Bearer, body: String| async move {
-                if !agent::is_authorized(storage, token.as_deref().unwrap_or("")).await {
+                if !agent::is_authorized(agent_config, token.as_deref().unwrap_or("")).await {
                     return unauthorized();
                 }
                 #[derive(serde::Deserialize)]
