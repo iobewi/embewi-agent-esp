@@ -6,6 +6,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -75,6 +76,31 @@ impl Storage {
 
     pub fn get_string(&mut self, namespace: &Key, key: &Key) -> Option<String> {
         self.backend.get_string(namespace, key)
+    }
+
+    /// Opaque blob access used by config-space-manager's NVS backend.
+    /// Missing data is distinct from an NVS infrastructure failure.
+    pub fn read_blob(
+        &mut self,
+        namespace: &Key,
+        key: &Key,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        self.backend.read_blob(namespace, key)
+    }
+
+    pub fn set_blob(
+        &mut self,
+        namespace: &Key,
+        key: &Key,
+        value: &[u8],
+    ) -> Result<(), StorageError> {
+        self.backend.set_blob(namespace, key, value)
+    }
+
+    pub fn nvs_statistics(
+        &mut self,
+    ) -> Result<esp_storage_manager::NvsStatistics, StorageError> {
+        self.backend.nvs_statistics()
     }
 
     pub fn set_string(
