@@ -103,26 +103,22 @@ async fn main(spawner: Spawner) -> ! {
         .expect("NVS capacity insufficient for hardware config");
     static HARDWARE_CONFIG: StaticCell<hardware::HardwareConfigSpace> = StaticCell::new();
     let hardware_config = &*HARDWARE_CONFIG.init(hardware_config);
-    hardware::migrate_legacy_config(storage, hardware_config).await;
 
     let app_config = config_manager
         .claim("app", app_config::CONFIG_BUDGET)
         .expect("NVS capacity insufficient for app config");
     static APP_CONFIG: StaticCell<app_config::AppConfigSpace> = StaticCell::new();
     let app_config = &*APP_CONFIG.init(app_config);
-    app_config::migrate_legacy_config(storage, app_config).await;
 
     let agent_config = config_manager
         .claim("agent", agent::CONFIG_BUDGET)
         .expect("NVS capacity insufficient for agent config");
     static AGENT_CONFIG: StaticCell<agent::AgentConfigSpace> = StaticCell::new();
     let agent_config = &*AGENT_CONFIG.init(agent_config);
-    agent::migrate_legacy_config(storage, agent_config).await;
 
     let wifi_config = config_manager
         .claim("wifi", wifi::CONFIG_BUDGET)
         .expect("NVS capacity insufficient for Wi-Fi config");
-    wifi::migrate_legacy_config(storage, &wifi_config).await;
 
     // Which GPIO (if any) drives the status LED is board-specific and now
     // belongs to the hardware ConfigSpace rather than application-owned NVS.
