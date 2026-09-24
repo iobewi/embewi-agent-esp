@@ -18,6 +18,8 @@ use esp_hal::usb_serial_jtag::UsbSerialJtag;
 use static_cell::StaticCell;
 
 use embewi_agent_esp::agent;
+use embewi_agent_esp::app_config;
+use embewi_agent_esp::hardware;
 use embewi_agent_esp::status;
 use embewi_agent_esp::storage::Storage;
 use config_space_manager::ConfigManager;
@@ -84,15 +86,47 @@ async fn main(spawner: Spawner) -> ! {
     // `ota.rs`'s "anti-freeze watchdog" section for the rest of it.
     embewi_agent_esp::ota::arm_boot_watchdog();
 
-    // Not yet wrapped in the shared Mutex: nothing else is running yet, so
-    // this one-time boot read needs no locking.
-    let mut boot_storage = Storage::new(peripherals.FLASH);
+    static STORAGE: StaticCell<Mutex<CriticalSectionRawMutex, Storage>> = StaticCell::new();
+    let storage = STORAGE.init(Mutex::new(Storage::new(peripherals.FLASH)));
 
-    // Which GPIO (if any) drives the status LED is board-specific, so it's
-    // read from NVS instead of being hardcoded -- set at runtime from the
-    // device's own HTTP config page (see src/http/ and web/), not at compile
-    // time.
-    if let Some(gpio) = boot_storage.load_led_gpio() {
+    // Components claim isolated persistent configuration capabilities at
+    // boot. The manager knows capacities/ownership only; each component owns
+    // the schema inside its opaque space. Claims are completed in a fixed
+    // order before any application service is spawned.
+    let config_backend = NvsConfigBackend::new(storage)
+        .await
+        .expect("NVS config backend unavailable");
+    let mut config_manager = ConfigManager::new(config_backend);
+
+    let hardware_config = config_manager
+        .claim("hardware", hardware::CONFIG_BUDGET)
+        .expect("NVS capacity insufficient for hardware config");
+    static HARDWARE_CONFIG: StaticCell<hardware::HardwareConfigSpace> = StaticCell::new();
+    let hardware_config = &*HARDWARE_CONFIG.init(hardware_config);
+    hardware::migrate_legacy_config(storage, hardware_config).await;
+
+    let app_config = config_manager
+        .claim("app", app_config::CONFIG_BUDGET)
+        .expect("NVS capacity insufficient for app config");
+    static APP_CONFIG: StaticCell<app_config::AppConfigSpace> = StaticCell::new();
+    let app_config = &*APP_CONFIG.init(app_config);
+    app_config::migrate_legacy_config(storage, app_config).await;
+
+    let agent_config = config_manager
+        .claim("agent", agent::CONFIG_BUDGET)
+        .expect("NVS capacity insufficient for agent config");
+    static AGENT_CONFIG: StaticCell<agent::AgentConfigSpace> = StaticCell::new();
+    let agent_config = &*AGENT_CONFIG.init(agent_config);
+    agent::migrate_legacy_config(storage, agent_config).await;
+
+    let wifi_config = config_manager
+        .claim("wifi", wifi::CONFIG_BUDGET)
+        .expect("NVS capacity insufficient for Wi-Fi config");
+    wifi::migrate_legacy_config(storage, &wifi_config).await;
+
+    // Which GPIO (if any) drives the status LED is board-specific and now
+    // belongs to the hardware ConfigSpace rather than application-owned NVS.
+    if let Some(gpio) = hardware::led_gpio(hardware_config).await {
         let led_pin = match gpio {
             0 => peripherals.GPIO0.degrade(),
             1 => peripherals.GPIO1.degrade(),
@@ -116,15 +150,10 @@ async fn main(spawner: Spawner) -> ! {
             19 => peripherals.GPIO19.degrade(),
             20 => peripherals.GPIO20.degrade(),
             21 => peripherals.GPIO21.degrade(),
-            // src/http/ rejects anything else before it ever reaches NVS, so
-            // this should be unreachable.
             other => panic!("saved status LED GPIO {other} is out of range for this chip"),
         };
         spawner.spawn(status::led_task(peripherals.RMT, led_pin).unwrap());
     }
-
-    static STORAGE: StaticCell<Mutex<CriticalSectionRawMutex, Storage>> = StaticCell::new();
-    let storage = STORAGE.init(Mutex::new(boot_storage));
 
     // contrat §3: detects whether the image that just booted is an
     // unconfirmed OTA update (`PENDING_VERIFY`) and, if so, starts the
@@ -133,40 +162,18 @@ async fn main(spawner: Spawner) -> ! {
     // must run regardless of network state.
     embewi_agent_esp::ota::on_boot(storage, spawner).await;
 
-    // Admin server TLS: one global MbedTLS instance for the whole program
-    // (see `tls::init`'s doc comment). `http::run` reads whatever cert/key
-    // was last pushed via `POST /v1alpha1/tls/cert` straight from NVS on
-    // each connection, falling back to plain HTTP until one exists.
+    // Admin server TLS: one global MbedTLS instance for the whole program.
     let tls = embewi_agent_esp::tls::init();
 
     let (rx, tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
-
-    // Components claim isolated persistent configuration capabilities at
-    // boot. The manager knows capacities/ownership only; each component owns
-    // the schema inside its opaque space. Claims are completed in a fixed
-    // order before any application service is spawned.
-    let config_backend = NvsConfigBackend::new(storage)
-        .await
-        .expect("NVS config backend unavailable");
-    let mut config_manager = ConfigManager::new(config_backend);
-
-    let agent_config = config_manager
-        .claim("agent", agent::CONFIG_BUDGET)
-        .expect("NVS capacity insufficient for agent config");
-    static AGENT_CONFIG: StaticCell<agent::AgentConfigSpace> = StaticCell::new();
-    let agent_config = &*AGENT_CONFIG.init(agent_config);
-    agent::migrate_legacy_config(storage, agent_config).await;
-
-    let wifi_config = config_manager
-        .claim("wifi", wifi::CONFIG_BUDGET)
-        .expect("NVS capacity insufficient for Wi-Fi config");
-    wifi::migrate_legacy_config(storage, &wifi_config).await;
 
     let mut supervisor = embewi_agent_esp::supervisor::ApplicationSupervisor::new(
         spawner,
         peripherals.LPWR,
         tls,
         agent_config,
+        app_config,
+        hardware_config,
     );
 
     let mut wifi = WifiManager::new(peripherals.WIFI, spawner, wifi_config);
