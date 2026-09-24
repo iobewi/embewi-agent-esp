@@ -115,8 +115,9 @@ impl Storage {
     /// Round-trips the same canary used before the extraction. Health state
     /// itself is now maintained by the reusable storage backend.
     pub fn self_check(&mut self) -> bool {
+        const NAMESPACE: Key = Key::from_str("storage");
         const CANARY: Key = Key::from_str("canary");
-        self.backend.self_check(&SYSTEM_NAMESPACE, &CANARY)
+        self.backend.self_check(&NAMESPACE, &CANARY)
     }
 
     pub fn is_healthy(&self) -> bool {
