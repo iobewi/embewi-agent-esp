@@ -86,6 +86,7 @@ pub async fn serve(
     stack: Stack<'static>,
     storage: &'static SharedStorage,
     agent_config: &'static agent::AgentConfigSpace,
+    hardware_config: &'static crate::hardware::HardwareConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
@@ -105,10 +106,8 @@ pub async fn serve(
         .route(
             "/",
             get(move || async move {
-                let (locked, led_gpio) = {
-                    let mut storage = storage.lock().await;
-                    (storage.is_locked(), storage.load_led_gpio())
-                };
+                let locked = storage.lock().await.is_locked();
+                let led_gpio = crate::hardware::led_gpio(hardware_config).await;
                 if locked {
                     return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
                         .with_content_type("text/html; charset=utf-8");
@@ -147,7 +146,7 @@ pub async fn serve(
 
                 // Nothing below may report success (nor reboot, nor lock the
                 // page for good) unless every write actually reached NVS.
-                let saved = if storage.lock().await.save_led_gpio(gpio).is_err() {
+                let saved = if crate::hardware::save_led_gpio(hardware_config, gpio).await.is_err() {
                     false
                 } else {
                     agent::save_identity(agent_config, &form.node_id, &form.ctrl_url, "")
