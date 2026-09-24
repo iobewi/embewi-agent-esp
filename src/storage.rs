@@ -5,7 +5,6 @@
 //! flash/NVS backend plus the primitive access still required by specialized
 //! state machines such as OTA.
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -45,10 +44,6 @@ impl Storage {
         Some(self.backend.with_raw_flash(f))
     }
 
-    pub fn get_string(&mut self, namespace: &Key, key: &Key) -> Option<String> {
-        self.backend.get_string(namespace, key)
-    }
-
     /// Opaque blob access used by config-space-manager's NVS backend.
     /// Missing data is distinct from an NVS infrastructure failure.
     pub fn read_blob(
@@ -72,31 +67,6 @@ impl Storage {
         &mut self,
     ) -> Result<esp_storage_manager::NvsStatistics, StorageError> {
         self.backend.nvs_statistics()
-    }
-
-    pub fn set_string(
-        &mut self,
-        namespace: &Key,
-        key: &Key,
-        value: &str,
-    ) -> Result<(), StorageError> {
-        self.backend.set_string(namespace, key, value)
-    }
-
-    pub fn get_u8(&mut self, namespace: &Key, key: &Key) -> Option<u8> {
-        self.backend.get_u8(namespace, key)
-    }
-
-    pub fn set_u8(&mut self, namespace: &Key, key: &Key, value: u8) -> Result<(), StorageError> {
-        self.backend.set_u8(namespace, key, value)
-    }
-
-    pub fn get_u32(&mut self, namespace: &Key, key: &Key) -> Option<u32> {
-        self.backend.get_u32(namespace, key)
-    }
-
-    pub fn set_u32(&mut self, namespace: &Key, key: &Key, value: u32) -> Result<(), StorageError> {
-        self.backend.set_u32(namespace, key, value)
     }
 
     /// Round-trips the same canary used before the extraction. Health state
