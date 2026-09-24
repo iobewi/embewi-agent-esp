@@ -147,12 +147,14 @@ pub async fn serve(
 
                 // Nothing below may report success (nor reboot, nor lock the
                 // page for good) unless every write actually reached NVS.
-                let saved = async {
-                    storage.lock().await.save_led_gpio(gpio)?;
-                    agent::save_identity(agent_config, &form.node_id, &form.ctrl_url, "").await
-                }
-                .await;
-                if saved.is_err() {
+                let saved = if storage.lock().await.save_led_gpio(gpio).is_err() {
+                    false
+                } else {
+                    agent::save_identity(agent_config, &form.node_id, &form.ctrl_url, "")
+                        .await
+                        .is_ok()
+                };
+                if !saved {
                     return Response::new(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         page(
