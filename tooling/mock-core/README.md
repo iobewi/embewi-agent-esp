@@ -24,6 +24,17 @@ or the one-shot HTTP form) and can't be changed over the API afterwards
 -- point it at wherever this mock will actually run *before* locking the
 device, or reprovision from scratch (full erase) to change it.
 
+Once a device connects, `/v1alpha1/logs` prints every ESP_LOG line it
+streams -- a live view of the device's own logs over the network, no
+serial cable needed:
+
+```text
+[09:49:39] conn #1 log: [raw] embewi-d5eb28: heartbeat: connected to 192.168.100.133:8443
+```
+
+(`--raw-frames` prints each frame's raw bytes instead, for debugging the
+mock itself rather than reading the device's logs through it.)
+
 See `mock_core.py --help` for `--close-after-ws-accept` (simulates the
 Core accepting a log-stream WS upgrade then immediately closing it) and
 other scenario flags.
