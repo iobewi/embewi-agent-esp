@@ -1,12 +1,17 @@
-//! Embewi Wi-Fi connector policy.
+//! Wi-Fi connector integration.
 //!
-//! Reusable radio/network mechanics live in `esp-wifi-manager`. This module
-//! retains only application policy: persisted SSID/password and the socket-set
-//! size required by the currently enabled Embewi IP services.
+//! Radio/network mechanics live in esp-wifi-manager. Persistent configuration
+//! is owned by this component through one isolated config-space-manager
+//! capability; embewi-agent no longer reads or writes Wi-Fi credentials on
+//! the normal path.
+//!
+//! The legacy NVS keys remain here only as a one-way migration bridge for
+//! devices upgrading from firmware that stored ssid/password directly.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use config_space_manager::{Budget, ConfigSpace};
 use embassy_executor::Spawner;
 use embassy_net::{Stack, StackResources};
 use esp_hal::peripherals::WIFI;
@@ -14,72 +19,232 @@ use esp_storage_manager::Key;
 use log::{info, warn};
 use static_cell::StaticCell;
 
+use crate::config::NvsConfigBackend;
 use crate::storage::SharedStorage;
 
 pub use esp_wifi_manager::Network;
 
-const NAMESPACE: Key = Key::from_str("wifi");
-const KEY_SSID: Key = Key::from_str("ssid");
-const KEY_PASSWORD: Key = Key::from_str("password");
+const LEGACY_NAMESPACE: Key = Key::from_str("wifi");
+const LEGACY_KEY_SSID: Key = Key::from_str("ssid");
+const LEGACY_KEY_PASSWORD: Key = Key::from_str("password");
+
+const CONFIG_MAGIC: &[u8; 4] = b"WFC1";
+const CONFIG_HEADER_LEN: usize = 6;
+
+/// Maximum serialized Wi-Fi component configuration.
+///
+/// Current station credentials need at most 4-byte magic + two length bytes
+/// + 32-byte SSID + 64-byte password. 128 bytes leaves room for a small
+/// schema evolution without changing the boot-time reservation.
+pub const CONFIG_BUDGET: Budget = Budget::new(128);
 
 // DHCP (1) + admin HTTP/HTTPS (1) + SNTP UDP (1) + transient outbound DNS
 // (1) + heartbeat TCP (1) + log-stream WS/TCP (1), with headroom for OTA.
-// This sizing is Embewi application policy, so it intentionally stays out of
-// `esp-wifi-manager`.
+// This sizing remains application integration policy; it is unrelated to
+// credential persistence.
 const SOCKETS: usize = 8;
 static RESOURCES: StaticCell<StackResources<SOCKETS>> = StaticCell::new();
 
+#[derive(Clone)]
+struct WifiConfig {
+    ssid: String,
+    password: String,
+}
+
+impl WifiConfig {
+    fn encode(&self) -> Option<Vec<u8>> {
+        let ssid_len = u8::try_from(self.ssid.len()).ok()?;
+        let password_len = u8::try_from(self.password.len()).ok()?;
+        let total = CONFIG_HEADER_LEN
+            .checked_add(self.ssid.len())?
+            .checked_add(self.password.len())?;
+        if total > CONFIG_BUDGET.max_bytes() {
+            return None;
+        }
+
+        let mut out = Vec::with_capacity(total);
+        out.extend_from_slice(CONFIG_MAGIC);
+        out.push(ssid_len);
+        out.push(password_len);
+        out.extend_from_slice(self.ssid.as_bytes());
+        out.extend_from_slice(self.password.as_bytes());
+        Some(out)
+    }
+
+    fn decode(raw: &[u8]) -> Option<Self> {
+        if raw.len() < CONFIG_HEADER_LEN || &raw[..4] != CONFIG_MAGIC {
+            return None;
+        }
+        let ssid_len = raw[4] as usize;
+        let password_len = raw[5] as usize;
+        let expected = CONFIG_HEADER_LEN
+            .checked_add(ssid_len)?
+            .checked_add(password_len)?;
+        if raw.len() != expected {
+            return None;
+        }
+
+        let ssid_end = CONFIG_HEADER_LEN + ssid_len;
+        let ssid = core::str::from_utf8(&raw[CONFIG_HEADER_LEN..ssid_end]).ok()?;
+        let password = core::str::from_utf8(&raw[ssid_end..]).ok()?;
+        Some(Self {
+            ssid: String::from(ssid),
+            password: String::from(password),
+        })
+    }
+}
+
+type WifiConfigSpace = ConfigSpace<NvsConfigBackend>;
+
+/// One-way upgrade bridge from the old application-owned NVS keys.
+///
+/// The new blob is committed first; legacy keys are deleted only after that
+/// succeeds. A power cut therefore leaves either the old representation, the
+/// new one, or briefly both -- never no usable credentials.
+pub async fn migrate_legacy_config(
+    storage: &'static SharedStorage,
+    space: &WifiConfigSpace,
+) {
+    match space.load().await {
+        Ok(Some(_)) => return,
+        Err(e) => {
+            warn!("Wi-Fi: config-space load failed before legacy migration: {e:?}");
+            return;
+        }
+        Ok(None) => {}
+    }
+
+    let legacy = {
+        let mut storage = storage.lock().await;
+        let ssid = storage.get_string(&LEGACY_NAMESPACE, &LEGACY_KEY_SSID);
+        let password = storage.get_string(&LEGACY_NAMESPACE, &LEGACY_KEY_PASSWORD);
+        ssid.zip(password)
+    };
+    let Some((ssid, password)) = legacy else {
+        return;
+    };
+
+    let config = WifiConfig { ssid, password };
+    let Some(encoded) = config.encode() else {
+        warn!("Wi-Fi: legacy credentials do not fit the new config space");
+        return;
+    };
+
+    match space.commit(&encoded).await {
+        Ok(generation) => {
+            let mut storage = storage.lock().await;
+            if storage.delete(&LEGACY_NAMESPACE, &LEGACY_KEY_SSID).is_err()
+                || storage.delete(&LEGACY_NAMESPACE, &LEGACY_KEY_PASSWORD).is_err()
+            {
+                // Harmless: the config-space value wins on every later boot,
+                // so leftover legacy keys can never overwrite it.
+                warn!("Wi-Fi: migrated config but could not remove all legacy keys");
+            }
+            info!("Wi-Fi: migrated legacy credentials to config space generation={generation}");
+        }
+        Err(e) => warn!("Wi-Fi: legacy credential migration failed: {e:?}"),
+    }
+}
+
 pub struct WifiManager {
     transport: esp_wifi_manager::WifiManager<SOCKETS>,
+    config: WifiConfigSpace,
 }
 
 impl WifiManager {
-    pub fn new(peripheral: WIFI<'static>, spawner: Spawner) -> Self {
+    pub fn new(
+        peripheral: WIFI<'static>,
+        spawner: Spawner,
+        config: WifiConfigSpace,
+    ) -> Self {
         Self {
             transport: esp_wifi_manager::WifiManager::new(
                 peripheral,
                 spawner,
                 RESOURCES.init(StackResources::new()),
             ),
+            config,
         }
     }
 
-    /// Reconnects using credentials persisted by this application.
-    pub async fn reconnect_saved(&mut self, storage: &'static SharedStorage) -> bool {
-        let (ssid, password) = {
-            let mut storage = storage.lock().await;
-            let Some(ssid) = storage.get_string(&NAMESPACE, &KEY_SSID) else {
-                return false;
-            };
-            let Some(password) = storage.get_string(&NAMESPACE, &KEY_PASSWORD) else {
-                return false;
-            };
-            (ssid, password)
-        };
-
-        info!("Wi-Fi: reconnecting to saved SSID={ssid}");
-        self.transport.connect(&ssid, password).await
+    async fn saved_config(&self) -> Option<WifiConfig> {
+        match self.config.load().await {
+            Ok(Some(snapshot)) => match WifiConfig::decode(&snapshot.data) {
+                Some(config) => Some(config),
+                None => {
+                    warn!(
+                        "Wi-Fi: stored config generation={} has an unsupported/corrupt schema",
+                        snapshot.generation
+                    );
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(e) => {
+                warn!("Wi-Fi: config-space load failed: {e:?}");
+                None
+            }
+        }
     }
 
-    /// Connects with newly provided credentials and persists them only after
+    /// Reconnects using this component's own persisted configuration.
+    pub async fn reconnect_saved(&mut self) -> bool {
+        let Some(config) = self.saved_config().await else {
+            return false;
+        };
+
+        info!("Wi-Fi: reconnecting to saved SSID={}", config.ssid);
+        self.transport.connect(&config.ssid, config.password).await
+    }
+
+    async fn restore_previous(&mut self, previous: Option<WifiConfig>) {
+        let Some(previous) = previous else {
+            return;
+        };
+        info!("Wi-Fi: restoring previous SSID={} after failed reprovision", previous.ssid);
+        if !self
+            .transport
+            .connect(&previous.ssid, previous.password)
+            .await
+        {
+            warn!("Wi-Fi: previous network could not be restored");
+        }
+    }
+
+    /// Tests candidate credentials first and publishes them only after
     /// association + DHCP succeeded.
-    pub async fn provision(
-        &mut self,
-        storage: &'static SharedStorage,
-        ssid: &str,
-        password: String,
-    ) -> bool {
+    ///
+    /// If the candidate connection or durable config commit fails, the old
+    /// persisted configuration remains authoritative and is immediately
+    /// reconnected instead of leaving the running device offline until reboot.
+    pub async fn provision(&mut self, ssid: &str, password: String) -> bool {
+        let previous = self.saved_config().await;
         if !self.transport.connect(ssid, password.clone()).await {
+            self.restore_previous(previous).await;
             return false;
         }
 
-        let mut storage = storage.lock().await;
-        if storage.set_string(&NAMESPACE, &KEY_SSID, ssid).is_err()
-            || storage.set_string(&NAMESPACE, &KEY_PASSWORD, &password).is_err()
-        {
-            warn!("Wi-Fi: connected, but credentials could not be saved to NVS");
+        let candidate = WifiConfig {
+            ssid: String::from(ssid),
+            password,
+        };
+        let Some(encoded) = candidate.encode() else {
+            warn!("Wi-Fi: candidate credentials exceed config-space schema limits");
+            self.restore_previous(previous).await;
+            return false;
+        };
+
+        match self.config.commit(&encoded).await {
+            Ok(generation) => {
+                info!("Wi-Fi: configuration committed generation={generation}");
+                true
+            }
+            Err(e) => {
+                warn!("Wi-Fi: connected, but durable config commit failed: {e:?}");
+                self.restore_previous(previous).await;
+                false
+            }
         }
-        true
     }
 
     pub async fn scan(&mut self) -> Vec<Network> {
