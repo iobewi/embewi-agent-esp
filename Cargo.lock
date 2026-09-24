@@ -3415,4 +3415,4 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 [[package]]
 name = "config-space-manager"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/config-space-manager?rev=c4edf5b#c4edf5beb04cde7f523c9fead3f0e524d0ea242a"
+source = "git+https://github.com/iobewi/config-space-manager?rev=c6e58f4#c6e58f44c8e3e45f787d96d9655487ccaf568807"
