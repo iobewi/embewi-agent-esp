@@ -118,6 +118,13 @@ async fn main(spawner: Spawner) -> ! {
     static AGENT_CONFIG: StaticCell<agent::AgentConfigSpace> = StaticCell::new();
     let agent_config = &*AGENT_CONFIG.init(agent_config);
 
+    let lifecycle_config = config_manager
+        .claim("lifecycle", embewi_agent_esp::lifecycle::CONFIG_BUDGET)
+        .expect("NVS capacity insufficient for lifecycle state");
+    static LIFECYCLE_CONFIG: StaticCell<embewi_agent_esp::lifecycle::LifecycleConfigSpace> =
+        StaticCell::new();
+    let lifecycle_config = &*LIFECYCLE_CONFIG.init(lifecycle_config);
+
     let runtime_space = config_manager
         .claim("runtime", runtime_config::CONFIG_BUDGET)
         .expect("NVS capacity insufficient for runtime config");
@@ -190,6 +197,7 @@ async fn main(spawner: Spawner) -> ! {
         hardware_config,
         tls_config,
         runtime_config,
+        lifecycle_config,
     );
 
     let mut wifi = WifiManager::new(peripherals.WIFI, spawner, wifi_config);

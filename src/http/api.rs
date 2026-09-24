@@ -268,5 +268,5 @@ pub async fn serve(
             }),
         );
 
-    super::serve(stack, storage, tls_config, tls, &router).await
+    super::serve(stack, tls_config, tls, &router).await
 }

@@ -91,19 +91,6 @@ impl Storage {
         self.backend.set_u8(namespace, key, value)
     }
 
-    pub fn get_bool(&mut self, namespace: &Key, key: &Key) -> Option<bool> {
-        self.backend.get_bool(namespace, key)
-    }
-
-    pub fn set_bool(
-        &mut self,
-        namespace: &Key,
-        key: &Key,
-        value: bool,
-    ) -> Result<(), StorageError> {
-        self.backend.set_bool(namespace, key, value)
-    }
-
     pub fn get_u32(&mut self, namespace: &Key, key: &Key) -> Option<u32> {
         self.backend.get_u32(namespace, key)
     }

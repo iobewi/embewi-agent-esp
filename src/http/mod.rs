@@ -86,14 +86,15 @@ pub async fn run(
     hardware_config: &'static crate::hardware::HardwareConfigSpace,
     tls_config: &'static crate::tls::TlsConfigSpace,
     runtime_config: &'static crate::runtime_config::RuntimeConfig,
+    lifecycle_config: &'static crate::lifecycle::LifecycleConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
 ) -> ! {
-    if crate::lifecycle::is_locked(storage).await {
+    if crate::lifecycle::is_locked(lifecycle_config).await {
         api::serve(stack, storage, agent_config, app_config, tls_config, runtime_config, spawner, lpwr, tls).await
     } else {
-        config::serve(stack, storage, agent_config, hardware_config, tls_config, spawner, lpwr, tls).await
+        config::serve(stack, agent_config, hardware_config, tls_config, lifecycle_config, spawner, lpwr, tls).await
     }
 }
 
@@ -194,7 +195,6 @@ pub(super) async fn reboot_after_delay(lpwr: LPWR<'static>) -> ! {
 /// comment).
 pub(super) async fn serve(
     stack: Stack<'static>,
-    storage: &'static SharedStorage,
     tls_config: &'static crate::tls::TlsConfigSpace,
     tls: crate::tls::TlsReferenceStatic,
     router: &picoserve::Router<impl PathRouter>,

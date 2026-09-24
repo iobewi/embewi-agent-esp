@@ -26,7 +26,6 @@ use picoserve::routing::{get, get_service};
 use static_cell::StaticCell;
 
 use crate::agent;
-use crate::storage::SharedStorage;
 
 use super::{STYLE_CSS, html_escape, reboot_after_delay};
 
@@ -84,10 +83,10 @@ fn page(led_gpio: Option<u8>, node_id: &str, ctrl_url: &str, message: Option<&st
 /// both being reserved simultaneously and permanently.
 pub async fn serve(
     stack: Stack<'static>,
-    storage: &'static SharedStorage,
     agent_config: &'static agent::AgentConfigSpace,
     hardware_config: &'static crate::hardware::HardwareConfigSpace,
     tls_config: &'static crate::tls::TlsConfigSpace,
+    lifecycle_config: &'static crate::lifecycle::LifecycleConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
@@ -107,7 +106,7 @@ pub async fn serve(
         .route(
             "/",
             get(move || async move {
-                let locked = crate::lifecycle::is_locked(storage).await;
+                let locked = crate::lifecycle::is_locked(lifecycle_config).await;
                 let led_gpio = crate::hardware::led_gpio(hardware_config).await;
                 if locked {
                     return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
@@ -123,7 +122,7 @@ pub async fn serve(
             // that) -- a validation error re-serves the editable form
             // instead, so a typo doesn't lock the device out over nothing.
             .post(move |Form(form): Form<ConfigForm>| async move {
-                let locked = crate::lifecycle::is_locked(storage).await;
+                let locked = crate::lifecycle::is_locked(lifecycle_config).await;
                 if locked {
                     return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
                         .with_content_type("text/html; charset=utf-8");
@@ -164,7 +163,7 @@ pub async fn serve(
                     .with_content_type("text/html; charset=utf-8");
                 }
                 let token = agent::token(agent_config).await;
-                if crate::lifecycle::lock(storage).await.is_err() {
+                if crate::lifecycle::lock(lifecycle_config).await.is_err() {
                     return Response::new(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         page(
@@ -191,5 +190,5 @@ pub async fn serve(
             }),
         );
 
-    super::serve(stack, storage, tls_config, tls, &router).await
+    super::serve(stack, tls_config, tls, &router).await
 }
