@@ -196,7 +196,6 @@ where
 ///
 /// It exposes only that component's opaque value; there is no API for
 /// enumerating or opening another component's space.
-#[derive(Clone)]
 pub struct ConfigSpace<B> {
     backend: B,
     name: String,
