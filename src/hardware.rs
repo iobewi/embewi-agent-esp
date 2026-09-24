@@ -5,7 +5,7 @@
 use config_space_manager::{Budget, ConfigSpace};
 use log::warn;
 
-use crate::config::NvsConfigBackend;
+use config_space_manager_esp_nvs::NvsConfigBackend;
 
 const MAGIC: &[u8; 4] = b"HWC1";
 const NONE: u8 = 0xff;

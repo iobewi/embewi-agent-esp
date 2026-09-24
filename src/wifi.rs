@@ -15,7 +15,7 @@ use esp_hal::peripherals::WIFI;
 use log::{info, warn};
 use static_cell::StaticCell;
 
-use crate::config::NvsConfigBackend;
+use config_space_manager_esp_nvs::NvsConfigBackend;
 
 pub use esp_wifi_manager::Network;
 

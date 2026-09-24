@@ -17,7 +17,7 @@ use serde::Serialize;
 use subtle::ConstantTimeEq;
 
 use crate::config::NvsConfigBackend;
-use crate::storage::SharedStorage;
+use esp_flash_access::SharedFlash;
 
 /// Versions of the `/v1alpha1`-style protocol this agent answers, highest
 /// first (contrat §4, "Découverte de version d'API").
@@ -343,7 +343,7 @@ pub struct Info {
 }
 
 pub async fn info(
-    storage: &SharedStorage,
+    flash: &SharedFlash,
     agent_config: &AgentConfigSpace,
     app_config: &crate::app_config::AppConfigSpace,
     runtime_config: &crate::runtime_config::RuntimeConfig,
@@ -359,7 +359,7 @@ pub async fn info(
         chip: esp_metadata_generated::chip_pretty!(),
         ram_size: (dram.end - dram.start) as u32,
         partition_layout: crate::ota::PARTITION_LAYOUT,
-        active_slot: crate::ota::active_slot(storage).await,
+        active_slot: crate::ota::active_slot(flash).await,
         firmware: Firmware {
             name: FW_NAME,
             version: FW_VERSION,
@@ -393,14 +393,14 @@ pub struct Health {
     checks: Checks,
 }
 
-pub async fn health(storage: &SharedStorage) -> Health {
+pub async fn health(nvs_backend: &NvsConfigBackend) -> Health {
     // Last known NVS health: the canary round-trip (contrat's own C
     // reference does the same test, for the same reason -- staged OTA
     // state, the token and McuConfigMap all live there) ran at boot and
     // runs again as the `pending_verify` gate, and any NVS error since
     // then has cleared it. A health probe never writes flash: polled at
     // 1 Hz it would mean ~170k NVS mutations a day.
-    let storage_ok = storage.lock().await.is_healthy();
+    let storage_ok = nvs_backend.is_healthy();
     // No separate workload process or sensors on this agent (single
     // binary) -- vacuously true, same reasoning the reference
     // implementation uses for its demo apps that have no sensors either.

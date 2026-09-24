@@ -58,7 +58,8 @@ use picoserve::io::Socket;
 use picoserve::response::{ContentBody, ContentHeaders, Response, StatusCode};
 use picoserve::routing::PathRouter;
 
-use crate::storage::SharedStorage;
+use config_space_manager_esp_nvs::NvsConfigBackend;
+use esp_flash_access::SharedFlash;
 
 pub mod api;
 pub mod config;
@@ -80,7 +81,8 @@ pub mod config;
 #[embassy_executor::task]
 pub async fn run(
     stack: Stack<'static>,
-    storage: &'static SharedStorage,
+    flash: &'static SharedFlash,
+    nvs_backend: &'static NvsConfigBackend,
     agent_config: &'static crate::agent::AgentConfigSpace,
     app_config: &'static crate::app_config::AppConfigSpace,
     hardware_config: &'static crate::hardware::HardwareConfigSpace,
@@ -93,7 +95,7 @@ pub async fn run(
     tls: crate::tls::TlsReferenceStatic,
 ) -> ! {
     if crate::lifecycle::is_locked(lifecycle_config).await {
-        api::serve(stack, storage, agent_config, app_config, tls_config, runtime_config, ota_config, spawner, lpwr, tls).await
+        api::serve(stack, flash, nvs_backend, agent_config, app_config, tls_config, runtime_config, ota_config, spawner, lpwr, tls).await
     } else {
         config::serve(stack, agent_config, hardware_config, tls_config, lifecycle_config, spawner, lpwr, tls).await
     }

@@ -8,8 +8,6 @@
 #![deny(clippy::large_stack_frames)]
 
 use embassy_executor::Spawner;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::mutex::Mutex;
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::Pin;
@@ -22,9 +20,8 @@ use embewi_agent_esp::app_config;
 use embewi_agent_esp::hardware;
 use embewi_agent_esp::status;
 use embewi_agent_esp::tls;
-use embewi_agent_esp::storage::Storage;
 use config_space_manager::ConfigManager;
-use embewi_agent_esp::config::NvsConfigBackend;
+use config_space_manager_esp_nvs::{NvsConfigBackend, NvsPartition};
 use embewi_agent_esp::wifi::{self, WifiManager};
 use embewi_agent_esp::provisioning;
 use embewi_agent_esp::runtime_config;
@@ -88,17 +85,21 @@ async fn main(spawner: Spawner) -> ! {
     // `ota.rs`'s "anti-freeze watchdog" section for the rest of it.
     embewi_agent_esp::ota::arm_boot_watchdog();
 
-    static STORAGE: StaticCell<Mutex<CriticalSectionRawMutex, Storage>> = StaticCell::new();
-    let storage = STORAGE.init(Mutex::new(Storage::new(peripherals.FLASH)));
+    // The physical flash has one process-wide owner. ConfigSpace/NVS and
+    // FiBeWI share only this serialized hardware capability.
+    let flash = esp_flash_access::init(peripherals.FLASH);
 
     // Components claim isolated persistent configuration capabilities at
     // boot. The manager knows capacities/ownership only; each component owns
     // the schema inside its opaque space. Claims are completed in a fixed
     // order before any application service is spawned.
-    let config_backend = NvsConfigBackend::new(storage)
-        .await
-        .expect("NVS config backend unavailable");
-    let mut config_manager = ConfigManager::new(config_backend);
+    static CONFIG_BACKEND: StaticCell<NvsConfigBackend> = StaticCell::new();
+    let config_backend = &*CONFIG_BACKEND.init(
+        NvsConfigBackend::new(flash, NvsPartition::new(0x9000, 0x6000))
+            .await
+            .expect("NVS config backend unavailable"),
+    );
+    let mut config_manager = ConfigManager::new(*config_backend);
 
     let hardware_config = config_manager
         .claim("hardware", hardware::CONFIG_BUDGET)
@@ -187,7 +188,7 @@ async fn main(spawner: Spawner) -> ! {
     // bounded self-check that validates it or rolls it back -- before
     // Wi-Fi/HTTP come up, since this is a purely local safety net that
     // must run regardless of network state.
-    embewi_agent_esp::ota::on_boot(storage, ota_config, spawner).await;
+    embewi_agent_esp::ota::on_boot(flash, config_backend, ota_config, spawner).await;
 
     // Admin server TLS: one global MbedTLS instance for the whole program.
     let tls = embewi_agent_esp::tls::init();
@@ -205,14 +206,16 @@ async fn main(spawner: Spawner) -> ! {
         runtime_config,
         lifecycle_config,
         ota_config,
+        flash,
+        config_backend,
     );
 
     let mut wifi = WifiManager::new(peripherals.WIFI, spawner, wifi_config);
     if wifi.reconnect_saved().await {
         if let Some(stack) = wifi.ip_stack() {
-            supervisor.on_ip_ready(stack, storage);
+            supervisor.on_ip_ready(stack);
         }
     }
 
-    provisioning::run(rx, tx, wifi, supervisor, storage).await
+    provisioning::run(rx, tx, wifi, supervisor).await
 }

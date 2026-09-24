@@ -10,7 +10,6 @@ use log::{info, warn};
 use improv_serial::{self as improv, Command, ImprovError, ParsedCommand, Parser, State};
 use crate::status::{self, Status};
 use crate::supervisor::ApplicationSupervisor;
-use crate::storage::SharedStorage;
 use crate::wifi::WifiManager;
 
 const NAME: &str = "embewi-agent-esp";
@@ -28,7 +27,6 @@ pub async fn run(
     mut tx: Tx,
     mut wifi: WifiManager,
     mut supervisor: ApplicationSupervisor,
-    storage: &'static SharedStorage,
 ) -> ! {
     let mut parser = Parser::new();
     let mut state = if wifi.is_online() {
@@ -51,7 +49,7 @@ pub async fn run(
         };
         for &byte in &buffer[..read] {
             if let Some(command) = parser.feed(byte) {
-                handle(command, &mut tx, &mut state, &mut wifi, &mut supervisor, storage).await;
+                handle(command, &mut tx, &mut state, &mut wifi, &mut supervisor).await;
             }
         }
     }
@@ -88,7 +86,6 @@ async fn handle(
     state: &mut State,
     wifi: &mut WifiManager,
     supervisor: &mut ApplicationSupervisor,
-    storage: &'static SharedStorage,
 ) {
     match command {
         ParsedCommand::GetCurrentState => {
@@ -173,7 +170,7 @@ async fn handle(
 
             if wifi.provision(&settings.ssid, settings.password).await {
                 if let Some(stack) = wifi.ip_stack() {
-                    supervisor.on_ip_ready(stack, storage);
+                    supervisor.on_ip_ready(stack);
                 } else {
                     warn!("Wi-Fi reported connected without an IP stack");
                 }

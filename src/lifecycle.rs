@@ -6,7 +6,7 @@
 
 use config_space_manager::{Budget, ConfigSpace};
 
-use crate::config::NvsConfigBackend;
+use config_space_manager_esp_nvs::NvsConfigBackend;
 
 const MAGIC: &[u8; 4] = b"LFC1";
 const ENCODED_LEN: usize = 5;

@@ -5,7 +5,7 @@
 //! glue around one. The transaction state machine (staged/activating,
 //! post-reboot reconciliation) and the streaming, digest-verified,
 //! resumable write session both live in
-//! [`atomic_ota`](https://github.com/iobewi/atomic-ota), a generic,
+//! [`fibewi`](https://github.com/iobewi/fibewi), a generic,
 //! `no_std` crate with no ESP32/`esp-hal`/Embassy/HTTP dependency of its
 //! own -- see that crate's own doc comment for what it owns and why. What
 //! stays here is everything that engine needs a concrete backend for, plus
@@ -17,21 +17,21 @@
 //! ├── ESP slot-selection policy      (EWBT decides which OTA slot is safe)
 //! ├── ConfigSpace transaction metadata (one atomic OTA object)
 //! ├── EWBT / bootloader adapter      (otadata_confirm/reject/activate,
-//! │                                    via atomic_boot -- see below)
+//! │                                    via boot_core -- see below)
 //! └── watchdog / self-check          (arm_boot_watchdog, selfcheck_task)
 //!
-//! atomic_ota (external crate)
+//! fibewi (external crate)
 //! ├── transaction state machine      (TransactionRecord/TransactionState)
 //! ├── post-reboot reconciliation     (reconcile, driven from on_boot)
 //! └── streaming WriteSession         (digest-verified, resumable)
 //!
-//! atomic_ota_esp (external crate)
+//! fibewi_esp (external crate)
 //! ├── ota_0/ota_1 partition lookup
 //! └── sector-aware ESP ArtifactStorage backend
 //! ```
 //!
 //! `otadata` itself -- which slot is active, what to write to activate,
-//! confirm or reject one -- is `atomic_boot` (`crates/embewi-boot-core`),
+//! confirm or reject one -- is `boot_core` (`crates/embewi-boot-core`),
 //! the same crate `embewi-boot` (`boot/`) uses to decide what to boot. This
 //! module never re-implements that decision or that format: every write goes
 //! through [`execute_otadata_write`], the same erase/body/commit protocol the
@@ -39,16 +39,16 @@
 //! entries written the ESP-IDF way (as `esp-bootloader-esp-idf`, still used
 //! here only for partition-table parsing and the OTA image writes
 //! themselves, would write) are deliberately not understood by this format --
-//! no legacy mode, matching `embewi-boot`. `atomic_boot` is its own
-//! thing, unrelated to `atomic_ota`: two separate state machines (bootloader
+//! no legacy mode, matching `embewi-boot`. `boot_core` is its own
+//! thing, unrelated to `fibewi`: two separate state machines (bootloader
 //! slot-trust vs. this adapter's OTA transaction), stitched together by
-//! `atomic_ota::reconcile`'s `BackendOutcome` input.
+//! `fibewi::reconcile`'s `BackendOutcome` input.
 //!
 //! Mirrors `firmware-c`'s `embewi_ota.c`/`embewi_selfcheck.c` state machine
 //! (same `stage`/`slot`/`digest`/`deployment_id`/`size` staged-NVS layout),
 //! reimplemented against embassy tasks instead of ESP-IDF's C one and
 //! FreeRTOS tasks -- the resume-decision and reconciliation *logic* itself
-//! now lives in `atomic_ota`, not reimplemented here.
+//! now lives in `fibewi`, not reimplemented here.
 //!
 //! Staged state is persisted to NVS (not just kept in RAM) because, unlike
 //! a Core restart, the reconcile in contrat §6 also has to survive *this*
@@ -67,7 +67,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
-use atomic_boot as boot_core;
+use fibewi_esp::boot as boot_core;
 use boot_core::Decoded;
 use esp_bootloader_esp_idf::partitions::{AppPartitionSubType, DataPartitionSubType, PARTITION_TABLE_MAX_LEN, PartitionType};
 use config_space_manager::{Budget, ConfigSpace};
@@ -75,11 +75,11 @@ use log::{info, warn};
 use serde::{Deserialize, Serialize};
 
 use crate::agent;
-use atomic_ota::{Action, BackendOutcome, TransactionState};
-use atomic_ota_esp::{AppPartition, AppSlot, EspArtifactStorage, erase_partition_range, find_app_partition};
+use fibewi::{Action, BackendOutcome, TransactionState};
+use fibewi_esp::{AppPartition, AppSlot, EspArtifactStorage, erase_partition_range, find_app_partition};
 
-use crate::config::NvsConfigBackend;
-use crate::storage::{SharedStorage, Storage};
+use config_space_manager_esp_nvs::NvsConfigBackend;
+use esp_flash_access::{EspFlash, SharedFlash};
 
 /// Contrat §4: `POST /ota/prepare`'s `partition_layout` field must match
 /// this exactly, or the write is refused before a single byte transfers.
@@ -140,10 +140,10 @@ fn table_buffer() -> Box<[u8; PARTITION_TABLE_MAX_LEN]> {
     Box::new([0u8; PARTITION_TABLE_MAX_LEN])
 }
 
-// --- otadata (atomic_boot) ---------------------------------------------
+// --- otadata (boot_core) ---------------------------------------------
 //
 // `otadata` semantics (which slot is active, what to write for a transition)
-// live in `atomic_boot`, shared with `embewi-boot`. What's here only
+// live in `boot_core`, shared with `embewi-boot`. What's here only
 // finds the partition and drives the flash for it -- `esp-bootloader-esp-idf`
 // is used purely as a partition-table *parser* (its own `OtaUpdater`/`Ota`,
 // which read and write `otadata` in the older, non-committed format, are not
@@ -180,7 +180,7 @@ fn app_slot_to_subtype(slot: AppSlot) -> AppPartitionSubType {
 /// entries (the only states a slot that's actually executing can be in --
 /// `New`/`Invalid`/`Aborted` never are), the one with the highest sequence.
 /// Matches `embewi-boot`'s own candidate selection (`plan_boot`, and
-/// `atomic_boot::activate`'s own choice of which sector to protect):
+/// `boot_core::activate`'s own choice of which sector to protect):
 /// **not** "the first `Valid` entry found" -- a stale `Valid` entry can
 /// legitimately survive in the other sector after a successful `confirm`
 /// (nothing clears it, same as `plan_boot` never does), so two entries can
@@ -202,81 +202,72 @@ fn otadata_active_slot(entries: &[boot_core::Raw; SLOT_COUNT as usize]) -> Optio
 
 /// Reads the two raw `otadata` entries and that partition's flash offset
 /// (for callers that go on to write there). Free function (not a method) so
-/// it can be called from inside another `with_raw_flash` closure, since
-/// `PartitionTable`/`PartitionEntry` can't be returned out of one (they
-/// borrow `buffer`, which lives only for the call).
+/// It stays synchronous while the caller holds the shared physical-flash lock;
+/// `PartitionTable`/`PartitionEntry` borrow `buffer`, which lives only for the call.
 fn read_otadata_raw(
-    flash: &mut esp_storage_manager::FlashStorage<'static>,
+    flash: &mut EspFlash,
     buffer: &mut [u8; PARTITION_TABLE_MAX_LEN],
 ) -> Option<(u32, [boot_core::Raw; SLOT_COUNT as usize])> {
-    let table = esp_bootloader_esp_idf::partitions::read_partition_table(flash, buffer).ok()?;
+    let raw_flash = flash.storage();
+    let table = esp_bootloader_esp_idf::partitions::read_partition_table(raw_flash, buffer).ok()?;
     let otadata = table.find_partition(PartitionType::Data(DataPartitionSubType::Ota)).ok().flatten()?;
     let base = otadata.offset();
     let mut entries = [boot_core::BLANK; SLOT_COUNT as usize];
     for (i, raw) in entries.iter_mut().enumerate() {
-        ReadNorFlash::read(flash, base + i as u32 * OTADATA_SECTOR, raw).ok()?;
+        ReadNorFlash::read(raw_flash, base + i as u32 * OTADATA_SECTOR, raw).ok()?;
     }
     Some((base, entries))
 }
 
-/// `storage` must already be locked (a sync helper, callable from inside an
-/// already-`.lock().await`ed section without deadlocking on it again).
-fn read_otadata_locked(storage: &mut Storage) -> Option<[boot_core::Raw; SLOT_COUNT as usize]> {
-    storage.with_raw_flash(|flash| read_otadata_raw(flash, &mut table_buffer()).map(|(_, e)| e)).flatten()
+/// `flash` must already be locked by the caller.
+fn read_otadata_locked(flash: &mut EspFlash) -> Option<[boot_core::Raw; SLOT_COUNT as usize]> {
+    read_otadata_raw(flash, &mut table_buffer()).map(|(_, entries)| entries)
 }
 
 /// Where a new OTA image is currently allowed to go: the slot EWBT does
 /// not identify as the active Valid/Pending slot. EWBT owns that selection
-/// policy; `atomic-ota-esp` only resolves the already-chosen `ota_0` or
+/// policy; `fibewi-esp` only resolves the already-chosen `ota_0` or
 /// `ota_1` slot to its physical ESP partition.
-fn write_target_locked(storage: &mut Storage) -> Option<AppPartition> {
-    storage
-        .with_raw_flash(|flash| {
-            let mut buffer = table_buffer();
-            let (_, entries) = read_otadata_raw(flash, &mut buffer)?;
-            let slot = app_slot_from_index(1 - otadata_active_slot(&entries)?)?;
-            find_app_partition(flash, &mut *buffer, slot).ok()
-        })
-        .flatten()
+fn write_target_locked(flash: &mut EspFlash) -> Option<AppPartition> {
+    let mut buffer = table_buffer();
+    let (_, entries) = read_otadata_raw(flash, &mut buffer)?;
+    let slot = app_slot_from_index(1 - otadata_active_slot(&entries)?)?;
+    find_app_partition(flash.storage(), &mut *buffer, slot).ok()
 }
 
 /// One `otadata` entry update, executed exactly as `embewi-boot` does it:
 /// erase the sector, program the body (everything but the commit word),
 /// program the commit word in its own command -- each step read back and
-/// checked before the next. `storage` must already be locked.
-fn execute_otadata_write(storage: &mut Storage, write: boot_core::Write) -> Result<(), OtadataError> {
-    storage
-        .with_raw_flash(|flash| -> Option<()> {
-            let mut buffer = table_buffer();
-            let (base, _) = read_otadata_raw(flash, &mut buffer)?;
-            let base = base + u32::from(write.sector) * OTADATA_SECTOR;
-            let [erase, body, commit] = write.ops();
-            let mut back = [0u8; boot_core::ENTRY_SIZE];
+/// checked before the next. `flash` must already be locked.
+fn execute_otadata_write(flash: &mut EspFlash, write: boot_core::Write) -> Result<(), OtadataError> {
+    let mut buffer = table_buffer();
+    let (base, _) = read_otadata_raw(flash, &mut buffer).ok_or(OtadataError::Unavailable)?;
+    let base = base + u32::from(write.sector) * OTADATA_SECTOR;
+    let [erase, body, commit] = write.ops();
+    let mut back = [0u8; boot_core::ENTRY_SIZE];
+    let raw_flash = flash.storage();
 
-            let boot_core::Op::Erase { .. } = erase else { return None };
-            NorFlash::erase(flash, base, base + OTADATA_SECTOR).ok()?;
-            ReadNorFlash::read(flash, base, &mut back).ok()?;
-            if back != boot_core::BLANK {
-                return None;
-            }
+    let boot_core::Op::Erase { .. } = erase else { return Err(OtadataError::Verify) };
+    NorFlash::erase(raw_flash, base, base + OTADATA_SECTOR).map_err(|_| OtadataError::Verify)?;
+    ReadNorFlash::read(raw_flash, base, &mut back).map_err(|_| OtadataError::Verify)?;
+    if back != boot_core::BLANK {
+        return Err(OtadataError::Verify);
+    }
 
-            let boot_core::Op::Program { offset, len, data, .. } = body else { return None };
-            NorFlash::write(flash, base + u32::from(offset), &data[..usize::from(len)]).ok()?;
-            ReadNorFlash::read(flash, base, &mut back).ok()?;
-            if back != write.entry.body() {
-                return None;
-            }
+    let boot_core::Op::Program { offset, len, data, .. } = body else { return Err(OtadataError::Verify) };
+    NorFlash::write(raw_flash, base + u32::from(offset), &data[..usize::from(len)]).map_err(|_| OtadataError::Verify)?;
+    ReadNorFlash::read(raw_flash, base, &mut back).map_err(|_| OtadataError::Verify)?;
+    if back != write.entry.body() {
+        return Err(OtadataError::Verify);
+    }
 
-            let boot_core::Op::Program { offset, len, data, .. } = commit else { return None };
-            NorFlash::write(flash, base + u32::from(offset), &data[..usize::from(len)]).ok()?;
-            ReadNorFlash::read(flash, base, &mut back).ok()?;
-            if back != write.entry.encode() || boot_core::decode(&back) != Decoded::Ok(write.entry) {
-                return None;
-            }
-            Some(())
-        })
-        .flatten()
-        .ok_or(OtadataError::Verify)
+    let boot_core::Op::Program { offset, len, data, .. } = commit else { return Err(OtadataError::Verify) };
+    NorFlash::write(raw_flash, base + u32::from(offset), &data[..usize::from(len)]).map_err(|_| OtadataError::Verify)?;
+    ReadNorFlash::read(raw_flash, base, &mut back).map_err(|_| OtadataError::Verify)?;
+    if back != write.entry.encode() || boot_core::decode(&back) != Decoded::Ok(write.entry) {
+        return Err(OtadataError::Verify);
+    }
+    Ok(())
 }
 
 /// Why an `otadata` transition ([`otadata_confirm`]/[`otadata_reject`]/
@@ -284,7 +275,7 @@ fn execute_otadata_write(storage: &mut Storage, write: boot_core::Write) -> Resu
 enum OtadataError {
     /// The partition or its entries couldn't be read.
     Unavailable,
-    /// `atomic_boot` found nothing to act on (no `Pending` entry for
+    /// `boot_core` found nothing to act on (no `Pending` entry for
     /// confirm/reject, no `Valid` entry to activate against) -- a boot-chain
     /// anomaly, not something to paper over.
     NoTransition,
@@ -293,32 +284,32 @@ enum OtadataError {
 }
 
 /// The running image, self-checked and passing: `Pending` -> `Valid`.
-async fn otadata_confirm(storage: &SharedStorage) -> Result<(), OtadataError> {
-    let mut storage = storage.lock().await;
-    let entries = read_otadata_locked(&mut storage).ok_or(OtadataError::Unavailable)?;
+async fn otadata_confirm(flash: &SharedFlash) -> Result<(), OtadataError> {
+    let mut flash_guard = flash.lock().await;
+    let entries = read_otadata_locked(&mut flash_guard).ok_or(OtadataError::Unavailable)?;
     let write = boot_core::confirm(entries).ok_or(OtadataError::NoTransition)?;
-    execute_otadata_write(&mut storage, write)
+    execute_otadata_write(&mut flash_guard, write)
 }
 
 /// The running image, self-checked and failing: `Pending` -> `Invalid`, so
 /// the next boot falls back at once (`embewi-boot`'s `plan_boot` treats an
 /// `Invalid`/`Aborted` entry as dead, never a candidate).
-async fn otadata_reject(storage: &SharedStorage) -> Result<(), OtadataError> {
-    let mut storage = storage.lock().await;
-    let entries = read_otadata_locked(&mut storage).ok_or(OtadataError::Unavailable)?;
+async fn otadata_reject(flash: &SharedFlash) -> Result<(), OtadataError> {
+    let mut flash_guard = flash.lock().await;
+    let entries = read_otadata_locked(&mut flash_guard).ok_or(OtadataError::Unavailable)?;
     let write = boot_core::reject(entries).ok_or(OtadataError::NoTransition)?;
-    execute_otadata_write(&mut storage, write)
+    execute_otadata_write(&mut flash_guard, write)
 }
 
 /// Arms `target` slot as `New` (contrat's `/ota/activate`): one committed
 /// write, into whichever sector does not hold the last `Valid` entry, so the
 /// slot that's still known-good stays selectable through any interruption.
-async fn otadata_activate(storage: &SharedStorage, target: AppPartitionSubType) -> Result<(), OtadataError> {
-    let mut storage = storage.lock().await;
-    let entries = read_otadata_locked(&mut storage).ok_or(OtadataError::Unavailable)?;
+async fn otadata_activate(flash: &SharedFlash, target: AppPartitionSubType) -> Result<(), OtadataError> {
+    let mut flash_guard = flash.lock().await;
+    let entries = read_otadata_locked(&mut flash_guard).ok_or(OtadataError::Unavailable)?;
     let target = slot_index(target).ok_or(OtadataError::Unavailable)?;
     let write = boot_core::activate(entries, SLOT_COUNT, target).map_err(|_| OtadataError::NoTransition)?;
-    execute_otadata_write(&mut storage, write)
+    execute_otadata_write(&mut flash_guard, write)
 }
 
 /// Contrat §4: `staged.state` ∈ `none | written | activating`.
@@ -545,9 +536,9 @@ impl Target {
     }
 }
 
-type OtaTransaction = atomic_ota::TransactionRecord<String, ArtifactKind, Target>;
+type OtaTransaction = fibewi::TransactionRecord<String, ArtifactKind, Target>;
 
-fn parse_digest(value: &str) -> Option<atomic_ota::Digest> {
+fn parse_digest(value: &str) -> Option<fibewi::Digest> {
     let hex = value.strip_prefix("sha256:")?;
     if hex.len() != 64 {
         return None;
@@ -556,10 +547,10 @@ fn parse_digest(value: &str) -> Option<atomic_ota::Digest> {
     for (i, b) in bytes.iter_mut().enumerate() {
         *b = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
     }
-    Some(atomic_ota::Digest(bytes))
+    Some(fibewi::Digest(bytes))
 }
 
-fn format_digest(digest: &atomic_ota::Digest) -> String {
+fn format_digest(digest: &fibewi::Digest) -> String {
     let mut s = String::from("sha256:");
     for b in digest.0 {
         let _ = write!(s, "{b:02x}");
@@ -576,7 +567,7 @@ fn transaction_from_staged(staged: &Staged) -> Option<OtaTransaction> {
     Some(OtaTransaction {
         id: staged.deployment_id.clone(),
         state,
-        artifacts: alloc::vec![atomic_ota::ArtifactRecord {
+        artifacts: alloc::vec![fibewi::ArtifactRecord {
             id: ArtifactKind::Firmware,
             size: u64::from(staged.size),
             digest: parse_digest(&staged.digest)?,
@@ -609,7 +600,7 @@ struct MemoryTransactionMetadata {
     record: Option<OtaTransaction>,
 }
 
-impl atomic_ota::TransactionMetadata for MemoryTransactionMetadata {
+impl fibewi::TransactionMetadata for MemoryTransactionMetadata {
     type Error = ();
     type Record = OtaTransaction;
 
@@ -662,20 +653,17 @@ pub async fn active_deployment_id(space: &OtaConfigSpace) -> String {
 /// slot without updating `otadata` to match, so `selected_partition` kept
 /// reporting the bad slot as "current" long after the device had already
 /// recovered onto the other one.
-pub async fn active_slot(storage: &SharedStorage) -> String {
-    let mut storage = storage.lock().await;
-    storage
-        .with_raw_flash(|flash| {
-            let mut buffer = table_buffer();
-            let Ok(table) = esp_bootloader_esp_idf::partitions::read_partition_table(flash, &mut *buffer) else {
-                return String::new();
-            };
-            match table.booted_partition() {
-                Ok(Some(entry)) => String::from(entry.label_as_str()),
-                _ => String::new(),
-            }
-        })
-        .unwrap_or_default()
+pub async fn active_slot(flash: &SharedFlash) -> String {
+    let mut flash_guard = flash.lock().await;
+    let mut buffer = table_buffer();
+    let raw_flash = flash_guard.storage();
+    let Ok(table) = esp_bootloader_esp_idf::partitions::read_partition_table(raw_flash, &mut *buffer) else {
+        return String::new();
+    };
+    match table.booted_partition() {
+        Ok(Some(entry)) => String::from(entry.label_as_str()),
+        _ => String::new(),
+    }
 }
 
 /// The image state relevant to the boot decision (contrat §3): a `Pending`
@@ -684,11 +672,11 @@ pub async fn active_slot(storage: &SharedStorage) -> String {
 /// both entries for these two states (rather than resolving "the current
 /// slot" the way `esp-bootloader-esp-idf`'s `Ota::current_slot()` did, by
 /// comparing raw sequence numbers) is exactly what removes that hazard: it
-/// needs no notion of "current slot" at all, just what `atomic_boot`
+/// needs no notion of "current slot" at all, just what `boot_core`
 /// itself calls trustworthy.
-async fn current_ota_image(storage: &SharedStorage) -> BackendOutcome {
-    let mut storage = storage.lock().await;
-    let Some(entries) = read_otadata_locked(&mut storage) else {
+async fn current_ota_image(flash: &SharedFlash) -> BackendOutcome {
+    let mut flash_guard = flash.lock().await;
+    let Some(entries) = read_otadata_locked(&mut flash_guard) else {
         return BackendOutcome::Other;
     };
     let is = |wanted: u32| {
@@ -729,7 +717,7 @@ fn refuse(reason: &'static str) -> PrepareResponse {
 
 /// Validates compat *before* a single byte transfers (contrat §3: "un
 /// binaire esp32-s3 flashé sur esp32 ne boote pas").
-pub async fn prepare(storage: &SharedStorage, ota_config: &OtaConfigSpace, req: &PrepareRequest) -> PrepareResponse {
+pub async fn prepare(flash: &SharedFlash, ota_config: &OtaConfigSpace, req: &PrepareRequest) -> PrepareResponse {
     if req.chip != esp_metadata_generated::chip_pretty!() {
         return refuse("chip_mismatch");
     }
@@ -737,8 +725,8 @@ pub async fn prepare(storage: &SharedStorage, ota_config: &OtaConfigSpace, req: 
         return refuse("layout_mismatch");
     }
 
-    let mut storage = storage.lock().await;
-    let Some(target) = write_target_locked(&mut storage) else {
+    let mut flash_guard = flash.lock().await;
+    let Some(target) = write_target_locked(&mut flash_guard) else {
         return refuse("busy");
     };
     if req.size as usize > target.size {
@@ -757,9 +745,9 @@ pub async fn prepare(storage: &SharedStorage, ota_config: &OtaConfigSpace, req: 
 }
 
 /// Physical erase-block size used only for diagnostics and scratch allocation.
-/// The actual erase/write mechanics and bounds checks live in `atomic-ota-esp`.
+/// The actual erase/write mechanics and bounds checks live in `fibewi-esp`.
 fn ota_erase_size() -> usize {
-    <esp_storage_manager::FlashStorage<'static> as NorFlash>::ERASE_SIZE
+    <EspFlash as NorFlash>::ERASE_SIZE
 }
 
 /**
@@ -768,10 +756,10 @@ fn ota_erase_size() -> usize {
  * the ROM block-erase command instead of sixteen 4 KiB sector erases.
  *
  * Durability stays sector-sized: only the erase is batched. Programming and
- * atomic-ota's durable watermark still advance every 4 KiB.
+ * fibewi's durable watermark still advance every 4 KiB.
  */
 fn ota_erase_batch_size() -> u64 {
-    <esp_storage_manager::FlashStorage<'static>>::BLOCK_SIZE as u64
+    64 * 1024
 }
 
 /// In-RAM write session (see the module doc comment for why this doesn't
@@ -780,17 +768,17 @@ fn ota_erase_batch_size() -> u64 {
 /// connection at a time anyway.
 struct WriteSession {
     /// Physical ESP partition selected once at begin. EWBT chooses the slot;
-    /// `atomic-ota-esp` resolves that slot to this offset/size descriptor.
+    /// `fibewi-esp` resolves that slot to this offset/size descriptor.
     partition: AppPartition,
     /// One erase block, heap-allocated so it never consumes an Embassy task
     /// stack frame. The external backend borrows and reuses it on every
     /// append/finish call; padding remains a physical-write detail only.
     scratch: Box<[u8]>,
     /// The generic engine: received/durable byte counts, the undurable
-    /// tail, and the streaming digest -- see `atomic_ota::artifact`'s own
+    /// tail, and the streaming digest -- see `fibewi::artifact`'s own
     /// doc comment. Everything sector-shaped stays out here, in
     /// [`EspArtifactStorage`]; the engine itself has no notion of it.
-    engine: atomic_ota::WriteSession,
+    engine: fibewi::WriteSession,
     /// When `write_begin` opened this session -- purely diagnostic, logged
     /// by `write_finish` (contrat §4's own `written`/digest reply carries
     /// no timing field).
@@ -801,7 +789,7 @@ struct WriteSession {
     /// sectors, except `write_finish`'s own final partial one).
     sectors_flushed: u32,
     /// Logical prefix already erased in large flash blocks. This is advanced
-    /// ahead of programming but never published as durable data: atomic-ota's
+    /// ahead of programming but never published as durable data: fibewi's
     /// own durable watermark remains sector-sized and only moves after the
     /// corresponding program operation succeeds.
     erased_through: u64,
@@ -832,7 +820,7 @@ pub async fn write_in_progress() -> bool {
     WRITE_SESSION.lock().await.is_some()
 }
 
-/// Bytes durably on flash -- see `atomic_ota::WriteSession::durable`'s own
+/// Bytes durably on flash -- see `fibewi::WriteSession::durable`'s own
 /// doc comment. This is what the JSON `written` field reports to the
 /// client: the point it's safe to resume *after a dropped connection* from.
 pub async fn write_written() -> u32 {
@@ -853,19 +841,19 @@ pub async fn write_received() -> u32 {
 
 /// `PUT /v1alpha1/ota/write`'s resume decision itself (contrat §4's
 /// `Content-Range` protocol, decoupled from `Content-Range`'s own wire
-/// format) is `atomic_ota::resume_plan`/`atomic_ota::is_complete` --
+/// format) is `fibewi::resume_plan`/`fibewi::is_complete` --
 /// generic, `no_std`, host-tested in that crate. These two functions are
 /// thin `u32`-to-`u64` adapters so callers keep writing `ota::Plan`/
 /// `ota::write_plan`/`ota::write_is_final` unchanged; nothing about the
 /// decision itself lives here anymore.
-pub use atomic_ota::ResumePlan as Plan;
+pub use fibewi::ResumePlan as Plan;
 
 pub fn write_plan(has_range: bool, start: u32, in_progress: bool, written: u32) -> Plan {
-    atomic_ota::resume_plan(has_range, u64::from(start), in_progress, u64::from(written))
+    fibewi::resume_plan(has_range, u64::from(start), in_progress, u64::from(written))
 }
 
 pub fn write_is_final(has_range: bool, end: u32, total: u32) -> bool {
-    atomic_ota::is_complete(has_range, u64::from(end), u64::from(total))
+    fibewi::is_complete(has_range, u64::from(end), u64::from(total))
 }
 
 /// Whether a continuing PUT carries the same `deployment_id`, digest and
@@ -909,10 +897,10 @@ pub enum BeginError {
 /// published), never NVS claiming an artifact that flash no longer holds
 /// intact. An `Activating` transaction is refused outright: it is already
 /// handed to the backend and racing a reboot into it. This is what makes
-pub async fn write_begin(storage: &SharedStorage, ota_config: &OtaConfigSpace, params: SessionParams) -> Result<(), BeginError> {
+pub async fn write_begin(flash: &SharedFlash, ota_config: &OtaConfigSpace, params: SessionParams) -> Result<(), BeginError> {
     let target = {
-        let mut storage = storage.lock().await;
-        write_target_locked(&mut storage).ok_or(BeginError::Busy)?
+        let mut flash_guard = flash.lock().await;
+        write_target_locked(&mut flash_guard).ok_or(BeginError::Busy)?
     };
     if params.total as usize > target.size {
         return Err(BeginError::TooLarge);
@@ -940,7 +928,7 @@ pub async fn write_begin(storage: &SharedStorage, ota_config: &OtaConfigSpace, p
     *WRITE_SESSION.lock().await = Some(WriteSession {
         partition: target,
         scratch: alloc::vec![0u8; ota_erase_size()].into_boxed_slice(),
-        engine: atomic_ota::WriteSession::begin(u64::from(params.total), expected_digest),
+        engine: fibewi::WriteSession::begin(u64::from(params.total), expected_digest),
         started_at: Instant::now(),
         sectors_flushed: 0,
         erased_through: 0,
@@ -950,11 +938,11 @@ pub async fn write_begin(storage: &SharedStorage, ota_config: &OtaConfigSpace, p
     Ok(())
 }
 
-/// Appends `data` to the session. `atomic-ota` owns streaming/durability;
-/// `atomic-ota-esp::EspArtifactStorage` owns the physical erase/program work.
+/// Appends `data` to the session. `fibewi` owns streaming/durability;
+/// `fibewi-esp::EspArtifactStorage` owns the physical erase/program work.
 /// Handles `data` of any length, not just the HTTP handler's own
 /// read-buffer size -- it may span several sectors in one call.
-pub async fn write_chunk(storage: &SharedStorage, data: &[u8]) -> bool {
+pub async fn write_chunk(flash: &SharedFlash, data: &[u8]) -> bool {
     let mut session_guard = WRITE_SESSION.lock().await;
     let Some(session) = session_guard.as_mut() else {
         return false;
@@ -962,8 +950,8 @@ pub async fn write_chunk(storage: &SharedStorage, data: &[u8]) -> bool {
 
     // Never touch flash for a chunk the session would refuse anyway --
     // `engine.append` checks this too (`Error::TooLarge`), but checking it
-    // here first avoids locking storage at all for a chunk that's already
-    // doomed, same as the pre-`atomic_ota` code did.
+    // here first avoids locking flash at all for a chunk that's already
+    // doomed, same as the pre-`fibewi` code did.
     let received = session.engine.received();
     if u64::try_from(data.len()).ok().and_then(|len| received.checked_add(len)).is_none_or(|end| end > u64::from(session.params.total))
     {
@@ -981,34 +969,34 @@ pub async fn write_chunk(storage: &SharedStorage, data: &[u8]) -> bool {
         .saturating_mul(erase_batch)
         .min(session.partition.size as u64);
 
-    let mut storage_guard = storage.lock().await;
+    let mut flash_guard = flash.lock().await;
     let before = session.engine.durable();
-    let ok = storage_guard
-        .with_raw_flash(|flash| {
-            if desired_erased > session.erased_through {
-                if erase_partition_range(
-                    flash,
-                    session.partition,
-                    session.erased_through,
-                    desired_erased,
-                )
-                .is_err()
-                {
-                    return false;
-                }
-                session.erase_batches +=
-                    ((desired_erased - session.erased_through) / erase_batch) as u32;
-                session.erased_through = desired_erased;
+    let raw_flash = flash_guard.storage();
+    let ok = if desired_erased > session.erased_through {
+        if erase_partition_range(
+            raw_flash,
+            session.partition,
+            session.erased_through,
+            desired_erased,
+        )
+        .is_err()
+        {
+            false
+        } else {
+            session.erase_batches +=
+                ((desired_erased - session.erased_through) / erase_batch) as u32;
+            session.erased_through = desired_erased;
+            match EspArtifactStorage::new_pre_erased(raw_flash, session.partition, session.scratch.as_mut()) {
+                Ok(mut backend) => session.engine.append(&mut backend, data).is_ok(),
+                Err(_) => false,
             }
-
-            let Ok(mut backend) =
-                EspArtifactStorage::new_pre_erased(flash, session.partition, session.scratch.as_mut())
-            else {
-                return false;
-            };
-            session.engine.append(&mut backend, data).is_ok()
-        })
-        .unwrap_or(false);
+        }
+    } else {
+        match EspArtifactStorage::new_pre_erased(raw_flash, session.partition, session.scratch.as_mut()) {
+            Ok(mut backend) => session.engine.append(&mut backend, data).is_ok(),
+            Err(_) => false,
+        }
+    };
     let after = session.engine.durable();
     session.sectors_flushed += (after - before).div_ceil(ota_erase_size() as u64) as u32;
     ok
@@ -1034,7 +1022,7 @@ pub enum WriteFinishError {
 /// session was opened with, and on a match persists the staged state
 /// (contrat §6). Both the expected digest and the `deployment_id` come
 /// from the session -- fixed by its first PUT, not by the last request.
-pub async fn write_finish(storage: &SharedStorage, ota_config: &OtaConfigSpace) -> Result<WriteFinishOk, WriteFinishError> {
+pub async fn write_finish(flash: &SharedFlash, ota_config: &OtaConfigSpace) -> Result<WriteFinishOk, WriteFinishError> {
     let Some(session) = WRITE_SESSION.lock().await.take() else {
         return Err(WriteFinishError::NotWriting);
     };
@@ -1067,31 +1055,27 @@ pub async fn write_finish(storage: &SharedStorage, ota_config: &OtaConfigSpace) 
     // the final-block padding and erase/program geometry.
     let before = engine.durable();
     let committed = {
-        let mut storage_guard = storage.lock().await;
-        let result = storage_guard
-            .with_raw_flash(|flash| {
-                let Ok(mut backend) = EspArtifactStorage::new_pre_erased(flash, partition, scratch.as_mut()) else {
-                    return None;
-                };
-                Some(engine.finish(&mut backend))
-            })
-            .flatten();
-        match result {
-            Some(Ok(committed)) => committed,
-            Some(Err(atomic_ota::Error::DigestMismatch(computed))) => {
+        let mut flash_guard = flash.lock().await;
+        let raw_flash = flash_guard.storage();
+        let mut backend = match EspArtifactStorage::new_pre_erased(raw_flash, partition, scratch.as_mut()) {
+            Ok(backend) => backend,
+            Err(_) => {
+                warn!("ota: ESP artifact backend could not be constructed");
+                return Err(WriteFinishError::Incomplete);
+            }
+        };
+        match engine.finish(&mut backend) {
+            Ok(committed) => committed,
+            Err(fibewi::Error::DigestMismatch(computed)) => {
                 warn!("ota: digest mismatch, attendu={} calculé={}", params.digest, format_digest(&computed));
                 return Err(WriteFinishError::DigestMismatch);
             }
-            Some(Err(atomic_ota::Error::Incomplete { durable })) => {
+            Err(fibewi::Error::Incomplete { durable }) => {
                 warn!("ota: session ended at {durable} of {} octets", params.total);
                 return Err(WriteFinishError::Incomplete);
             }
-            Some(Err(e)) => {
+            Err(e) => {
                 warn!("ota: write finish failed ({e:?})");
-                return Err(WriteFinishError::Incomplete);
-            }
-            None => {
-                warn!("ota: ESP artifact backend could not be constructed");
                 return Err(WriteFinishError::Incomplete);
             }
         }
@@ -1106,7 +1090,7 @@ pub async fn write_finish(storage: &SharedStorage, ota_config: &OtaConfigSpace) 
     };
     let record = OtaTransaction::staged(
         params.deployment_id.clone(),
-        atomic_ota::ArtifactRecord { id: ArtifactKind::Firmware, size: committed.size, digest: committed.digest, target },
+        fibewi::ArtifactRecord { id: ArtifactKind::Firmware, size: committed.size, digest: committed.digest, target },
     );
     commit_transaction(ota_config, Some(&record))
         .await
@@ -1131,10 +1115,10 @@ pub async fn write_finish(storage: &SharedStorage, ota_config: &OtaConfigSpace) 
 /// own fallback ("Reprise après reboot de l'agent entre write et
 /// activate"), and works identically whether or not this device rebooted
 /// since `/ota/write` finished.
-pub async fn activate(storage: &SharedStorage, ota_config: &OtaConfigSpace, deployment_id: &str) -> Result<&'static str, ActivateError> {
+pub async fn activate(flash: &SharedFlash, ota_config: &OtaConfigSpace, deployment_id: &str) -> Result<&'static str, ActivateError> {
     // Record the intent first: if ConfigSpace persistence refuses it, nothing has changed yet
     // and the caller gets an error instead of a reboot into a slot whose
-    // staged record disagrees with `otadata`. `atomic_ota::activate` checks
+    // staged record disagrees with `otadata`. `fibewi::activate` checks
     // `Staged` + identity (against the *transaction's* id, i.e.
     // `deployment_id` -- never an artifact's own id) and durably commits
     // the transition to `Activating` before returning.
@@ -1142,19 +1126,19 @@ pub async fn activate(storage: &SharedStorage, ota_config: &OtaConfigSpace, depl
         .await
         .map_err(ActivateError::Storage)?;
     let mut meta = MemoryTransactionMetadata { record: current };
-    let activating = atomic_ota::activate(&mut meta, &String::from(deployment_id)).map_err(|e| match e {
-        atomic_ota::Error::NotStaged => ActivateError::NotStaged,
-        atomic_ota::Error::IdentityMismatch => ActivateError::DeploymentMismatch,
+    let activating = fibewi::activate(&mut meta, &String::from(deployment_id)).map_err(|e| match e {
+        fibewi::Error::NotStaged => ActivateError::NotStaged,
+        fibewi::Error::IdentityMismatch => ActivateError::DeploymentMismatch,
         _ => ActivateError::NotStaged,
     })?;
     commit_transaction(ota_config, meta.record.as_ref())
         .await
         .map_err(ActivateError::Storage)?;
-    // `atomic_ota::activate` already refused an empty artifact list.
+    // `fibewi::activate` already refused an empty artifact list.
     let target = activating.artifacts[0].target;
     let esp_target = target.to_subtype();
 
-    let ok = otadata_activate(storage, esp_target).await.is_ok();
+    let ok = otadata_activate(flash, esp_target).await.is_ok();
     if !ok {
         // Best effort: back to `Staged` so a retry of `activate` is possible.
         let reverted = activating.with_state(TransactionState::Staged);
@@ -1211,13 +1195,13 @@ async fn finish_validation(ota_config: &OtaConfigSpace, staged: &Staged) {
 /// Confirms the just-self-checked image with the bootloader and cancels its
 /// pending rollback. Only ever called after every self-check passes
 /// (contrat §3: "mark_valid n'est appelé QUE si tous les checks passent").
-async fn mark_valid(storage: &'static SharedStorage, ota_config: &'static OtaConfigSpace) {
+async fn mark_valid(flash: &'static SharedFlash, ota_config: &'static OtaConfigSpace) {
     let staged = staged(ota_config).await;
-    if let Err(e) = otadata_confirm(storage).await {
+    if let Err(e) = otadata_confirm(flash).await {
         // Couldn't even record validation -- don't claim `running` over an
         // image `embewi-boot` doesn't agree is confirmed.
         warn!("ota: couldn't confirm the running image (code {}), rolling back", e as u8);
-        mark_invalid_and_reboot(storage).await;
+        mark_invalid_and_reboot(flash).await;
     }
     // `otadata_confirm` only returns `Ok` once the committed `Valid` entry
     // has been read back and decoded exactly as written (`execute_otadata_write`).
@@ -1233,8 +1217,8 @@ async fn mark_valid(storage: &'static SharedStorage, ota_config: &'static OtaCon
 /// stuck `Pending`, if even this much couldn't complete, itself turned
 /// `Aborted` on the next boot) and falls back to the previous slot on its
 /// own; this agent doesn't drive that part.
-async fn mark_invalid_and_reboot(storage: &'static SharedStorage) -> ! {
-    if let Err(e) = otadata_reject(storage).await {
+async fn mark_invalid_and_reboot(flash: &'static SharedFlash) -> ! {
+    if let Err(e) = otadata_reject(flash).await {
         warn!("ota: couldn't record rejection (code {}), resetting anyway", e as u8);
     }
     warn!("ota: self-check failed, marking image invalid and rebooting for rollback");
@@ -1295,7 +1279,7 @@ fn disable_boot_watchdog() {
 }
 
 #[embassy_executor::task]
-async fn selfcheck_task(storage: &'static SharedStorage, ota_config: &'static OtaConfigSpace) {
+async fn selfcheck_task(flash: &'static SharedFlash, nvs_backend: &'static NvsConfigBackend, ota_config: &'static OtaConfigSpace) {
     // TEST/DEBUG ONLY (`fault-injection-freeze` feature, never in a
     // production image): starves the executor before the self-check's own
     // software deadline (below) can ever be polled -- the one failure mode
@@ -1319,7 +1303,7 @@ async fn selfcheck_task(storage: &'static SharedStorage, ota_config: &'static Ot
     // a plain software reset here is a faithful port of what `firmware-c`
     // itself does in this exact spot (an `esp_timer` deadline calling
     // `esp_restart()`, not a TWDT trip).
-    match select(async { storage.lock().await.self_check() }, Timer::after(SELFCHECK_DEADLINE)).await {
+    match select(nvs_backend.self_check(), Timer::after(SELFCHECK_DEADLINE)).await {
         Either::First(true) => {
             // TEST/DEBUG ONLY (`fault-injection` feature, never in a
             // production image): reset right here, after the self-check
@@ -1334,9 +1318,9 @@ async fn selfcheck_task(storage: &'static SharedStorage, ota_config: &'static Ot
                 Timer::after(Duration::from_millis(200)).await;
                 esp_hal::system::software_reset();
             }
-            mark_valid(storage, ota_config).await
+            mark_valid(flash, ota_config).await
         }
-        Either::First(false) => mark_invalid_and_reboot(storage).await,
+        Either::First(false) => mark_invalid_and_reboot(flash).await,
         Either::Second(()) => {
             warn!("ota: self-check deadline exceeded, forcing a reset (bootloader will roll back)");
             esp_hal::system::software_reset();
@@ -1346,21 +1330,21 @@ async fn selfcheck_task(storage: &'static SharedStorage, ota_config: &'static Ot
 
 /// Called once at boot (`src/bin/main.rs`): reconciles the persisted staged
 /// record with what the bootloader actually booted (contrat §3's "cœur dur
-/// du projet"). The decision itself is [`atomic_ota::reconcile`], a pure
+/// du projet"). The decision itself is [`fibewi::reconcile`], a pure
 /// table host-tested in that crate; this only gathers its inputs and
 /// applies the outcome. This is the only place `agent::State` is driven
 /// from `Booting`.
-pub async fn on_boot(storage: &'static SharedStorage, ota_config: &'static OtaConfigSpace, spawner: Spawner) {
+pub async fn on_boot(flash: &'static SharedFlash, nvs_backend: &'static NvsConfigBackend, ota_config: &'static OtaConfigSpace, spawner: Spawner) {
     let staged = staged(ota_config).await;
-    let image = current_ota_image(storage).await;
-    let booted = active_slot(storage).await;
+    let image = current_ota_image(flash).await;
+    let booted = active_slot(flash).await;
     let booted_is_staged = (!booted.is_empty()).then(|| booted == staged.slot);
     let staged_state = match staged.stage {
         Stage::None => None,
         Stage::Written => Some(TransactionState::Staged),
         Stage::Activating => Some(TransactionState::Activating),
     };
-    let action = atomic_ota::reconcile(staged_state, image, booted_is_staged);
+    let action = fibewi::reconcile(staged_state, image, booted_is_staged);
     info!("ota: boot slot={booted:?} staged={} image={image:?} -> {action:?}", staged.stage.as_str());
 
     match action {
@@ -1372,7 +1356,7 @@ pub async fn on_boot(storage: &'static SharedStorage, ota_config: &'static OtaCo
             // and the confirm that follows it. Every other outcome below
             // disables it instead.
             feed_boot_watchdog();
-            if let Ok(token) = selfcheck_task(storage, ota_config) {
+            if let Ok(token) = selfcheck_task(flash, nvs_backend, ota_config) {
                 spawner.spawn(token);
             }
             return;
@@ -1380,7 +1364,7 @@ pub async fn on_boot(storage: &'static SharedStorage, ota_config: &'static OtaCo
         Action::RollbackUnaccounted => {
             warn!("ota: PENDING_VERIFY image not accounted for by the staged record, rolling back");
             agent::set_state(agent::State::Rollback);
-            mark_invalid_and_reboot(storage).await;
+            mark_invalid_and_reboot(flash).await;
         }
         Action::Nothing | Action::KeepStaged => {}
         Action::ClearStale => {
@@ -1398,7 +1382,7 @@ pub async fn on_boot(storage: &'static SharedStorage, ota_config: &'static OtaCo
                 return;
             }
         }
-        // `Action` is `#[non_exhaustive]`: atomic-ota is not at a stable API
+        // `Action` is `#[non_exhaustive]`: fibewi is not at a stable API
         // yet, and a future variant must not silently fall into one of the
         // arms above. Nothing destructive on an outcome this build doesn't
         // recognize -- same policy as `running_matches_staged: None`.
@@ -1414,7 +1398,7 @@ pub async fn on_boot(storage: &'static SharedStorage, ota_config: &'static OtaCo
 
     // The NVS canary round-trip `/health` reports on (during
     // `pending_verify` the self-check task runs it instead).
-    if !storage.lock().await.self_check() {
+    if !nvs_backend.self_check().await {
         warn!("ota: boot NVS self-check failed, /health will report storage=fail");
     }
     agent::set_state(agent::State::Running);

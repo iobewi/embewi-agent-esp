@@ -13,7 +13,7 @@ use config_space_manager::{Budget, ConfigSpace};
 use log::warn;
 use serde::{Deserialize, Serialize};
 
-use crate::config::NvsConfigBackend;
+use config_space_manager_esp_nvs::NvsConfigBackend;
 
 const MAGIC: &[u8; 4] = b"RCF1";
 const HEADER_LEN: usize = 6;
