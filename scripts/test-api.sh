@@ -11,12 +11,19 @@
 #   scripts/test-api.sh <url> <token> push-cert <cert.pem> <key.pem>  # POST /tls/cert -- bascule le serveur admin en HTTPS:443
 #   scripts/test-api.sh <url> <token> push-ca <ca.pem>                 # POST /tls/ca -- CA à vérifier pour heartbeat/logs sortants
 #   scripts/test-api.sh <url> <token> push-firmware <image.bin> [deployment-id]
-#       # prepare + un PUT streaming unique : chemin normal/rapide, une seule
-#       # connexion TCP+TLS pour toute l'image.
+#       # prepare + écriture Content-Range chunkée (16 Ko), TOUS les chunks
+#       # sur une seule connexion TCP+TLS (curl -K/--next) -- chemin normal/
+#       # rapide. Un PUT monolithique (tout le fichier d'un coup, sans
+#       # Content-Range) échoue de façon reproductible sur ce device
+#       # ("Empty reply from server" pour ~1,2 Mo) : ce n'était pas le
+#       # nombre de requêtes qui coûtait cher, c'était une poignée de main
+#       # TLS par requête -- mesuré ~88% du temps total avant ce correctif.
 #   scripts/test-api.sh <url> <token> push-firmware-resumable <image.bin> [deployment-id]
 #       # mode de test de reprise : écriture Content-Range chunkée (16 Ko),
-#       # pilotée par written=N que le device rapporte (partial ou 416).
-#       # Plus lent par construction car chaque chunk utilise un curl séparé.
+#       # pilotée par written=N que le device rapporte (partial ou 416),
+#       # une connexion (donc une poignée de main TLS) par chunk --
+#       # délibérément plus lent, c'est le prix pour exercer le protocole de
+#       # resync après un accroc réseau simulé entre deux chunks.
 #
 # `safe` ne laisse aucun effet de bord dangereux : il stage un faux binaire
 # de test sur le slot inactif (visible dans `GET /info`'s `staged` jusqu'au
@@ -315,37 +322,72 @@ run_push_firmware() {
     echo "  target_slot=$(jget "$prep" target_slot)"
     [[ "$(jget "$prep" accepted)" == "True" ]] || { echo "prepare refusé: $prep"; return 1; }
 
-    echo "== PUT /v1alpha1/ota/write (streaming, connexion unique) =="
-    local body; body=$(mktemp)
-    local code
-    code=$(curl -sk -m 180 -o "$body" -w "%{http_code}" -X PUT \
-        -H "Authorization: Bearer $TOKEN" \
-        -H "X-Embewi-Deployment-Id: $dep" \
-        -H "X-Embewi-Digest: $digest" \
-        --data-binary @"$file" \
-        "$URL/v1alpha1/ota/write" 2>/dev/null || echo "000")
-    local resp; resp=$(cat "$body" 2>/dev/null)
-    rm -f "$body"
+    # A single PUT with the whole ~1.2 MB body reproducibly ends in "Empty
+    # reply from server" on this device's LAN path (pre-existing, unrelated
+    # to OTA logic -- confirmed hardware-side, not this branch's fault).
+    # What actually eliminates the per-chunk cost isn't one giant request,
+    # it's not re-paying the TCP+TLS handshake for every chunk: still
+    # Content-Range chunks (16 KiB, same wire format `push-firmware-resumable`
+    # and the device's own resume logic use), all sent over one connection
+    # `curl` keeps alive across every request in a single `-K` config
+    # invocation (`--next` between blocks). Measured on real hardware: 75
+    # separate connections ~270-295s, the same 75 chunks over one connection
+    # ~29-34s -- an ~88% cut from the connection reuse alone.
+    echo "== PUT /v1alpha1/ota/write (Content-Range chunké, connexion unique) =="
+    local workdir; workdir=$(mktemp -d)
+    local chunk=16384
+    local conf="$workdir/requests.conf"
+    local marker="===EMBEWI-CHUNK-END==="
+    : > "$conf"
+    local offset=0 n=0
+    while [[ "$offset" -lt "$total" ]]; do
+        local end=$((offset + chunk))
+        [[ "$end" -gt "$total" ]] && end=$total
+        local len=$((end - offset))
+        local part; part=$(printf '%s/chunk_%05d.bin' "$workdir" "$n")
+        dd if="$file" of="$part" bs=1M iflag=skip_bytes,count_bytes skip="$offset" count="$len" 2>/dev/null
+        {
+            # `next` separates requests within one `-K` invocation -- it
+            # must never trail the last block (curl then tries to parse a
+            # request after it and fails with "no URL specified!", exit 2,
+            # which `set -e` turns into a silent abort of this whole
+            # function even though every chunk already landed durably).
+            [[ "$n" -gt 0 ]] && echo 'next'
+            echo 'insecure'
+            echo "url = \"$URL/v1alpha1/ota/write\""
+            echo 'request = "PUT"'
+            echo "header = \"Authorization: Bearer $TOKEN\""
+            echo "header = \"X-Embewi-Deployment-Id: $dep\""
+            echo "header = \"X-Embewi-Digest: $digest\""
+            echo "header = \"Content-Range: bytes $offset-$((end - 1))/$total\""
+            echo "data-binary = \"@$part\""
+            echo "write-out = \"\\n$marker\\n\""
+        } >> "$conf"
+        offset=$end
+        n=$((n + 1))
+    done
 
-    [[ "$code" == "200" ]] || {
-        echo "échec PUT monolithique (code=$code resp=$resp)"
-        echo "Pour tester explicitement la reprise Content-Range : push-firmware-resumable"
-        return 1
-    }
+    local out; out=$(curl -sk -K "$conf" 2>/dev/null)
+    rm -rf "$workdir"
+
+    # Every chunk's response is separated by the marker; the OTA outcome
+    # (written/digest_mismatch/error) only ever lands in the last one.
+    local resp; resp=$(printf '%s' "$out" | awk -v RS="$marker" 'NF{last=$0} END{print last}' | tr -d '\n')
 
     local status; status=$(jget "$resp" status)
     case "$status" in
         written)
             check "written == taille image" "$(jget "$resp" written)" "$total"
             check "digest final == attendu" "$(jget "$resp" digest)" "$digest"
-            echo "OK: $total octets écrits en une connexion, deployment_id=$dep"
+            echo "OK: $total octets écrits en $n chunks sur une connexion, deployment_id=$dep"
             ;;
         digest_mismatch)
             echo "digest_mismatch -- le contenu envoyé ne correspond pas au digest annoncé."
             return 1
             ;;
         *)
-            echo "réponse OTA inattendue: $resp"
+            echo "réponse OTA inattendue (dernier chunk): $resp"
+            echo "Pour diagnostiquer chunk par chunk avec resync : push-firmware-resumable"
             return 1
             ;;
     esac
