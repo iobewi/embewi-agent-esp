@@ -68,7 +68,7 @@ pub trait ConfigBackend: Clone {
     ///
     /// None means that this backend cannot support the requested budget at
     /// all, even if otherwise empty.
-    fn reservation_units(&self, budget: Budget) -> Option<usize>;
+    fn reservation_units(&self, space: &str, budget: Budget) -> Option<usize>;
 
     async fn load(&self, space: &str) -> Result<Option<Snapshot>, Self::Error>;
 
@@ -162,7 +162,7 @@ where
 
         let units = self
             .backend
-            .reservation_units(budget)
+            .reservation_units(name, budget)
             .ok_or(ClaimError::UnsupportedBudget)?;
         let next_used = self
             .used_units
@@ -326,7 +326,7 @@ mod tests {
             self.capacity
         }
 
-        fn reservation_units(&self, budget: Budget) -> Option<usize> {
+        fn reservation_units(&self, _space: &str, budget: Budget) -> Option<usize> {
             budget.max_bytes.checked_add(self.overhead)
         }
 
