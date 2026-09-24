@@ -725,8 +725,14 @@ pub async fn prepare(flash: &SharedFlash, ota_config: &OtaConfigSpace, req: &Pre
         return refuse("layout_mismatch");
     }
 
-    let mut flash_guard = flash.lock().await;
-    let Some(target) = write_target_locked(&mut flash_guard) else {
+    // The guard must be released before `load_transaction` below: ConfigSpace
+    // reads take this same (non-reentrant) `SharedFlash` mutex through the NVS
+    // backend, so holding it across that call deadlocks the request.
+    let target = {
+        let mut flash_guard = flash.lock().await;
+        write_target_locked(&mut flash_guard)
+    };
+    let Some(target) = target else {
         return refuse("busy");
     };
     if req.size as usize > target.size {
