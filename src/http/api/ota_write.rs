@@ -18,7 +18,32 @@ use crate::{agent, ota};
 use crate::storage::SharedStorage;
 
 use crate::http::{JsonResponse, json_error, json_ok, unauthorized};
-use ota::parse_content_range;
+
+/// Number of bytes carried by an inclusive HTTP Content-Range.
+fn range_len(start: u32, end: u32) -> Option<u32> {
+    end.checked_sub(start)?.checked_add(1)
+}
+
+/// Wire-format validation for X-Embewi-Digest.
+fn is_valid_digest(value: &str) -> bool {
+    value
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Parses Content-Range: bytes <start>-<end>/<total>.
+///
+/// This is deliberately HTTP-local. Resume/session decisions themselves
+/// remain in atomic-ota; only the wire syntax belongs to this route.
+fn parse_content_range(value: &str) -> Option<(u32, u32, u32)> {
+    let value = value.strip_prefix("bytes ")?;
+    let (range, total) = value.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    let start: u32 = start.trim().parse().ok()?;
+    let end: u32 = end.trim().parse().ok()?;
+    let total: u32 = total.trim().parse().ok()?;
+    (start <= end && end < total).then_some((start, end, total))
+}
 
 pub struct OtaWrite {
     pub storage: &'static SharedStorage,
@@ -55,7 +80,7 @@ impl RequestHandlerService for OtaWrite {
         let bad_request = |error: &'static str| json_error(StatusCode::BAD_REQUEST, error);
         let invalid = if deployment_id.is_empty() {
             Some("{\"error\":\"missing_deployment_id\"}")
-        } else if !ota::is_valid_digest(digest) {
+        } else if !is_valid_digest(digest) {
             Some("{\"error\":\"bad_digest\"}")
         } else {
             None
@@ -77,7 +102,7 @@ impl RequestHandlerService for OtaWrite {
                 }
             },
             Some(value) => match parse_content_range(value) {
-                Some((s, e, t)) if ota::range_len(s, e).is_some_and(|len| len as usize == content_length) => {
+                Some((s, e, t)) if range_len(s, e).is_some_and(|len| len as usize == content_length) => {
                     (true, s, e, t)
                 }
                 Some(_) => {
