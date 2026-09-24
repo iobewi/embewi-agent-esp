@@ -82,14 +82,16 @@ pub async fn run(
     stack: Stack<'static>,
     storage: &'static SharedStorage,
     agent_config: &'static crate::agent::AgentConfigSpace,
+    app_config: &'static crate::app_config::AppConfigSpace,
+    hardware_config: &'static crate::hardware::HardwareConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
 ) -> ! {
     if storage.lock().await.is_locked() {
-        api::serve(stack, storage, agent_config, spawner, lpwr, tls).await
+        api::serve(stack, storage, agent_config, app_config, spawner, lpwr, tls).await
     } else {
-        config::serve(stack, storage, agent_config, spawner, lpwr, tls).await
+        config::serve(stack, storage, agent_config, hardware_config, spawner, lpwr, tls).await
     }
 }
 
