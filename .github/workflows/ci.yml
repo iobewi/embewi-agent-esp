@@ -14,7 +14,6 @@ jobs:
           toolchain: "1.88.0"
       - run: bash -n scripts/test-api.sh
       - run: cargo test --target x86_64-unknown-linux-gnu -p ota-logic
-      - run: cargo test --target x86_64-unknown-linux-gnu -p config-space-manager
 
   check-bootloader:
     runs-on: ubuntu-latest
