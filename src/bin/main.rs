@@ -19,7 +19,9 @@ use static_cell::StaticCell;
 
 use embewi_agent_esp::status;
 use embewi_agent_esp::storage::Storage;
-use embewi_agent_esp::wifi::WifiManager;
+use config_space_manager::ConfigManager;
+use embewi_agent_esp::config::NvsConfigBackend;
+use embewi_agent_esp::wifi::{self, WifiManager};
 use embewi_agent_esp::provisioning;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -139,8 +141,21 @@ async fn main(spawner: Spawner) -> ! {
     let (rx, tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
     let mut supervisor =
         embewi_agent_esp::supervisor::ApplicationSupervisor::new(spawner, peripherals.LPWR, tls);
-    let mut wifi = WifiManager::new(peripherals.WIFI, spawner);
-    if wifi.reconnect_saved(storage).await {
+
+    // Components claim isolated persistent configuration capabilities at
+    // boot. The manager knows capacities/ownership only; the Wi-Fi component
+    // owns the bytes and schema inside its space.
+    let config_backend = NvsConfigBackend::new(storage)
+        .await
+        .expect("NVS config backend unavailable");
+    let mut config_manager = ConfigManager::new(config_backend);
+    let wifi_config = config_manager
+        .claim("wifi", wifi::CONFIG_BUDGET)
+        .expect("NVS capacity insufficient for Wi-Fi config");
+    wifi::migrate_legacy_config(storage, &wifi_config).await;
+
+    let mut wifi = WifiManager::new(peripherals.WIFI, spawner, wifi_config);
+    if wifi.reconnect_saved().await {
         if let Some(stack) = wifi.ip_stack() {
             supervisor.on_ip_ready(stack, storage);
         }
