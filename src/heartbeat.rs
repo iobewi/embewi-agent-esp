@@ -124,11 +124,19 @@ pub async fn run(stack: Stack<'static>, storage: &'static SharedStorage, tls: Tl
                 info!("heartbeat: ctrl_url={ctrl_url}, sending every {PERIOD:?} over one persistent connection");
             }
             last_ctrl_url_empty = Some(false);
+
+            let token = agent::token(storage).await;
+            if token.is_empty() {
+                warn!("heartbeat: token not provisioned, staying quiet");
+                Timer::after(PERIOD).await;
+                continue;
+            }
+
             if let Some((host, port)) = split_host_port(&ctrl_url)
                 && let Ok(host_c) = CString::new(host)
             {
                 if let Err(e) =
-                    run_session(tls, stack, storage, &mut rx_buffer, &mut tx_buffer, &host_c, port, &ctrl_url).await
+                    run_session(tls, stack, storage, &mut rx_buffer, &mut tx_buffer, &host_c, port, &ctrl_url, &token).await
                 {
                     warn!("heartbeat: session ended: {e}");
                 }
@@ -154,6 +162,7 @@ async fn run_session(
     host: &core::ffi::CStr,
     port: u16,
     ctrl_url_snapshot: &str,
+    token_snapshot: &str,
 ) -> Result<(), String> {
     let mut session = crate::tls::connect_client(tls, stack, storage, rx_buffer, tx_buffer, host, port)
         .await
@@ -180,8 +189,13 @@ async fn run_session(
             let _ = session.close().await;
             return Ok(());
         }
+        if agent::token(storage).await != token_snapshot {
+            info!("heartbeat: bearer token changed, closing this connection to reconnect with the new credential");
+            let _ = session.close().await;
+            return Ok(());
+        }
 
-        if let Err(e) = send_heartbeat(&mut session, storage, stack, host_str).await {
+        if let Err(e) = send_heartbeat(&mut session, storage, stack, host_str, token_snapshot).await {
             return Err(format!("send to {host_str} failed: {e}"));
         }
 
@@ -209,6 +223,7 @@ async fn send_heartbeat<'h, 'buf>(
     storage: &'static SharedStorage,
     stack: Stack<'static>,
     host_str: &str,
+    token: &str,
 ) -> Result<(), String> {
     let node_id = agent::node_id(storage).await;
     let ip = stack.config_v4().map(|c| format!("{}", c.address.address())).unwrap_or_default();
@@ -247,6 +262,7 @@ async fn send_heartbeat<'h, 'buf>(
     let request = format!(
         "POST /v1alpha1/heartbeat HTTP/1.1\r\n\
          Host: {host_str}\r\n\
+         Authorization: Bearer {token}\r\n\
          Content-Type: application/json\r\n\
          Content-Length: {}\r\n\r\n\
          {json}",
