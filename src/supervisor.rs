@@ -20,6 +20,8 @@ pub struct ApplicationSupervisor {
     lpwr: Option<LPWR<'static>>,
     tls: crate::tls::TlsReferenceStatic,
     agent_config: &'static crate::agent::AgentConfigSpace,
+    app_config: &'static crate::app_config::AppConfigSpace,
+    hardware_config: &'static crate::hardware::HardwareConfigSpace,
     ip_services_started: bool,
 }
 
@@ -29,12 +31,16 @@ impl ApplicationSupervisor {
         lpwr: LPWR<'static>,
         tls: crate::tls::TlsReferenceStatic,
         agent_config: &'static crate::agent::AgentConfigSpace,
+        app_config: &'static crate::app_config::AppConfigSpace,
+        hardware_config: &'static crate::hardware::HardwareConfigSpace,
     ) -> Self {
         Self {
             spawner,
             lpwr: Some(lpwr),
             tls,
             agent_config,
+            app_config,
+            hardware_config,
             ip_services_started: false,
         }
     }
@@ -68,7 +74,7 @@ impl ApplicationSupervisor {
 
         // Admin/config server. It internally selects provisioning UI or API.
         self.spawner
-            .spawn(crate::http::run(stack, storage, self.agent_config, self.spawner, lpwr, self.tls).unwrap());
+            .spawn(crate::http::run(stack, storage, self.agent_config, self.app_config, self.hardware_config, self.spawner, lpwr, self.tls).unwrap());
 
         // Services that require an IP stack. Heartbeat/log-stream remain
         // silent until their own application configuration is available.
