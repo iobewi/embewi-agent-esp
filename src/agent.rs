@@ -296,8 +296,8 @@ pub async fn rotate_token(space: &AgentConfigSpace, new_token: &str) -> Result<(
     }
 }
 
-/// The app service's TCP port (contrat §4, `POST /app/port`) -- see
-/// `Storage::load_app_port`'s doc comment for the default.
+/// The app service's TCP port (contrat §4, `POST /app/port`), owned by the
+/// dedicated application ConfigSpace.
 pub async fn app_port(space: &crate::app_config::AppConfigSpace) -> u16 {
     crate::app_config::port(space).await
 }
