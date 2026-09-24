@@ -1,17 +1,11 @@
 //! Hardware-owned persistent configuration.
 //!
-//! The component owns the schema inside its ConfigSpace. Direct NVS access
-//! exists only for the one-way migration from the pre-ConfigSpace layout.
+//! The component owns the schema inside its ConfigSpace.
 
 use config_space_manager::{Budget, ConfigSpace};
-use esp_storage_manager::Key;
-use log::{info, warn};
+use log::warn;
 
 use crate::config::NvsConfigBackend;
-use crate::storage::SharedStorage;
-
-const LEGACY_NAMESPACE: Key = Key::from_str("hw");
-const LEGACY_KEY_LED_GPIO: Key = Key::from_str("led_gpio");
 
 const MAGIC: &[u8; 4] = b"HWC1";
 const NONE: u8 = 0xff;
@@ -40,34 +34,4 @@ pub async fn save_led_gpio(
     encoded[4] = gpio.unwrap_or(NONE);
     space.commit(&encoded).await.map_err(|_| ())?;
     Ok(())
-}
-
-pub async fn migrate_legacy_config(
-    storage: &'static SharedStorage,
-    space: &HardwareConfigSpace,
-) {
-    match space.load().await {
-        Ok(Some(_)) => return,
-        Err(e) => {
-            warn!("hardware: config-space load failed before legacy migration: {e:?}");
-            return;
-        }
-        Ok(None) => {}
-    }
-
-    let legacy = storage.lock().await.get_u8(&LEGACY_NAMESPACE, &LEGACY_KEY_LED_GPIO);
-    let Some(gpio) = legacy else {
-        return;
-    };
-
-    if save_led_gpio(space, Some(gpio)).await.is_err() {
-        warn!("hardware: legacy LED GPIO migration failed");
-        return;
-    }
-
-    let mut storage = storage.lock().await;
-    if storage.delete(&LEGACY_NAMESPACE, &LEGACY_KEY_LED_GPIO).is_err() {
-        warn!("hardware: migrated config but could not remove legacy LED GPIO");
-    }
-    info!("hardware: migrated legacy LED GPIO to config space");
 }
