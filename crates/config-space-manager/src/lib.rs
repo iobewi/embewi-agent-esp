@@ -261,8 +261,30 @@ mod tests {
     use super::*;
     use alloc::collections::BTreeMap;
     use core::cell::RefCell;
-    use futures::executor::block_on;
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
     use std::rc::Rc;
+
+    fn block_on<F: Future>(mut future: F) -> F::Output {
+        unsafe fn clone(_: *const ()) -> RawWaker {
+            RawWaker::new(core::ptr::null(), &VTABLE)
+        }
+        unsafe fn noop(_: *const ()) {}
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+
+        let raw = RawWaker::new(core::ptr::null(), &VTABLE);
+        let waker = unsafe { Waker::from_raw(raw) };
+        let mut cx = Context::from_waker(&waker);
+        let mut future = unsafe { Pin::new_unchecked(&mut future) };
+
+        loop {
+            match future.as_mut().poll(&mut cx) {
+                Poll::Ready(value) => return value,
+                Poll::Pending => std::thread::yield_now(),
+            }
+        }
+    }
 
     #[derive(Default)]
     struct MemoryState {
