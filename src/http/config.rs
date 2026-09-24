@@ -107,7 +107,7 @@ pub async fn serve(
         .route(
             "/",
             get(move || async move {
-                let locked = storage.lock().await.is_locked();
+                let locked = crate::lifecycle::is_locked(storage).await;
                 let led_gpio = crate::hardware::led_gpio(hardware_config).await;
                 if locked {
                     return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
@@ -123,10 +123,7 @@ pub async fn serve(
             // that) -- a validation error re-serves the editable form
             // instead, so a typo doesn't lock the device out over nothing.
             .post(move |Form(form): Form<ConfigForm>| async move {
-                let locked = {
-                    let mut guard = storage.lock().await;
-                    guard.is_locked()
-                };
+                let locked = crate::lifecycle::is_locked(storage).await;
                 if locked {
                     return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
                         .with_content_type("text/html; charset=utf-8");
@@ -167,7 +164,7 @@ pub async fn serve(
                     .with_content_type("text/html; charset=utf-8");
                 }
                 let token = agent::token(agent_config).await;
-                if storage.lock().await.lock().is_err() {
+                if crate::lifecycle::lock(storage).await.is_err() {
                     return Response::new(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         page(

@@ -8,6 +8,7 @@ pub mod hardware;
 pub mod heartbeat;
 pub mod http;
 pub mod log_stream;
+pub mod lifecycle;
 pub mod ota;
 pub mod provisioning;
 pub mod runtime_config;

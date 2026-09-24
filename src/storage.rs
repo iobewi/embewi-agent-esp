@@ -1,8 +1,9 @@
-//! Embewi storage model layered on top of `esp-storage-manager`.
+//! Low-level storage adapter layered on top of `esp-storage-manager`.
 //!
-//! This module owns application namespaces, keys and boot-snapshot semantics.
-//! Physical flash ownership, cached NVS coordination and bounded raw-flash
-//! access live in the reusable `esp-storage-manager` crate.
+//! Component configuration lives behind ConfigSpace capabilities and lifecycle
+//! state lives in its owning module. This type only coordinates the physical
+//! flash/NVS backend plus the primitive access still required by specialized
+//! state machines such as OTA.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -20,9 +21,6 @@ pub type SharedStorage = Mutex<CriticalSectionRawMutex, Storage>;
 /// Default ESP-IDF NVS partition used by this firmware.
 const PARTITION_OFFSET: usize = 0x9000;
 const PARTITION_SIZE: usize = 0x6000;
-
-const SYSTEM_NAMESPACE: Key = Key::from_str("system");
-const KEY_LOCKED: Key = Key::from_str("locked");
 
 pub struct Storage {
     backend: StorageManager,
@@ -106,32 +104,12 @@ impl Storage {
         self.backend.set_bool(namespace, key, value)
     }
 
-    pub fn get_u16(&mut self, namespace: &Key, key: &Key) -> Option<u16> {
-        self.backend.get_u16(namespace, key)
-    }
-
-    pub fn set_u16(&mut self, namespace: &Key, key: &Key, value: u16) -> Result<(), StorageError> {
-        self.backend.set_u16(namespace, key, value)
-    }
-
     pub fn get_u32(&mut self, namespace: &Key, key: &Key) -> Option<u32> {
         self.backend.get_u32(namespace, key)
     }
 
     pub fn set_u32(&mut self, namespace: &Key, key: &Key, value: u32) -> Result<(), StorageError> {
         self.backend.set_u32(namespace, key, value)
-    }
-
-    pub fn delete(&mut self, namespace: &Key, key: &Key) -> Result<(), StorageError> {
-        self.backend.delete(namespace, key)
-    }
-
-    pub fn is_locked(&mut self) -> bool {
-        self.get_bool(&SYSTEM_NAMESPACE, &KEY_LOCKED).unwrap_or(false)
-    }
-
-    pub fn lock(&mut self) -> Result<(), StorageError> {
-        self.set_bool(&SYSTEM_NAMESPACE, &KEY_LOCKED, true)
     }
 
     /// Round-trips the same canary used before the extraction. Health state

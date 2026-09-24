@@ -90,7 +90,7 @@ pub async fn run(
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
 ) -> ! {
-    if storage.lock().await.is_locked() {
+    if crate::lifecycle::is_locked(storage).await {
         api::serve(stack, storage, agent_config, app_config, tls_config, runtime_config, spawner, lpwr, tls).await
     } else {
         config::serve(stack, storage, agent_config, hardware_config, tls_config, spawner, lpwr, tls).await
