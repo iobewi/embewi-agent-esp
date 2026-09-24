@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 use crate::config::NvsConfigBackend;
-use crate::storage::{ConfigSetResult, SharedStorage};
+use crate::storage::{ConfigSetResult, SharedStorage, StorageError};
 
 /// Versions of the `/v1alpha1`-style protocol this agent answers, highest
 /// first (contrat §4, "Découverte de version d'API").
