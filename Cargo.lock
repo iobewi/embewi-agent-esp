@@ -367,6 +367,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bed69047ed42e52c7e38d6421eeb8ceefb4f2a2b52eed59137f7bad7908f6800"
 
 [[package]]
+name = "config-space-manager"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/config-space-manager?rev=c6e58f4#c6e58f44c8e3e45f787d96d9655487ccaf568807"
+
+[[package]]
 name = "const-default"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -967,6 +972,7 @@ dependencies = [
 name = "embewi-agent-esp"
 version = "0.1.0"
 dependencies = [
+ "atomic-boot",
  "atomic-ota",
  "atomic-ota-esp",
  "config-space-manager",
@@ -981,22 +987,21 @@ dependencies = [
  "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
  "embedded-storage",
- "atomic-boot",
  "esp-alloc",
  "esp-backtrace",
  "esp-bootloader-esp-idf",
  "esp-hal",
+ "esp-hal-mbedtls",
  "esp-hal-smartled2",
  "esp-metadata-generated",
  "esp-println",
- "esp-wifi-manager",
  "esp-rtos",
  "esp-storage-manager",
+ "esp-wifi-manager",
  "heapless 0.9.3",
  "httparse",
  "improv-serial",
  "log",
- "esp-hal-mbedtls",
  "picoserve",
  "serde",
  "serde_json",
@@ -1221,20 +1226,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "esp-hal-procmacros"
-version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6aebfabb2c21bec45e575e4f6cb6bb7aa8e1b33e7ac45b5dffa0f9d33ff59105"
-dependencies = [
- "document-features",
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
- "termcolor",
-]
-
-[[package]]
 name = "esp-hal-mbedtls"
 version = "0.1.0"
 source = "git+https://github.com/iobewi/esp-hal-mbedtls?rev=ac4eb56#ac4eb5663139b7bedc6843045ad472ece2e847a3"
@@ -1247,6 +1238,20 @@ dependencies = [
  "picoserve",
  "rand_core 0.10.1",
  "static_cell",
+]
+
+[[package]]
+name = "esp-hal-procmacros"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aebfabb2c21bec45e575e4f6cb6bb7aa8e1b33e7ac45b5dffa0f9d33ff59105"
+dependencies = [
+ "document-features",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "termcolor",
 ]
 
 [[package]]
@@ -1464,18 +1469,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "esp-wifi-manager"
-version = "0.1.0"
-source = "git+https://github.com/iobewi/esp-wifi-manager?rev=b322df0#b322df0d1043e59b4f096f8b2caf64c586b171bd"
-dependencies = [
- "embassy-executor",
- "embassy-net",
- "esp-hal",
- "esp-radio",
- "log",
-]
-
-[[package]]
 name = "esp-sync"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1489,6 +1482,18 @@ dependencies = [
  "esp-metadata-generated",
  "riscv",
  "xtensa-lx",
+]
+
+[[package]]
+name = "esp-wifi-manager"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/esp-wifi-manager?rev=b322df0#b322df0d1043e59b4f096f8b2caf64c586b171bd"
+dependencies = [
+ "embassy-executor",
+ "embassy-net",
+ "esp-hal",
+ "esp-radio",
+ "log",
 ]
 
 [[package]]
@@ -3406,8 +3411,3 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[package]]
-name = "config-space-manager"
-version = "0.1.0"
-source = "git+https://github.com/iobewi/config-space-manager?rev=c6e58f4#c6e58f44c8e3e45f787d96d9655487ccaf568807"
