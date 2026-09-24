@@ -298,8 +298,8 @@ pub async fn rotate_token(space: &AgentConfigSpace, new_token: &str) -> Result<(
 
 /// The app service's TCP port (contrat §4, `POST /app/port`) -- see
 /// `Storage::load_app_port`'s doc comment for the default.
-pub async fn app_port(storage: &SharedStorage) -> u16 {
-    storage.lock().await.load_app_port()
+pub async fn app_port(space: &crate::app_config::AppConfigSpace) -> u16 {
+    crate::app_config::port(space).await
 }
 
 /// `GET /v1alpha1/config` response body (contrat §4a).
@@ -443,11 +443,9 @@ pub struct Info {
     app_port: u16,
 }
 
-pub async fn info(storage: &SharedStorage, agent_config: &AgentConfigSpace) -> Info {
-    let (config_generation, app_port) = {
-        let mut storage = storage.lock().await;
-        (storage.cfg_generation(), storage.load_app_port())
-    };
+pub async fn info(storage: &SharedStorage, agent_config: &AgentConfigSpace, app_config: &crate::app_config::AppConfigSpace) -> Info {
+    let config_generation = storage.lock().await.cfg_generation();
+    let app_port = crate::app_config::port(app_config).await;
     let staged = crate::ota::staged(storage).await;
     let dram = esp_metadata_generated::memory_range!("DRAM");
     Info {
