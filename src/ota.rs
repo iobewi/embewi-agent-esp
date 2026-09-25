@@ -79,7 +79,7 @@ use fibewi::{Action, BackendOutcome, TransactionState};
 use fibewi_esp::{AppPartition, AppSlot, EspArtifactStorage, erase_partition_range, find_app_partition};
 
 use config_space_manager_esp_nvs::NvsConfigBackend;
-use esp_flash_access::{EspFlash, SharedFlash};
+use espbewi_flash::{EspFlash, SharedFlash};
 
 /// Contrat §4: `POST /ota/prepare`'s `partition_layout` field must match
 /// this exactly, or the write is refused before a single byte transfers.
