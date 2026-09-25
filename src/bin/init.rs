@@ -64,7 +64,7 @@ async fn main(spawner: Spawner) -> ! {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    let flash = esp_flash_access::init(peripherals.FLASH);
+    let flash = espbewi_flash::init(peripherals.FLASH);
 
     static CONFIG_BACKEND: StaticCell<NvsConfigBackend> = StaticCell::new();
     let config_backend = &*CONFIG_BACKEND.init(
