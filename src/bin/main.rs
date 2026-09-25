@@ -85,7 +85,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // The physical flash has one process-wide owner. ConfigSpace/NVS and
     // FiBeWI share only this serialized hardware capability.
-    let flash = esp_flash_access::init(peripherals.FLASH);
+    let flash = espbewi_flash::init(peripherals.FLASH);
 
     // Components claim isolated persistent configuration capabilities at
     // boot. The manager knows capacities/ownership only; each component owns
