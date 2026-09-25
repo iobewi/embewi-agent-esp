@@ -8,6 +8,10 @@ version      = "0.1.0"
 name = "embewi-agent-esp"
 path = "./src/bin/main.rs"
 
+[[bin]]
+name = "embewi-init"
+path = "./src/bin/init.rs"
+
 [features]
 # TEST/DEBUG ONLY -- never enable in a production image. Makes the
 # pending_verify self-check reset the device right after it passes but
@@ -135,6 +139,7 @@ httparse = { version = "1", default-features = false }
 
 # Races the self-check against contrat §3's bounded deadline.
 embassy-futures = "0.1"
+sha2 = { version = "0.10", default-features = false }
 # Generic isolated configuration spaces and their ESP/NVS backend.
 config-space-manager = { git = "https://github.com/iobewi/config-space-manager", rev = "23954ff" }
 config-space-manager-esp-nvs = { git = "https://github.com/iobewi/config-space-manager", rev = "23954ff", package = "config-space-manager-esp-nvs", features = ["esp32c3"] }
@@ -142,7 +147,7 @@ config-space-manager-esp-nvs = { git = "https://github.com/iobewi/config-space-m
 # hardware RNG adapter, time hooks, PEM validation/config construction,
 # Embassy client handshake and picoserve TLS socket. Application NVS/SNTP
 # policy remains in src/tls.rs.
-esp-hal-mbedtls = { git = "https://github.com/iobewi/esp-hal-mbedtls", rev = "ac4eb56", features = ["esp32c3", "picoserve"] }
+esp-hal-mbedtls = { git = "https://github.com/iobewi/esp-hal-mbedtls", rev = "c44de04", features = ["esp32c3", "picoserve"] }
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]
