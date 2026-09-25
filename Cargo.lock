@@ -1618,7 +1618,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "fibewi"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/fibewi?rev=588fcf1#588fcf18297fdc6fd6c8e069e4aef59d17b45c80"
+source = "git+https://github.com/iobewi/fibewi?rev=3a67e64#3a67e646bdf9e99f1dc6bc1e8f994fcf1a639fbf"
 dependencies = [
  "sha2",
 ]
@@ -1626,7 +1626,7 @@ dependencies = [
 [[package]]
 name = "fibewi-esp"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/fibewi?rev=588fcf1#588fcf18297fdc6fd6c8e069e4aef59d17b45c80"
+source = "git+https://github.com/iobewi/fibewi?rev=3a67e64#3a67e646bdf9e99f1dc6bc1e8f994fcf1a639fbf"
 dependencies = [
  "embedded-storage",
  "esp-bootloader-esp-idf",
