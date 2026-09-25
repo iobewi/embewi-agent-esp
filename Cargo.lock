@@ -992,6 +992,7 @@ dependencies = [
  "picoserve",
  "serde",
  "serde_json",
+ "sha2",
  "smart-leds",
  "smoltcp",
  "sntpc",
@@ -1227,7 +1228,7 @@ dependencies = [
 [[package]]
 name = "esp-hal-mbedtls"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/esp-hal-mbedtls?rev=ac4eb56#ac4eb5663139b7bedc6843045ad472ece2e847a3"
+source = "git+https://github.com/iobewi/esp-hal-mbedtls?rev=c44de04#c44de04f98fb34e58d8d42c7b7e3545e19e658cc"
 dependencies = [
  "embassy-net",
  "embassy-sync 0.8.0",
