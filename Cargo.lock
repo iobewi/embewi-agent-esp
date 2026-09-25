@@ -343,16 +343,17 @@ checksum = "bed69047ed42e52c7e38d6421eeb8ceefb4f2a2b52eed59137f7bad7908f6800"
 [[package]]
 name = "config-space-manager"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/config-space-manager?rev=8c11d83#8c11d838df7f2b04b2617d1381447c10eaa96387"
+source = "git+https://github.com/iobewi/config-space-manager?rev=fc50b2ffef10d033d1169b80ab8358e780c67772#fc50b2ffef10d033d1169b80ab8358e780c67772"
 
 [[package]]
 name = "config-space-manager-esp-nvs"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/config-space-manager?rev=8c11d83#8c11d838df7f2b04b2617d1381447c10eaa96387"
+source = "git+https://github.com/iobewi/config-space-manager?rev=fc50b2ffef10d033d1169b80ab8358e780c67772#fc50b2ffef10d033d1169b80ab8358e780c67772"
 dependencies = [
  "config-space-manager",
- "esp-flash-access",
  "esp-nvs",
+ "espbewi-flash",
+ "espbewi-nvs",
  "log",
 ]
 
@@ -973,7 +974,6 @@ dependencies = [
  "esp-alloc",
  "esp-backtrace",
  "esp-bootloader-esp-idf",
- "esp-flash-access",
  "esp-hal",
  "esp-hal-mbedtls",
  "esp-hal-smartled2",
@@ -981,6 +981,7 @@ dependencies = [
  "esp-println",
  "esp-rtos",
  "esp-wifi-manager",
+ "espbewi-flash",
  "fibewi",
  "fibewi-esp",
  "heapless 0.9.3",
@@ -1155,20 +1156,6 @@ dependencies = [
  "serde",
  "serde_yaml",
  "somni-expr",
-]
-
-[[package]]
-name = "esp-flash-access"
-version = "0.1.0"
-source = "git+https://github.com/iobewi/esp-storage-manager?rev=cb99450b87187eb266fa2636a22d4c7562b20c7b#cb99450b87187eb266fa2636a22d4c7562b20c7b"
-dependencies = [
- "embassy-sync 0.8.0",
- "embedded-storage",
- "esp-bootloader-esp-idf",
- "esp-hal",
- "esp-nvs",
- "esp-storage",
- "static_cell",
 ]
 
 [[package]]
@@ -1610,6 +1597,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "espbewi-flash"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/espbewi?rev=0b11f035d1aed6d901adca2098c6efc29a2cee83#0b11f035d1aed6d901adca2098c6efc29a2cee83"
+dependencies = [
+ "embassy-sync 0.8.0",
+ "embedded-storage",
+ "esp-hal",
+ "esp-rom-sys",
+ "esp-storage",
+ "static_cell",
+]
+
+[[package]]
+name = "espbewi-nvs"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/espbewi?rev=0b11f035d1aed6d901adca2098c6efc29a2cee83#0b11f035d1aed6d901adca2098c6efc29a2cee83"
+dependencies = [
+ "embedded-storage",
+ "esp-nvs",
+ "esp-storage",
+ "espbewi-flash",
+]
+
+[[package]]
+name = "espbewi-partitions"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/espbewi?rev=0b11f035d1aed6d901adca2098c6efc29a2cee83#0b11f035d1aed6d901adca2098c6efc29a2cee83"
+dependencies = [
+ "embedded-storage",
+ "esp-bootloader-esp-idf",
+ "esp-rom-sys",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1618,7 +1639,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "fibewi"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/fibewi?rev=b1daa6c#b1daa6cc4a1513cf2eb68a4b16b4ed9fb0ad5160"
+source = "git+https://github.com/iobewi/fibewi?rev=e5d0906efaaa57a2974a5456ef755e78fff75564#e5d0906efaaa57a2974a5456ef755e78fff75564"
 dependencies = [
  "sha2",
 ]
@@ -1626,11 +1647,11 @@ dependencies = [
 [[package]]
 name = "fibewi-esp"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/fibewi?rev=b1daa6c#b1daa6cc4a1513cf2eb68a4b16b4ed9fb0ad5160"
+source = "git+https://github.com/iobewi/fibewi?rev=e5d0906efaaa57a2974a5456ef755e78fff75564#e5d0906efaaa57a2974a5456ef755e78fff75564"
 dependencies = [
  "embedded-storage",
  "esp-bootloader-esp-idf",
- "esp-flash-access",
+ "espbewi-partitions",
  "fibewi",
  "sha2",
 ]
