@@ -1,15 +1,9 @@
-//! One-shot HTTP provisioning UI -- not part of contrat v1alpha1's JSON API
-//! (that's [`super::api`]). `http::run` calls [`serve`] instead of
-//! [`super::api::serve`] only when the device isn't locked yet; once the
-//! form is saved successfully the device locks and reboots, and every
-//! future boot calls [`super::api::serve`] instead. This router, its
-//! handlers, and the templates they hold are then *structurally*
-//! unreachable -- see `http/mod.rs`'s module doc for why that split exists.
+//! One-shot HTTPS provisioning UI owned by embewi-init.
 //!
-//! One-shot by design: the single form (GPIO + identity) always locks and
-//! reboots on a successful save -- there's no "save without locking". A
-//! device only ever needs this page once; after that, `POST
-//! /v1alpha1/token` (contrat §4) is the intended way to rotate credentials.
+//! This router is not linked into the normal runtime path. It writes the
+//! durable application configuration, verifies the preloaded first agent,
+//! moves the Embewi lifecycle to ReadyForAgent, asks FiBeWI to activate the
+//! staged image, and reboots. The transport beneath it is always TLS.
 
 use alloc::format;
 use alloc::string::String;
@@ -26,6 +20,8 @@ use picoserve::routing::{get, get_service};
 use static_cell::StaticCell;
 
 use crate::agent;
+use crate::lifecycle::LifecycleState;
+use esp_flash_access::SharedFlash;
 
 use super::{STYLE_CSS, html_escape, reboot_after_delay};
 
@@ -83,10 +79,13 @@ fn page(led_gpio: Option<u8>, node_id: &str, ctrl_url: &str, message: Option<&st
 /// both being reserved simultaneously and permanently.
 pub async fn serve(
     stack: Stack<'static>,
+    flash: &'static SharedFlash,
     agent_config: &'static agent::AgentConfigSpace,
     hardware_config: &'static crate::hardware::HardwareConfigSpace,
     tls_config: &'static crate::tls::TlsConfigSpace,
     lifecycle_config: &'static crate::lifecycle::LifecycleConfigSpace,
+    ota_config: &'static crate::ota::OtaConfigSpace,
+    factory_agent: crate::ota::PreloadedAgent,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
@@ -106,9 +105,12 @@ pub async fn serve(
         .route(
             "/",
             get(move || async move {
-                let locked = crate::lifecycle::is_locked(lifecycle_config).await;
+                let lifecycle = crate::lifecycle::state(lifecycle_config).await;
                 let led_gpio = crate::hardware::led_gpio(hardware_config).await;
-                if locked {
+                if !matches!(
+                    lifecycle,
+                    Ok(LifecycleState::Provisioning | LifecycleState::ReadyForAgent)
+                ) {
                     return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
                         .with_content_type("text/html; charset=utf-8");
                 }
@@ -122,8 +124,11 @@ pub async fn serve(
             // that) -- a validation error re-serves the editable form
             // instead, so a typo doesn't lock the device out over nothing.
             .post(move |Form(form): Form<ConfigForm>| async move {
-                let locked = crate::lifecycle::is_locked(lifecycle_config).await;
-                if locked {
+                let lifecycle = crate::lifecycle::state(lifecycle_config).await;
+                if !matches!(
+                    lifecycle,
+                    Ok(LifecycleState::Provisioning | LifecycleState::ReadyForAgent)
+                ) {
                     return Response::new(StatusCode::LOCKED, String::from(LOCKED_PAGE))
                         .with_content_type("text/html; charset=utf-8");
                 }
@@ -163,18 +168,52 @@ pub async fn serve(
                     .with_content_type("text/html; charset=utf-8");
                 }
                 let token = agent::token(agent_config).await;
-                if crate::lifecycle::lock(lifecycle_config).await.is_err() {
+
+                if crate::ota::stage_preloaded_agent(flash, ota_config, factory_agent)
+                    .await
+                    .is_err()
+                {
                     return Response::new(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         page(
                             gpio,
                             &form.node_id,
                             &form.ctrl_url,
-                            Some(&message_html("\u{c9}chec du verrouillage de la configuration, r\u{e9}essayez.", true)),
+                            Some(&message_html("L'image agent préchargée est absente ou invalide.", true)),
                         ),
                     )
                     .with_content_type("text/html; charset=utf-8");
                 }
+
+                if crate::lifecycle::ready_for_agent(lifecycle_config).await.is_err() {
+                    return Response::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        page(
+                            gpio,
+                            &form.node_id,
+                            &form.ctrl_url,
+                            Some(&message_html("Échec du passage à ReadyForAgent.", true)),
+                        ),
+                    )
+                    .with_content_type("text/html; charset=utf-8");
+                }
+
+                if crate::ota::activate(flash, ota_config, factory_agent.deployment_id)
+                    .await
+                    .is_err()
+                {
+                    return Response::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        page(
+                            gpio,
+                            &form.node_id,
+                            &form.ctrl_url,
+                            Some(&message_html("Échec de l'activation du premier agent.", true)),
+                        ),
+                    )
+                    .with_content_type("text/html; charset=utf-8");
+                }
+
                 // `take()`s `None` on a second concurrent hit -- one
                 // pending reboot is enough, and there's only one `lpwr` to
                 // give out. The task's own delay gives this response time
