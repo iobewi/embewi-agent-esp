@@ -30,15 +30,6 @@ pub mod config;
 
 /// Runtime administrative API task. Provisioning has a separate entrypoint
 /// and is linked only by the disposable init image.
-#[embassy_executor::task]`s -- see this module's doc comment for why
-/// that matters for RAM, confirmed on our own binary: two separate tasks
-/// reserved ~16.8 KiB combined (`config::run::POOL` + `api::run::POOL`,
-/// both permanently, since a `#[task]`'s `TaskStorage` exists in `.bss`
-/// whether or not it's ever spawned this boot); one task whose body
-/// branches between the two reserves the size of whichever branch is
-/// larger (~8.9 KiB here), because the two `.await`s sit in mutually
-/// exclusive arms of the same generated state machine instead of two
-/// independent statics.
 #[embassy_executor::task]
 pub async fn run(
     stack: Stack<'static>,
