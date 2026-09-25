@@ -1160,7 +1160,7 @@ dependencies = [
 [[package]]
 name = "esp-flash-access"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/esp-storage-manager?rev=cb99450#cb99450b87187eb266fa2636a22d4c7562b20c7b"
+source = "git+https://github.com/iobewi/esp-storage-manager?rev=cb99450b87187eb266fa2636a22d4c7562b20c7b#cb99450b87187eb266fa2636a22d4c7562b20c7b"
 dependencies = [
  "embassy-sync 0.8.0",
  "embedded-storage",
