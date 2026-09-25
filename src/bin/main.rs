@@ -12,7 +12,6 @@ use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::Pin;
 use esp_hal::timer::timg::TimerGroup;
-use esp_hal::usb_serial_jtag::UsbSerialJtag;
 use static_cell::StaticCell;
 
 use embewi_agent_esp::agent;
@@ -23,7 +22,6 @@ use embewi_agent_esp::tls;
 use config_space_manager::ConfigManager;
 use config_space_manager_esp_nvs::{NvsConfigBackend, NvsPartition};
 use embewi_agent_esp::wifi::{self, WifiManager};
-use embewi_agent_esp::provisioning;
 use embewi_agent_esp::runtime_config;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -183,17 +181,76 @@ async fn main(spawner: Spawner) -> ! {
         spawner.spawn(status::led_task(peripherals.RMT, led_pin).unwrap());
     }
 
-    // contrat §3: detects whether the image that just booted is an
-    // unconfirmed OTA update (`PENDING_VERIFY`) and, if so, starts the
-    // bounded self-check that validates it or rolls it back -- before
-    // Wi-Fi/HTTP come up, since this is a purely local safety net that
-    // must run regardless of network state.
-    embewi_agent_esp::ota::on_boot(flash, config_backend, ota_config, spawner).await;
+    // FiBeWI only reports the boot disposition here. Application policy
+    // below decides whether this image is fit to be confirmed.
+    let boot = embewi_agent_esp::ota::on_boot(
+        flash,
+        config_backend,
+        ota_config,
+    )
+    .await;
 
-    // Admin server TLS: one global MbedTLS instance for the whole program.
+    let lifecycle = embewi_agent_esp::lifecycle::state(lifecycle_config)
+        .await
+        .expect("invalid Embewi lifecycle");
+
+    // Runtime prerequisites are local/durable properties. Network reachability
+    // is deliberately not one of them: a temporarily unavailable AP must not
+    // cause an otherwise-good firmware to roll back.
+    let prerequisites_ok =
+        wifi::is_provisioned(&wifi_config).await
+        && tls::server_identity_valid(tls_config).await
+        && hardware::is_configured(hardware_config).await
+        && agent::is_provisioned(agent_config).await;
+
+    if !prerequisites_ok {
+        agent::set_state(agent::State::Failed);
+        if boot == embewi_agent_esp::ota::BootDisposition::PendingVerify {
+            embewi_agent_esp::ota::reject_pending(flash).await;
+        }
+        panic!("embewi-agent prerequisites are missing or invalid");
+    }
+
+    match lifecycle {
+        embewi_agent_esp::lifecycle::LifecycleState::ReadyForAgent => {
+            if boot == embewi_agent_esp::ota::BootDisposition::PendingVerify {
+                embewi_agent_esp::ota::confirm_pending(
+                    flash,
+                    config_backend,
+                    ota_config,
+                )
+                .await;
+            }
+            // If power failed after FiBeWI confirmation but before this small
+            // application bookkeeping write, the next boot reaches this same
+            // Stable + ReadyForAgent path and completes it idempotently.
+            embewi_agent_esp::lifecycle::production(lifecycle_config)
+                .await
+                .expect("couldn't enter Production lifecycle");
+        }
+        embewi_agent_esp::lifecycle::LifecycleState::Production => {
+            if boot == embewi_agent_esp::ota::BootDisposition::PendingVerify {
+                embewi_agent_esp::ota::confirm_pending(
+                    flash,
+                    config_backend,
+                    ota_config,
+                )
+                .await;
+            }
+        }
+        embewi_agent_esp::lifecycle::LifecycleState::Factory
+        | embewi_agent_esp::lifecycle::LifecycleState::Provisioning => {
+            agent::set_state(agent::State::Failed);
+            if boot == embewi_agent_esp::ota::BootDisposition::PendingVerify {
+                embewi_agent_esp::ota::reject_pending(flash).await;
+            }
+            panic!("embewi-agent must not bootstrap an unprovisioned device");
+        }
+    }
+
+    // From here on the runtime is allowed to expose its administrative
+    // surface. The HTTP module itself has no port-80 fallback.
     let tls = embewi_agent_esp::tls::init();
-
-    let (rx, tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
 
     let mut supervisor = embewi_agent_esp::supervisor::ApplicationSupervisor::new(
         spawner,
@@ -201,10 +258,8 @@ async fn main(spawner: Spawner) -> ! {
         tls,
         agent_config,
         app_config,
-        hardware_config,
         tls_config,
         runtime_config,
-        lifecycle_config,
         ota_config,
         flash,
         config_backend,
@@ -217,5 +272,8 @@ async fn main(spawner: Spawner) -> ! {
         }
     }
 
-    provisioning::run(rx, tx, wifi, supervisor).await
+    // Runtime has no Improv/bootstrap service. If the saved network is
+    // unavailable it remains offline and retries only according to the normal
+    // connector policy; it never opens a provisioning fallback.
+    core::future::pending().await
 }
