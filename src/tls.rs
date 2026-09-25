@@ -93,23 +93,131 @@ impl TlsConfig {
     }
 }
 
-async fn load_config(space: &TlsConfigSpace) -> Option<TlsConfig> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoadError {
+    Storage,
+    Corrupt,
+}
+
+async fn load_existing(space: &TlsConfigSpace) -> Result<Option<TlsConfig>, LoadError> {
     match space.load().await {
-        Ok(Some(snapshot)) => match TlsConfig::decode(&snapshot.data) {
-            Some(config) => Some(config),
-            None => {
+        Ok(Some(snapshot)) => TlsConfig::decode(&snapshot.data)
+            .map(Some)
+            .ok_or_else(|| {
                 warn!(
                     "tls: stored config generation={} has an unsupported/corrupt schema",
                     snapshot.generation
                 );
-                None
-            }
-        },
-        Ok(None) => Some(TlsConfig::default()),
+                LoadError::Corrupt
+            }),
+        Ok(None) => Ok(None),
         Err(e) => {
             warn!("tls: config-space load failed: {e:?}");
-            None
+            Err(LoadError::Storage)
         }
+    }
+}
+
+async fn load_config(space: &TlsConfigSpace) -> Option<TlsConfig> {
+    match load_existing(space).await {
+        Ok(Some(config)) => Some(config),
+        Ok(None) => Some(TlsConfig::default()),
+        Err(_) => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityBootstrapError {
+    Storage,
+    Corrupt,
+    Generation,
+    Invalid,
+}
+
+/// Ensures that a server identity exists before any provisioning network
+/// service is started.
+///
+/// Absence is the only state in which a new identity is generated. A stored
+/// but corrupt/partial identity fails closed: storage damage must never
+/// silently change the device identity.
+pub async fn ensure_server_identity(
+    space: &TlsConfigSpace,
+    common_name: &str,
+) -> Result<(), IdentityBootstrapError> {
+    match load_existing(space).await {
+        Ok(Some(config)) => {
+            if config.cert_pem.is_empty() || config.key_pem.is_empty() {
+                return Err(IdentityBootstrapError::Corrupt);
+            }
+            if esp_hal_mbedtls::validate_cert_key_pair(&config.cert_pem, &config.key_pem).is_err()
+                || esp_hal_mbedtls::server_config_from_pem(&config.cert_pem, &config.key_pem)
+                    .is_err()
+            {
+                return Err(IdentityBootstrapError::Invalid);
+            }
+            return Ok(());
+        }
+        Ok(None) => {}
+        Err(LoadError::Storage) => return Err(IdentityBootstrapError::Storage),
+        Err(LoadError::Corrupt) => return Err(IdentityBootstrapError::Corrupt),
+    }
+
+    let generated = esp_hal_mbedtls::generate_self_signed_identity(common_name)
+        .map_err(|_| IdentityBootstrapError::Generation)?;
+    if generated.cert_pem.len() > MAX_CERT_LEN || generated.key_pem.len() > MAX_KEY_LEN {
+        return Err(IdentityBootstrapError::Generation);
+    }
+    if esp_hal_mbedtls::validate_cert_key_pair(&generated.cert_pem, &generated.key_pem).is_err()
+        || esp_hal_mbedtls::server_config_from_pem(&generated.cert_pem, &generated.key_pem).is_err()
+    {
+        return Err(IdentityBootstrapError::Invalid);
+    }
+
+    let config = TlsConfig {
+        ca_pem: String::new(),
+        cert_pem: generated.cert_pem,
+        key_pem: generated.key_pem,
+    };
+    let encoded = config.encode().ok_or(IdentityBootstrapError::Storage)?;
+    space
+        .commit(&encoded)
+        .await
+        .map_err(|_| IdentityBootstrapError::Storage)?;
+
+    // Commit success is not enough for an identity root: re-read and parse the
+    // durable bytes before allowing provisioning to reach the network.
+    match load_existing(space).await {
+        Ok(Some(stored))
+            if !stored.cert_pem.is_empty()
+                && !stored.key_pem.is_empty()
+                && esp_hal_mbedtls::validate_cert_key_pair(
+                    &stored.cert_pem,
+                    &stored.key_pem,
+                )
+                .is_ok()
+                && esp_hal_mbedtls::server_config_from_pem(
+                    &stored.cert_pem,
+                    &stored.key_pem,
+                )
+                .is_ok() =>
+        {
+            Ok(())
+        }
+        Ok(_) | Err(LoadError::Corrupt) => Err(IdentityBootstrapError::Corrupt),
+        Err(LoadError::Storage) => Err(IdentityBootstrapError::Storage),
+    }
+}
+
+/// Runtime prerequisite check used by embewi-agent. It never generates or
+/// repairs an identity.
+pub async fn server_identity_valid(space: &TlsConfigSpace) -> bool {
+    match load_existing(space).await {
+        Ok(Some(config)) if !config.cert_pem.is_empty() && !config.key_pem.is_empty() => {
+            esp_hal_mbedtls::validate_cert_key_pair(&config.cert_pem, &config.key_pem).is_ok()
+                && esp_hal_mbedtls::server_config_from_pem(&config.cert_pem, &config.key_pem)
+                    .is_ok()
+        }
+        _ => false,
     }
 }
 
@@ -157,8 +265,9 @@ pub async fn save_cert(
     Ok(())
 }
 
-/// Builds the current server TLS config. Missing cert/key means the admin
-/// surface remains on plain HTTP during bootstrap.
+/// Builds the current HTTPS server configuration. Missing or invalid
+/// identity means there is no administrative listener; there is never an
+/// HTTP fallback.
 pub async fn server_config(space: &TlsConfigSpace) -> Option<SessionConfig<'static>> {
     let config = load_config(space).await?;
     if config.cert_pem.is_empty() || config.key_pem.is_empty() {
