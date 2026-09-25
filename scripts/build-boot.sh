@@ -1,40 +1,54 @@
 #!/usr/bin/env bash
-# Construit l'image système Embewi pour ESP32-C3 avec le bootloader Rust
-# `embewi-boot` (boot/) au lieu du bootloader ESP-IDF que espflash injecte
-# par défaut : bootloader + table de partitions + agent, en une image mergée
-# prête pour ESP Web Tools (web/firmware/esp32c3/firmware.bin).
-#
-# Usage: scripts/build-boot.sh
-#
-# Les réglages flash (dio / 4 Mo / 40 MHz) sont ceux de l'image mergée
-# actuelle ; ils sont écrits dans l'en-tête du bootloader.
+# Build the ESP32-C3 factory image:
+#   ota_0 = disposable embewi-init
+#   ota_1 = preloaded embewi-agent
+# ESP Web Tools flashes both parts on a clean device. embewi-init verifies
+# ota_1 exact size/SHA-256 before staging/activating it through FiBeWI.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TARGET=riscv32imc-unknown-none-elf
 FLASH_ARGS=(--chip esp32c3 --flash-mode dio --flash-size 4mb --flash-freq 40mhz)
-OUT=web/firmware/esp32c3/firmware.bin
+OUT_DIR=web/firmware/esp32c3
+FACTORY="$OUT_DIR/firmware.bin"
+AGENT_BIN="$OUT_DIR/agent.bin"
+APP_BIN="$OUT_DIR/app.bin"
 
 echo "== embewi-boot"
 (cd boot && cargo build --release)
-# Un bootloader n'est pas une application : pas de descripteur ESP-IDF.
 espflash save-image "${FLASH_ARGS[@]}" --ignore-app-descriptor \
     "boot/target/${TARGET}/release/embewi-boot" boot/target/embewi-boot.bin
 
 echo "== embewi-agent"
-cargo build --release
+cargo build --release --bin embewi-agent-esp
+mkdir -p "$OUT_DIR"
+espflash save-image "${FLASH_ARGS[@]}" \
+    "target/${TARGET}/release/embewi-agent-esp" "$AGENT_BIN" >/dev/null
+cp "$AGENT_BIN" "$APP_BIN"
 
-echo "== image mergée"
-mkdir -p "$(dirname "$OUT")"
+AGENT_SIZE="$(stat -c%s "$AGENT_BIN")"
+AGENT_SHA="$(sha256sum "$AGENT_BIN" | cut -d' ' -f1)"
+AGENT_DIGEST="sha256:${AGENT_SHA}"
+AGENT_DEPLOYMENT="factory-${AGENT_SHA:0:16}"
+
+echo "== embewi-init"
+EMBEWI_FACTORY_AGENT_SIZE="$AGENT_SIZE" \
+EMBEWI_FACTORY_AGENT_DIGEST="$AGENT_DIGEST" \
+EMBEWI_FACTORY_AGENT_DEPLOYMENT="$AGENT_DEPLOYMENT" \
+cargo build --release --bin embewi-init
+
+echo "== factory base image (bootloader + partitions + embewi-init in ota_0)"
 espflash save-image "${FLASH_ARGS[@]}" --merge --skip-padding \
     --bootloader boot/target/embewi-boot.bin \
     --partition-table partitions.csv \
-    "target/${TARGET}/release/embewi-agent-esp" "$OUT"
-# `otadata` reste VIERGE dans l'image : c'est embewi-boot qui l'initialise au
-# premier boot (il valide ota_0, écrit Valid(seq=1), relit, puis boote). Aucun
-# outil de build ne fabrique d'état runtime.
-# app.bin (image applicative seule) alimente web/recover.html.
-espflash save-image "${FLASH_ARGS[@]}" \
-    "target/${TARGET}/release/embewi-agent-esp" web/firmware/esp32c3/app.bin >/dev/null
-rm -f web/firmware/esp32c3/otadata.bin
-echo "Image écrite: $OUT ($(stat -c%s "$OUT") octets)"
+    "target/${TARGET}/release/embewi-init" "$FACTORY"
+
+# otadata intentionally remains blank in the factory image. embewi-boot owns
+# runtime boot state and bootstraps ota_0 as Valid(seq=1) on the first boot.
+# ESP Web Tools adds AGENT_BIN separately at ota_1 (0x1a0000).
+rm -f "$OUT_DIR/otadata.bin"
+
+echo "Factory image : $FACTORY ($(stat -c%s "$FACTORY") bytes)"
+echo "Agent ota_1   : $AGENT_BIN ($AGENT_SIZE bytes)"
+echo "Agent digest  : $AGENT_DIGEST"
+echo "Deployment    : $AGENT_DEPLOYMENT"
