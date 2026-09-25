@@ -61,7 +61,6 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use core::fmt::Write as _;
 
-use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -73,6 +72,7 @@ use esp_bootloader_esp_idf::partitions::{AppPartitionSubType, DataPartitionSubTy
 use config_space_manager::{Budget, ConfigSpace};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use crate::agent;
 use fibewi::{Action, BackendOutcome, TransactionState};
@@ -93,6 +93,26 @@ const MAX_DIGEST_LEN: usize = 71;
 const MAX_DEPLOYMENT_ID_LEN: usize = 128;
 pub const CONFIG_BUDGET: Budget = Budget::new(512);
 pub type OtaConfigSpace = ConfigSpace<NvsConfigBackend>;
+
+/// Metadata for the first production agent image preloaded by the factory
+/// ESP Web Tools image into the inactive OTA slot.
+#[derive(Clone, Copy)]
+pub struct PreloadedAgent {
+    pub size: u32,
+    pub digest: &'static str,
+    pub deployment_id: &'static str,
+}
+
+#[derive(Debug)]
+pub enum PreloadedAgentError {
+    BadDigest,
+    NoTarget,
+    TooLarge,
+    Flash,
+    DigestMismatch,
+    Metadata(OtaMetadataError),
+}
+
 
 #[derive(Debug)]
 pub enum OtaMetadataError {
@@ -741,6 +761,68 @@ pub async fn boot_info(flash: &SharedFlash) -> BootEntry {
     }
 }
 
+/// Verifies the already-programmed inactive slot and publishes it as a
+/// normal FiBeWI staged transaction. No alternate OTA/write path exists:
+/// factory flashing merely placed the bytes there ahead of time.
+pub async fn stage_preloaded_agent(
+    flash: &SharedFlash,
+    ota_config: &OtaConfigSpace,
+    image: PreloadedAgent,
+) -> Result<&'static str, PreloadedAgentError> {
+    let expected = parse_digest(image.digest).ok_or(PreloadedAgentError::BadDigest)?;
+
+    let (target, computed) = {
+        let mut guard = flash.lock().await;
+        let target = write_target_locked(&mut guard).ok_or(PreloadedAgentError::NoTarget)?;
+        if image.size as usize > target.size {
+            return Err(PreloadedAgentError::TooLarge);
+        }
+
+        let mut hasher = Sha256::new();
+        let mut buf = [0u8; 4096];
+        let mut offset = 0u32;
+        while offset < image.size {
+            let remaining = (image.size - offset) as usize;
+            let take = remaining.min(buf.len());
+            ReadNorFlash::read(
+                guard.storage(),
+                target.offset + offset,
+                &mut buf[..take],
+            )
+            .map_err(|_| PreloadedAgentError::Flash)?;
+            hasher.update(&buf[..take]);
+            offset += take as u32;
+        }
+        (target, fibewi::Digest(hasher.finalize().into()))
+    };
+
+    if computed != expected {
+        return Err(PreloadedAgentError::DigestMismatch);
+    }
+
+    let target_kind =
+        Target::from_subtype(match target.slot {
+            AppSlot::Ota0 => AppPartitionSubType::Ota0,
+            AppSlot::Ota1 => AppPartitionSubType::Ota1,
+        })
+        .ok_or(PreloadedAgentError::NoTarget)?;
+
+    let record = OtaTransaction::staged(
+        String::from(image.deployment_id),
+        fibewi::ArtifactRecord {
+            id: ArtifactKind::Firmware,
+            size: u64::from(image.size),
+            digest: expected,
+            target: target_kind,
+        },
+    );
+    commit_transaction(ota_config, Some(&record))
+        .await
+        .map_err(PreloadedAgentError::Metadata)?;
+
+    Ok(target.slot.as_str())
+}
+
 /// `POST /v1alpha1/ota/prepare` request body (contrat §4). `artifact` and
 /// `idf_version` are accepted but not declared here -- this agent isn't
 /// ESP-IDF, so there's no meaningful running version to compare `idf_version`
@@ -1334,8 +1416,13 @@ fn disable_boot_watchdog() {
     boot_watchdog().disable();
 }
 
-#[embassy_executor::task]
-async fn selfcheck_task(flash: &'static SharedFlash, nvs_backend: &'static NvsConfigBackend, ota_config: &'static OtaConfigSpace) {
+/// Runs the existing bounded FiBeWI/ESP confirmation gate after the caller
+/// has decided that its own application prerequisites are satisfied.
+pub async fn confirm_pending(
+    flash: &'static SharedFlash,
+    nvs_backend: &'static NvsConfigBackend,
+    ota_config: &'static OtaConfigSpace,
+) {
     // TEST/DEBUG ONLY (`fault-injection-freeze` feature, never in a
     // production image): starves the executor before the self-check's own
     // software deadline (below) can ever be polled -- the one failure mode
@@ -1390,7 +1477,17 @@ async fn selfcheck_task(flash: &'static SharedFlash, nvs_backend: &'static NvsCo
 /// table host-tested in that crate; this only gathers its inputs and
 /// applies the outcome. This is the only place `agent::State` is driven
 /// from `Booting`.
-pub async fn on_boot(flash: &'static SharedFlash, nvs_backend: &'static NvsConfigBackend, ota_config: &'static OtaConfigSpace, spawner: Spawner) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootDisposition {
+    Stable,
+    PendingVerify,
+}
+
+pub async fn on_boot(
+    flash: &'static SharedFlash,
+    nvs_backend: &'static NvsConfigBackend,
+    ota_config: &'static OtaConfigSpace,
+) -> BootDisposition {
     let staged = staged(ota_config).await;
     let image = current_ota_image(flash).await;
     let booted = active_slot(flash).await;
@@ -1406,16 +1503,11 @@ pub async fn on_boot(flash: &'static SharedFlash, nvs_backend: &'static NvsConfi
     match action {
         Action::AwaitConfirmation => {
             agent::set_state(agent::State::PendingVerify);
-            warn!("ota: image is PENDING_VERIFY, starting bounded self-check (deadline {SELFCHECK_DEADLINE:?})");
-            // Anti-freeze backstop stays armed (see `arm_boot_watchdog`'s doc
-            // comment): fed here for a fresh window covering the self-check
-            // and the confirm that follows it. Every other outcome below
-            // disables it instead.
+            warn!("ota: image is PENDING_VERIFY, application confirmation required");
+            // The application decides when it is safe to call confirm_pending.
+            // FiBeWI knows nothing about those application prerequisites.
             feed_boot_watchdog();
-            if let Ok(token) = selfcheck_task(flash, nvs_backend, ota_config) {
-                spawner.spawn(token);
-            }
-            return;
+            return BootDisposition::PendingVerify;
         }
         Action::RollbackUnaccounted => {
             warn!("ota: PENDING_VERIFY image not accounted for by the staged record, rolling back");
@@ -1458,4 +1550,10 @@ pub async fn on_boot(flash: &'static SharedFlash, nvs_backend: &'static NvsConfi
         warn!("ota: boot NVS self-check failed, /health will report storage=fail");
     }
     agent::set_state(agent::State::Running);
+    BootDisposition::Stable
+}
+
+/// Explicit application-triggered rejection of the current candidate.
+pub async fn reject_pending(flash: &'static SharedFlash) -> ! {
+    mark_invalid_and_reboot(flash).await
 }
