@@ -85,7 +85,16 @@ impl WifiConfig {
     }
 }
 
-type WifiConfigSpace = ConfigSpace<NvsConfigBackend>;
+pub type WifiConfigSpace = ConfigSpace<NvsConfigBackend>;
+
+/// Whether durable station credentials exist and decode correctly.
+pub async fn is_provisioned(space: &WifiConfigSpace) -> bool {
+    match space.load().await {
+        Ok(Some(snapshot)) => WifiConfig::decode(&snapshot.data)
+            .is_some_and(|config| !config.ssid.is_empty()),
+        _ => false,
+    }
+}
 
 pub struct WifiManager {
     transport: esp_wifi_manager::WifiManager<SOCKETS>,

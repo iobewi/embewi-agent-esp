@@ -13,6 +13,16 @@ const NONE: u8 = 0xff;
 pub const CONFIG_BUDGET: Budget = Budget::new(8);
 pub type HardwareConfigSpace = ConfigSpace<NvsConfigBackend>;
 
+/// Whether the hardware object exists and has the current schema. A saved
+/// "LED disabled" value is still a fully provisioned hardware configuration.
+pub async fn is_configured(space: &HardwareConfigSpace) -> bool {
+    let Ok(Some(snapshot)) = space.load().await else {
+        return false;
+    };
+    let raw = snapshot.data;
+    raw.len() == 5 && &raw[..4] == MAGIC
+}
+
 pub async fn led_gpio(space: &HardwareConfigSpace) -> Option<u8> {
     let Ok(Some(snapshot)) = space.load().await else {
         return None;

@@ -133,6 +133,14 @@ pub async fn token(space: &AgentConfigSpace) -> String {
     load_config(space).await.map(|c| c.token).unwrap_or_default()
 }
 
+/// Runtime prerequisite established by embewi-init. The API must never be
+/// exposed without a durable Bearer token.
+pub async fn is_provisioned(space: &AgentConfigSpace) -> bool {
+    load_config(space)
+        .await
+        .is_ok_and(|config| !config.token.is_empty())
+}
+
 /// 128-bit random token, hex-encoded (contrat §1a: "token vide → généré
 /// aléatoirement par le device"). True randomness needs the RF subsystem up
 /// (Wi-Fi) -- always the case here, since this is only ever called from the

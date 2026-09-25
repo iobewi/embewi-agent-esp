@@ -9,7 +9,7 @@ use log::{info, warn};
 
 use improv_serial::{self as improv, Command, ImprovError, ParsedCommand, Parser, State};
 use crate::status::{self, Status};
-use crate::supervisor::ApplicationSupervisor;
+use crate::supervisor::ProvisioningSupervisor;
 use crate::wifi::WifiManager;
 
 const NAME: &str = "embewi-agent-esp";
@@ -26,7 +26,7 @@ pub async fn run(
     mut rx: Rx,
     mut tx: Tx,
     mut wifi: WifiManager,
-    mut supervisor: ApplicationSupervisor,
+    mut supervisor: ProvisioningSupervisor,
 ) -> ! {
     let mut parser = Parser::new();
     let mut state = if wifi.is_online() {
@@ -70,13 +70,13 @@ async fn send(tx: &mut Tx, frame: &[u8]) {
     }
 }
 
-/// The device's own HTTP config page (`src/http/`), reachable once Wi-Fi
+/// The device's own HTTPS provisioning page (`src/http/`), reachable once Wi-Fi
 /// is up. ESP Web Tools' client reads this from the first string in a
 /// WifiSettings or (if already provisioned) GetCurrentState RPC response
 /// and shows it as a "Visit Device" link.
 fn next_url(wifi: &WifiManager) -> alloc::string::String {
     wifi.ip()
-        .map(|ip| alloc::format!("http://{ip}/"))
+        .map(|ip| alloc::format!("https://{ip}/"))
         .unwrap_or_default()
 }
 
@@ -85,7 +85,7 @@ async fn handle(
     tx: &mut Tx,
     state: &mut State,
     wifi: &mut WifiManager,
-    supervisor: &mut ApplicationSupervisor,
+    supervisor: &mut ProvisioningSupervisor,
 ) {
     match command {
         ParsedCommand::GetCurrentState => {

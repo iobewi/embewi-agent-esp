@@ -1,10 +1,7 @@
-//! Application service supervisor.
+//! Application service supervisors.
 //!
-//! Transport managers report capabilities becoming ready; this supervisor
-//! decides which Embewi services to start for those capabilities. Keeping
-//! this ownership outside Wi-Fi means a future Serial/Ethernet connector can
-//! be attached without teaching the transport about HTTP, heartbeat, logs or
-//! other application policy.
+//! Runtime and one-shot provisioning are deliberately different owners.
+//! Neither transport manager nor FiBeWI knows application service policy.
 
 use embassy_executor::Spawner;
 use embassy_net::Stack;
@@ -14,18 +11,14 @@ use log::warn;
 use config_space_manager_esp_nvs::NvsConfigBackend;
 use esp_flash_access::SharedFlash;
 
-/// Owns application-level service lifecycle, independently from whichever
-/// connector made a capability available.
 pub struct ApplicationSupervisor {
     spawner: Spawner,
     lpwr: Option<LPWR<'static>>,
     tls: crate::tls::TlsReferenceStatic,
     agent_config: &'static crate::agent::AgentConfigSpace,
     app_config: &'static crate::app_config::AppConfigSpace,
-    hardware_config: &'static crate::hardware::HardwareConfigSpace,
     tls_config: &'static crate::tls::TlsConfigSpace,
     runtime_config: &'static crate::runtime_config::RuntimeConfig,
-    lifecycle_config: &'static crate::lifecycle::LifecycleConfigSpace,
     ota_config: &'static crate::ota::OtaConfigSpace,
     flash: &'static SharedFlash,
     nvs_backend: &'static NvsConfigBackend,
@@ -39,10 +32,8 @@ impl ApplicationSupervisor {
         tls: crate::tls::TlsReferenceStatic,
         agent_config: &'static crate::agent::AgentConfigSpace,
         app_config: &'static crate::app_config::AppConfigSpace,
-        hardware_config: &'static crate::hardware::HardwareConfigSpace,
         tls_config: &'static crate::tls::TlsConfigSpace,
         runtime_config: &'static crate::runtime_config::RuntimeConfig,
-        lifecycle_config: &'static crate::lifecycle::LifecycleConfigSpace,
         ota_config: &'static crate::ota::OtaConfigSpace,
         flash: &'static SharedFlash,
         nvs_backend: &'static NvsConfigBackend,
@@ -53,10 +44,8 @@ impl ApplicationSupervisor {
             tls,
             agent_config,
             app_config,
-            hardware_config,
             tls_config,
             runtime_config,
-            lifecycle_config,
             ota_config,
             flash,
             nvs_backend,
@@ -64,39 +53,120 @@ impl ApplicationSupervisor {
         }
     }
 
-    /// Announces that an IP-capable connector is ready.
-    ///
-    /// The current firmware has one IP connector (Wi-Fi), but the contract is
-    /// deliberately capability-based: Ethernet can call the same method later,
-    /// while a Serial connector can expose a different capability without
-    /// pretending to own an `embassy_net::Stack`.
     pub fn on_ip_ready(&mut self, stack: Stack<'static>) {
         if self.ip_services_started {
-            log::info!("supervisor: IP services already started, ignoring duplicate readiness");
+            log::info!("supervisor: runtime IP services already started");
             return;
         }
-
         let Some(lpwr) = self.lpwr.take() else {
-            warn!("supervisor: IP services requested without LPWR resource");
+            warn!("supervisor: runtime IP services requested without LPWR");
             return;
         };
-
-        // Publish the one-shot state before spawning. Every task below is a
-        // singleton application service; retrying only a subset after a spawn
-        // failure would create a much less well-defined state than failing
-        // visibly during development.
         self.ip_services_started = true;
 
-        // Admin/config server. It internally selects provisioning UI or API.
         self.spawner
-            .spawn(crate::http::run(stack, self.flash, self.nvs_backend, self.agent_config, self.app_config, self.hardware_config, self.tls_config, self.runtime_config, self.lifecycle_config, self.ota_config, self.spawner, lpwr, self.tls).unwrap());
+            .spawn(crate::http::run(
+                stack,
+                self.flash,
+                self.nvs_backend,
+                self.agent_config,
+                self.app_config,
+                self.tls_config,
+                self.runtime_config,
+                self.ota_config,
+                self.spawner,
+                lpwr,
+                self.tls,
+            ).unwrap());
 
-        // Services that require an IP stack. Heartbeat/log-stream remain
-        // silent until their own application configuration is available.
         self.spawner.spawn(crate::time::sync_task(stack).unwrap());
         self.spawner
-            .spawn(crate::heartbeat::run(stack, self.agent_config, self.runtime_config, self.ota_config, self.tls_config, self.tls).unwrap());
+            .spawn(crate::heartbeat::run(
+                stack,
+                self.agent_config,
+                self.runtime_config,
+                self.ota_config,
+                self.tls_config,
+                self.tls,
+            ).unwrap());
         self.spawner
-            .spawn(crate::log_stream::run(stack, self.agent_config, self.tls_config, self.tls).unwrap());
+            .spawn(crate::log_stream::run(
+                stack,
+                self.agent_config,
+                self.tls_config,
+                self.tls,
+            ).unwrap());
+    }
+}
+
+/// Services available in the disposable init image after USB/Improv has
+/// produced an IP capability. Only the HTTPS provisioning UI is started.
+pub struct ProvisioningSupervisor {
+    spawner: Spawner,
+    lpwr: Option<LPWR<'static>>,
+    tls: crate::tls::TlsReferenceStatic,
+    flash: &'static SharedFlash,
+    agent_config: &'static crate::agent::AgentConfigSpace,
+    hardware_config: &'static crate::hardware::HardwareConfigSpace,
+    tls_config: &'static crate::tls::TlsConfigSpace,
+    lifecycle_config: &'static crate::lifecycle::LifecycleConfigSpace,
+    ota_config: &'static crate::ota::OtaConfigSpace,
+    factory_agent: crate::ota::PreloadedAgent,
+    ip_services_started: bool,
+}
+
+impl ProvisioningSupervisor {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        spawner: Spawner,
+        lpwr: LPWR<'static>,
+        tls: crate::tls::TlsReferenceStatic,
+        flash: &'static SharedFlash,
+        agent_config: &'static crate::agent::AgentConfigSpace,
+        hardware_config: &'static crate::hardware::HardwareConfigSpace,
+        tls_config: &'static crate::tls::TlsConfigSpace,
+        lifecycle_config: &'static crate::lifecycle::LifecycleConfigSpace,
+        ota_config: &'static crate::ota::OtaConfigSpace,
+        factory_agent: crate::ota::PreloadedAgent,
+    ) -> Self {
+        Self {
+            spawner,
+            lpwr: Some(lpwr),
+            tls,
+            flash,
+            agent_config,
+            hardware_config,
+            tls_config,
+            lifecycle_config,
+            ota_config,
+            factory_agent,
+            ip_services_started: false,
+        }
+    }
+
+    pub fn on_ip_ready(&mut self, stack: Stack<'static>) {
+        if self.ip_services_started {
+            log::info!("supervisor: provisioning HTTPS already started");
+            return;
+        }
+        let Some(lpwr) = self.lpwr.take() else {
+            warn!("supervisor: provisioning requested without LPWR");
+            return;
+        };
+        self.ip_services_started = true;
+        self.spawner
+            .spawn(crate::http::run_provisioning(
+                stack,
+                self.flash,
+                self.agent_config,
+                self.hardware_config,
+                self.tls_config,
+                self.lifecycle_config,
+                self.ota_config,
+                self.factory_agent,
+                self.spawner,
+                lpwr,
+                self.tls,
+            ).unwrap());
     }
 }
