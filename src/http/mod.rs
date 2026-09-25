@@ -1,49 +1,13 @@
-//! Admin HTTP surface, reachable once the device is on Wi-Fi. Built with
-//! `picoserve`, an async no_std HTTP server for `embassy-net`. Split into
-//! two independent tasks/routers, spawned by `wifi.rs` -- never both in the
-//! same boot, see that module for the `is_locked()` dispatch:
+//! HTTPS-only administrative surfaces.
 //!
-//! - [`config`]: the one-shot provisioning UI (`index.html`/`confirm.html`/
-//!   `locked.html`), reachable only before the device is locked.
-//! - [`api`]: the contrat v1alpha1 JSON API (`/v1alpha1/*`), reachable only
-//!   after the device is locked.
+//! embewi-agent and embewi-init deliberately expose different routers:
+//! - the runtime agent exposes only the v1alpha1 API;
+//! - the disposable init image exposes only the provisioning UI.
 //!
-//! **Why two tasks, not one router with both.** Every local variable an
-//! `async fn` holds across an `.await` point -- including a `picoserve`
-//! router, which owns every route's handler closure -- becomes part of the
-//! fixed-size `Future` `#[embassy_executor::task]` bakes into a `'static`
-//! `TaskStorage` (confirmed on our own binary: `http::run::POOL` was a
-//! constant ~9 KiB reserved in `.bss`, `RAM`, for the *whole program's
-//! lifetime*, regardless of whether the config page was ever hit again).
-//! One task whose router held both surfaces paid for the config page's
-//! closures forever, even on a device that had been locked for months. Two
-//! smaller tasks each only pay for their own router. It's also a real
-//! security improvement, not just a memory one: once locked, the
-//! provisioning handlers and the templates behind them are *structurally*
-//! unreachable -- there's no router path to them at all, not just a
-//! runtime `is_locked()` check guarding one.
-//!
-//! **Two separate planes, two separate ports.** This is the
-//! admin/Kubernetes-facing plane -- always on [`ADMIN_PORT_HTTP`]/
-//! [`ADMIN_PORT_HTTPS`], never on `agent::app_port`. `app_port` (`POST
-//! /v1alpha1/app/port`) is the TCP port of a *separate* business-layer
-//! service the contract describes ("le port TCP du service applicatif
-//! embarqué... ex. serveur REST de l'application métier"), which doesn't
-//! exist as a distinct process in this single-binary agent yet -- until it
-//! does, `app_port` is just an NVS value `GET /info` reports, with nothing
-//! actually listening on it. Binding the admin plane to `app_port` instead
-//! of a fixed port was a real bug: `app_port`'s own contractual range
-//! (1024-65535) then made it impossible to bring the admin plane back
-//! below 1024 once moved, and conflated a device management concern with
-//! an application concern that must stay independent.
-//!
-//! Deliberately doesn't use picoserve's `AppBuilder`/`State` extractor
-//! machinery: that's for routers whose *type* needs to be nameable (passed
-//! as a task parameter, pooled across connections), which needs nightly
-//! Rust (`#![feature(impl_trait_in_assoc_type)]`) to spell out. Ours
-//! doesn't need that -- each router is built fresh, once, inside its own
-//! task, and handlers just capture `storage` directly as a plain closure
-//! variable, so this crate stays on stable Rust.
+//! They share the TLS accept loop below but never dispatch between surfaces
+//! at runtime. Port 80 is never bound and there is no clear-text fallback.
+//! The application-service TCP port reported by /info remains a separate
+//! business-plane setting and is unrelated to this fixed admin HTTPS port.
 
 use alloc::string::String;
 
@@ -85,33 +49,66 @@ pub async fn run(
     nvs_backend: &'static NvsConfigBackend,
     agent_config: &'static crate::agent::AgentConfigSpace,
     app_config: &'static crate::app_config::AppConfigSpace,
-    hardware_config: &'static crate::hardware::HardwareConfigSpace,
     tls_config: &'static crate::tls::TlsConfigSpace,
     runtime_config: &'static crate::runtime_config::RuntimeConfig,
-    lifecycle_config: &'static crate::lifecycle::LifecycleConfigSpace,
     ota_config: &'static crate::ota::OtaConfigSpace,
     spawner: Spawner,
     lpwr: LPWR<'static>,
     tls: crate::tls::TlsReferenceStatic,
 ) -> ! {
-    if crate::lifecycle::is_locked(lifecycle_config).await {
-        api::serve(stack, flash, nvs_backend, agent_config, app_config, tls_config, runtime_config, ota_config, spawner, lpwr, tls).await
-    } else {
-        config::serve(stack, agent_config, hardware_config, tls_config, lifecycle_config, spawner, lpwr, tls).await
-    }
+    api::serve(
+        stack,
+        flash,
+        nvs_backend,
+        agent_config,
+        app_config,
+        tls_config,
+        runtime_config,
+        ota_config,
+        spawner,
+        lpwr,
+        tls,
+    )
+    .await
+}
+
+/// HTTPS provisioning surface used only by embewi-init.
+#[embassy_executor::task]
+pub async fn run_provisioning(
+    stack: Stack<'static>,
+    flash: &'static SharedFlash,
+    agent_config: &'static crate::agent::AgentConfigSpace,
+    hardware_config: &'static crate::hardware::HardwareConfigSpace,
+    tls_config: &'static crate::tls::TlsConfigSpace,
+    lifecycle_config: &'static crate::lifecycle::LifecycleConfigSpace,
+    ota_config: &'static crate::ota::OtaConfigSpace,
+    factory_agent: crate::ota::PreloadedAgent,
+    spawner: Spawner,
+    lpwr: LPWR<'static>,
+    tls: crate::tls::TlsReferenceStatic,
+) -> ! {
+    config::serve(
+        stack,
+        flash,
+        agent_config,
+        hardware_config,
+        tls_config,
+        lifecycle_config,
+        ota_config,
+        factory_agent,
+        spawner,
+        lpwr,
+        tls,
+    )
+    .await
 }
 
 // Shared with web/index.html (the flashing page), so both look consistent
 // -- one canonical file instead of a copy that could drift.
 const STYLE_CSS: &str = include_str!("../../web/style.css");
 
-/// Fixed ports for the admin plane -- see this module's doc comment for why
-/// they're never `agent::app_port`. Conventional HTTP/HTTPS split (matches
-/// `firmware-c`'s own `esp_https_server` default of `:443`), not a single
-/// port serving both: plain HTTP until a certificate is configured
-/// (bootstrap), `:443` once one is -- `:80` stops listening at that point
-/// rather than continuing to serve the admin API in clear text next to it.
-const ADMIN_PORT_HTTP: u16 = 80;
+/// Fixed HTTPS port for every Embewi administrative surface.
+/// Port 80 is intentionally never bound.
 const ADMIN_PORT_HTTPS: u16 = 443;
 
 /// Bound on the TLS handshake specifically, well short of the 45 s socket
@@ -213,56 +210,50 @@ pub(super) async fn serve(
     // `picoserve::io::Socket`, so plugging in TLS never touches the router
     // or handlers.
     loop {
-        // Decided once per accept: which port to listen on for *this*
-        // connection attempt, and (if HTTPS) the config to serve it with --
-        // a single `server_config` call reused for both, rather than
-        // re-parsing the PEM pair again after accepting. A cert pushed
-        // while this `accept()` is already blocked only takes effect from
-        // the next loop iteration onward (see `ADMIN_PORT_HTTPS`'s doc
-        // comment) -- acceptable: that push itself completes over the
-        // current HTTP connection, which ends this iteration anyway.
-        let tls_server_config = crate::tls::server_config(tls_config).await;
-        let port = if tls_server_config.is_some() { ADMIN_PORT_HTTPS } else { ADMIN_PORT_HTTP };
+        let Some(tls_server_config) = crate::tls::server_config(tls_config).await else {
+            // Security invariant: absence/corruption of the server identity
+            // never downgrades the device to HTTP.
+            warn!("HTTPS: no usable server identity; administrative surface remains closed");
+            Timer::after(Duration::from_secs(5)).await;
+            continue;
+        };
 
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        if let Err(e) = socket.accept(port).await {
-            warn!("HTTP: accept failed: {e:?}");
+        if let Err(e) = socket.accept(ADMIN_PORT_HTTPS).await {
+            warn!("HTTPS: accept failed: {e:?}");
             continue;
         }
         socket.set_keep_alive(Some(Duration::from_secs(30)));
         socket.set_timeout(Some(Duration::from_secs(45)));
 
-        match tls_server_config {
-            Some(tls_config) => {
-                let mut session = match esp_hal_mbedtls::mbedtls_rs::Session::new(tls, socket, &tls_config) {
-                    Ok(session) => session,
-                    Err(e) => {
-                        warn!("HTTPS: session setup failed: {e}");
-                        continue;
-                    }
-                };
-                match with_timeout(HANDSHAKE_TIMEOUT, session.connect()).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => {
-                        warn!("HTTPS: handshake failed: {e}");
-                        continue;
-                    }
-                    Err(_) => {
-                        warn!("HTTPS: handshake timed out after {HANDSHAKE_TIMEOUT:?}");
-                        continue;
-                    }
+        let mut session =
+            match esp_hal_mbedtls::mbedtls_rs::Session::new(tls, socket, &tls_server_config) {
+                Ok(session) => session,
+                Err(e) => {
+                    warn!("HTTPS: session setup failed: {e}");
+                    continue;
                 }
-                if let Err(e) =
-                    serve_connection(router, &config, &mut http_buffer, crate::tls::TlsSocket::new(session)).await
-                {
-                    warn!("HTTPS: connection error: {e:?}");
-                }
+            };
+        match with_timeout(HANDSHAKE_TIMEOUT, session.connect()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                warn!("HTTPS: handshake failed: {e}");
+                continue;
             }
-            None => {
-                if let Err(e) = serve_connection(router, &config, &mut http_buffer, socket).await {
-                    warn!("HTTP: connection error: {e:?}");
-                }
+            Err(_) => {
+                warn!("HTTPS: handshake timed out after {HANDSHAKE_TIMEOUT:?}");
+                continue;
             }
+        }
+        if let Err(e) = serve_connection(
+            router,
+            &config,
+            &mut http_buffer,
+            crate::tls::TlsSocket::new(session),
+        )
+        .await
+        {
+            warn!("HTTPS: connection error: {e:?}");
         }
     }
 }
