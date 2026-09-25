@@ -11,7 +11,7 @@
     <main>
         <header>
             <h1>Embewi Agent</h1>
-            <p class="subtitle">Réécrit uniquement ota_0 et otadata</p>
+            <p class="subtitle">Réécrit uniquement ota_0 — sans toucher NVS ni otadata</p>
         </header>
 
         <div class="card">
@@ -32,10 +32,9 @@
         </div>
 
         <p class="message">
-            Une fois le Wi-Fi configuré, un bouton « Visit Device » apparaît dans
-            la fenêtre d'installation : il ouvre la page de configuration
-            matérielle (broche de la LED de statut) servie directement par
-            l'appareil sur son réseau local.
+            Cette opération est une récupération ciblée de l'image agent dans ota_0.
+            Si ESP Web Tools propose un effacement complet, choisissez de conserver
+            les données afin de préserver NVS et otadata.
         </p>
 
         <p class="hint">

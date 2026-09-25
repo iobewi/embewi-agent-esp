@@ -12,7 +12,7 @@ use crate::status::{self, Status};
 use crate::supervisor::ProvisioningSupervisor;
 use crate::wifi::WifiManager;
 
-const NAME: &str = "embewi-agent-esp";
+const NAME: &str = "embewi-init";
 /// Not a literal: this tracks whichever chip `esp-hal`'s own feature flags
 /// (in Cargo.toml) are actually built for, so it can't drift when the
 /// target changes -- e.g. from ESP32-C3 to ESP32-S3.

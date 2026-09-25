@@ -130,10 +130,17 @@ async fn main(spawner: Spawner) -> ! {
         }
     }
 
+    // Before RF/Wi-Fi exists, plain Rng output is not guaranteed to be true
+    // random on ESP32-C3. Keep the ADC-backed entropy source alive across
+    // key/certificate generation so the global hardware RNG used by MbedTLS
+    // is cryptographically seeded without bringing up any network capability.
+    let trng_source =
+        esp_hal::rng::TrngSource::new(peripherals.RNG, peripherals.ADC1);
     let identity_name = agent::node_id(agent_config).await;
     tls::ensure_server_identity(tls_config, &identity_name)
         .await
         .expect("bootstrap TLS identity unavailable");
+    core::mem::drop(trng_source);
 
     // Only after the durable identity has been re-read and validated do we
     // initialize the networking/provisioning machinery.

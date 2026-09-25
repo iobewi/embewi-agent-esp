@@ -275,5 +275,7 @@ async fn main(spawner: Spawner) -> ! {
     // Runtime has no Improv/bootstrap service. If the saved network is
     // unavailable it remains offline and retries only according to the normal
     // connector policy; it never opens a provisioning fallback.
-    core::future::pending().await
+    loop {
+        embassy_time::Timer::after(embassy_time::Duration::from_secs(3600)).await;
+    }
 }

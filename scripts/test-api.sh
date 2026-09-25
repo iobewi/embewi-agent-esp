@@ -30,13 +30,18 @@
 # prochain vrai cycle OTA), mais ne touche jamais au boot ni à l'auth. Les
 # autres sous-commandes sont volontairement séparées, jamais groupées dans
 # un mode "tout lancer" : chacune a un effet de bord réel sur le device
-# (`push-cert` en particulier fait basculer le port admin de 80 à 443).
+# (`push-cert` remplace l'identité serveur mais ne change jamais de protocole).
 set -euo pipefail
 
 URL="${1:?Usage: $0 <url> <token> [safe|reboot|rotate-token|ota-activate|push-cert|push-ca]}"
 TOKEN="${2:?Usage: $0 <url> <token> [safe|reboot|rotate-token|ota-activate|push-cert|push-ca]}"
 MODE="${3:-safe}"
 URL="${URL%/}"
+
+if [[ "$URL" != https://* ]]; then
+    echo "REFUS: l'API Embewi est HTTPS-only; URL attendue: https://..." >&2
+    exit 2
+fi
 
 PASS=0
 FAIL=0
@@ -82,8 +87,8 @@ check_ne() {
     fi
 }
 
-# -k : les certs de test sont auto-signés (safe suite tourne aussi bien en
-# clair qu'en HTTPS avec ce flag -- curl l'ignore silencieusement en HTTP).
+# -k : l'identité bootstrap est auto-signée tant qu'aucune PKI n'a remplacé
+# le certificat. Le script refuse HTTP avant toute requête.
 auth_get() { curl -sk -m 10 -H "Authorization: Bearer $TOKEN" "$URL$1"; }
 auth_post() { curl -sk -m 10 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "$2" "$URL$1"; }
 http_code() { curl -sk -o /dev/null -w "%{http_code}" -m 10 "$@"; }
@@ -298,7 +303,7 @@ print(json.dumps({'cert_pem': open(sys.argv[1]).read(), 'key_pem': open(sys.argv
 " "$cert_file" "$key_file")
     local resp; resp=$(auth_post /v1alpha1/tls/cert "$payload")
     check "status == saved" "$(jget "$resp" status)" "saved"
-    echo "Le serveur admin bascule en HTTPS:443 dès la prochaine connexion (port 80 s'arrête)."
+    echo "Certificat serveur remplacé ; l'API reste exclusivement sur HTTPS:443."
 }
 
 run_push_ca() {
