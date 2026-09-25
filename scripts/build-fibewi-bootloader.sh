@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FIBEWI_REV="aa4ad70b391e5243e2b13a4170cbc27d84dc028a"
+FIBEWI_REV="1820c8faeba8195775fe4593693cc1dacff46f74"
 CHECKOUT="$ROOT/target/fibewi-bootloader-src"
 TARGET=riscv32imc-unknown-none-elf
 
