@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FIBEWI_REV="13af25256e4ce27cdb2ff43e19ed6e38b9a75c83"
+FIBEWI_REV="caee73168a3943b0c13ea656b736f6604572037e"
 CHECKOUT="$ROOT/target/fibewi-bootloader-src"
 TARGET=riscv32imc-unknown-none-elf
 
@@ -13,6 +13,6 @@ fi
 git -C "$CHECKOUT" fetch --depth 1 origin "$FIBEWI_REV"
 git -C "$CHECKOUT" checkout --detach --force "$FIBEWI_REV" >/dev/null
 
-cd "$CHECKOUT/bootloader/esp32c3"
-cargo build --release
+cd "$CHECKOUT/bootloader/esp"
+cargo build --release --locked --features esp32c3 --target "$TARGET"
 printf "%s\n" "$PWD/target/$TARGET/release/fibewi-esp-bootloader"
