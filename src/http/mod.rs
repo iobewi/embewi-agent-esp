@@ -23,7 +23,7 @@ use picoserve::response::{ContentBody, ContentHeaders, Response, StatusCode};
 use picoserve::routing::PathRouter;
 
 use config_space_manager_esp_nvs::NvsConfigBackend;
-use esp_flash_access::SharedFlash;
+use espbewi_flash::SharedFlash;
 
 pub mod api;
 pub mod config;
