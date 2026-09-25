@@ -11,12 +11,12 @@ ROM Espressif -> embewi-boot -> ota_0 / ota_1 -> embewi-agent
 Chaîne : ROM -> `embewi-boot` -> slot choisi par `otadata` -> agent.
 
 Toutes les *décisions* (quel slot, quoi écrire dans `otadata`, l'image est-elle
-amorçable) viennent de `crates/embewi-boot-core`, partagé par le bootloader
+amorçable) viennent de `fibewi-esp::boot`, partagé par le bootloader
 **et** par l'agent (`src/ota.rs`) -- une seule définition de ce qu'est une
 entrée `otadata` valide et de quel slot est actif, des deux côtés du saut.
 Testé sur l'hôte contre des coupures de courant sous un modèle *adversarial*
 (champs programmés dans n'importe quel ordre, pas seulement en ordre
-d'adresses) : voir le module doc de `crates/embewi-boot-core/src/lib.rs`.
+d'adresses) dans le dépôt FiBeWI.
 `embewi-boot` exécute ces décisions sur la vraie flash :
 
 - coupe la protection « flashboot » des watchdogs (voir plus bas) ;
@@ -48,7 +48,7 @@ Le mot de commit veut donc dire « j'ai vérifié CE corps », pas seulement « 
 seconde commande a tourné ». Cette écriture est identique côté agent
 (`ota.rs::execute_otadata_write`) : `activate`/`confirm`/`reject` du crate
 partagé, plus aucune entrée écrite au format ESP-IDF depuis
-`fix(agent): migrate otadata semantics to embewi-boot-core`.
+la migration vers `fibewi-esp::boot`.
 
 Un watchdog matériel (TIMG0, indépendant du `LPWR`/RTC déjà utilisé par
 `/reboot`) protège toute la fenêtre `pending_verify`, armé juste après
@@ -118,7 +118,7 @@ commit par commit) :
    (`scripts/test-api.sh safe`, 42/42) -> reboot.
 2. **Bootstrap `otadata` et sélection A/B réelle**, d'abord validés sous QEMU
    (écritures flash comprises, pas seulement lues), puis sur device.
-3. **Migration de l'agent** vers le même format `embewi_boot_core` --
+3. **Migration de l'agent** vers le même format `fibewi-esp::boot` --
    c'est ce cycle qui a révélé le défaut de ciblage de slot (tableau
    ci-dessus).
 4. **Gate rollback réel** (`Pending` -> reset -> `Aborted` -> retour), puis
@@ -140,8 +140,9 @@ n'aurait pas montré.
   ~21 Ko ; le journal n'utilise pas `core::fmt` (`log!` : texte et hexadécimal
   seulement, ~10 Ko économisés).
 - **Crate à part** (son propre `[workspace]`, exclu de celui de l'agent) :
-  autre linker script, autre mémoire, autres features. Dépend par chemin de
-  `crates/embewi-boot-core`.
+  autre linker script, autre mémoire, autres features. Il dépend du backend
+  `fibewi-esp` sans activer de feature matérielle, et ne consomme que le
+  module pur `fibewi_esp::boot`.
 - Les fonctions ROM (flash, cache, MMU) viennent de `esp-rom-sys`, via `esp-hal`.
 
 ## Origine

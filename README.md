@@ -23,7 +23,7 @@ _À définir — toolchain et structure du projet Rust en cours de mise en place
 
 Full Rust, sans ESP-IDF : le second-stage bootloader ([`boot/`](boot/README.md),
 `embewi-boot`) et l'agent partagent la même définition de l'état `otadata`
-([`crates/embewi-boot-core`](crates/embewi-boot-core)), testée sur l'hôte
+via `fibewi-esp::boot`, testée sur l'hôte
 contre des coupures de courant sous un modèle adversarial. Un watchdog
 matériel protège toute la fenêtre `pending_verify` ; les trois cas de la
 matrice de conformité (self-check normal, reset avant confirmation, gel pur
