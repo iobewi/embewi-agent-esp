@@ -9,7 +9,7 @@ use esp_hal::peripherals::LPWR;
 use log::warn;
 
 use config_space_manager_esp_nvs::NvsConfigBackend;
-use esp_flash_access::SharedFlash;
+use espbewi_flash::SharedFlash;
 
 pub struct ApplicationSupervisor {
     spawner: Spawner,
