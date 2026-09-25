@@ -1599,7 +1599,7 @@ dependencies = [
 [[package]]
 name = "espbewi-flash"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/espbewi?rev=0b11f035d1aed6d901adca2098c6efc29a2cee83#0b11f035d1aed6d901adca2098c6efc29a2cee83"
+source = "git+https://github.com/iobewi/espbewi?rev=213c44228c7e24ed62a20bbaab3a822c6cdf6506#213c44228c7e24ed62a20bbaab3a822c6cdf6506"
 dependencies = [
  "embassy-sync 0.8.0",
  "embedded-storage",
@@ -1612,7 +1612,7 @@ dependencies = [
 [[package]]
 name = "espbewi-nvs"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/espbewi?rev=0b11f035d1aed6d901adca2098c6efc29a2cee83#0b11f035d1aed6d901adca2098c6efc29a2cee83"
+source = "git+https://github.com/iobewi/espbewi?rev=213c44228c7e24ed62a20bbaab3a822c6cdf6506#213c44228c7e24ed62a20bbaab3a822c6cdf6506"
 dependencies = [
  "embedded-storage",
  "esp-nvs",
@@ -1623,12 +1623,17 @@ dependencies = [
 [[package]]
 name = "espbewi-partitions"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/espbewi?rev=0b11f035d1aed6d901adca2098c6efc29a2cee83#0b11f035d1aed6d901adca2098c6efc29a2cee83"
+source = "git+https://github.com/iobewi/espbewi?rev=213c44228c7e24ed62a20bbaab3a822c6cdf6506#213c44228c7e24ed62a20bbaab3a822c6cdf6506"
 dependencies = [
  "embedded-storage",
  "esp-bootloader-esp-idf",
  "esp-rom-sys",
 ]
+
+[[package]]
+name = "espbewi-platform"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/espbewi?rev=213c44228c7e24ed62a20bbaab3a822c6cdf6506#213c44228c7e24ed62a20bbaab3a822c6cdf6506"
 
 [[package]]
 name = "fastrand"
@@ -1639,7 +1644,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "fibewi"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/fibewi?rev=e5d0906efaaa57a2974a5456ef755e78fff75564#e5d0906efaaa57a2974a5456ef755e78fff75564"
+source = "git+https://github.com/iobewi/fibewi?rev=13af25256e4ce27cdb2ff43e19ed6e38b9a75c83#13af25256e4ce27cdb2ff43e19ed6e38b9a75c83"
 dependencies = [
  "sha2",
 ]
@@ -1647,11 +1652,12 @@ dependencies = [
 [[package]]
 name = "fibewi-esp"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/fibewi?rev=e5d0906efaaa57a2974a5456ef755e78fff75564#e5d0906efaaa57a2974a5456ef755e78fff75564"
+source = "git+https://github.com/iobewi/fibewi?rev=13af25256e4ce27cdb2ff43e19ed6e38b9a75c83#13af25256e4ce27cdb2ff43e19ed6e38b9a75c83"
 dependencies = [
  "embedded-storage",
  "esp-bootloader-esp-idf",
  "espbewi-partitions",
+ "espbewi-platform",
  "fibewi",
  "sha2",
 ]
