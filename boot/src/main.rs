@@ -3,7 +3,7 @@
 //!   ROM -> embewi-boot -> the slot `otadata` selects -> embewi-agent
 //!
 //! Every *decision* -- which slot, what to write to `otadata`, whether an image
-//! is bootable -- is `embewi-boot-core`, tested on the host against power cuts.
+//! is bootable -- is `fibewi-esp::boot`, tested on the host against power cuts.
 //! This file only performs them on the real flash and hands over control.
 //!
 //! What it does today (boot chain step 5):
@@ -33,7 +33,7 @@
 #![no_std]
 #![no_main]
 
-use atomic_boot as boot_core;
+use fibewi_esp::boot as boot_core;
 
 use boot_core::image::{self, MemoryMap, Verify};
 use boot_core::{BLANK, Boot, Decoded, ENTRY_SIZE, Halt, Op, Raw, Write, decode, plan_boot};

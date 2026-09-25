@@ -16,8 +16,9 @@ license      = "MIT"
 esp-hal     = { version = "~1.1.0", features = ["esp32c3"] }
 esp-println = { version = "0.17.0", features = ["esp32c3"] }
 # Every decision (which slot, what to write, is the image bootable) lives in
-# atomic-boot, tested on the host; this crate only performs it on real flash.
-atomic-boot = { git = "https://github.com/iobewi/atomic-boot", rev = "d8c1af0" }
+# FiBeWI's pure ESP boot core. No ESP hardware feature is enabled here: this
+# bootloader performs the physical flash/MMU operations itself.
+fibewi-esp = { git = "https://github.com/iobewi/fibewi", rev = "517af8d", package = "fibewi-esp" }
 
 [profile.dev]
 opt-level = "s"

@@ -3,10 +3,19 @@
 version = 4
 
 [[package]]
-name = "atomic-boot"
+name = "fibewi"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/atomic-boot?rev=d8c1af0#d8c1af036a56aa434a65c3675fd838ef36a7576f"
+source = "git+https://github.com/iobewi/fibewi?rev=517af8d#517af8d343921fe51fa9a19e411b46b92400ca24"
 dependencies = [
+ "sha2",
+]
+
+[[package]]
+name = "fibewi-esp"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/fibewi?rev=517af8d#517af8d343921fe51fa9a19e411b46b92400ca24"
+dependencies = [
+ "fibewi",
  "sha2",
 ]
 
@@ -283,9 +292,9 @@ dependencies = [
 name = "embewi-boot"
 version = "0.0.2"
 dependencies = [
- "atomic-boot",
  "esp-hal",
  "esp-println",
+ "fibewi-esp",
 ]
 
 [[package]]
