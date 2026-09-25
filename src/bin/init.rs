@@ -136,6 +136,12 @@ async fn main(spawner: Spawner) -> ! {
     // is cryptographically seeded without bringing up any network capability.
     let trng_source =
         esp_hal::rng::TrngSource::new(peripherals.RNG, peripherals.ADC1);
+    // The global MbedTLS instance must exist before any PSA call: PSA draws its
+    // randomness from `mbedtls_psa_external_get_random`, which reads the RNG
+    // slot that only `Tls::new` fills, and reports an entropy failure while no
+    // `Tls` is active. Creating it draws no randomness itself, so the ADC-backed
+    // source above still covers every byte the key generation consumes.
+    let tls_handle = tls::init();
     let identity_name = agent::node_id(agent_config).await;
     tls::ensure_server_identity(tls_config, &identity_name)
         .await
@@ -144,7 +150,6 @@ async fn main(spawner: Spawner) -> ! {
 
     // Only after the durable identity has been re-read and validated do we
     // initialize the networking/provisioning machinery.
-    let tls_handle = tls::init();
     let mut supervisor = embewi_agent_esp::supervisor::ProvisioningSupervisor::new(
         spawner,
         peripherals.LPWR,

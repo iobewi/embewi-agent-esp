@@ -162,8 +162,12 @@ pub async fn ensure_server_identity(
         Err(LoadError::Corrupt) => return Err(IdentityBootstrapError::Corrupt),
     }
 
-    let generated = esp_hal_mbedtls::generate_self_signed_identity(common_name)
-        .map_err(|_| IdentityBootstrapError::Generation)?;
+    let generated = esp_hal_mbedtls::generate_self_signed_identity(common_name).map_err(|e| {
+        // The variant only says "generation"; the MbedTLS/PSA status is what
+        // tells a missing RNG from a certificate-encoding failure.
+        warn!("tls: identity generation failed: {e:?}");
+        IdentityBootstrapError::Generation
+    })?;
     if generated.cert_pem.len() > MAX_CERT_LEN || generated.key_pem.len() > MAX_KEY_LEN {
         return Err(IdentityBootstrapError::Generation);
     }
