@@ -28,12 +28,9 @@ use esp_flash_access::SharedFlash;
 pub mod api;
 pub mod config;
 
-/// The one admin task spawned by `ApplicationSupervisor`: picks [`config::serve`] or
-/// [`api::serve`] based on whether the device is locked yet, and never
-/// switches mid-boot (a successful provisioning save reboots the device,
-/// so the next boot's `run` re-reads `is_locked()` fresh). Deliberately one
-/// task calling two plain functions rather than two
-/// `#[embassy_executor::task]`s -- see this module's doc comment for why
+/// Runtime administrative API task. Provisioning has a separate entrypoint
+/// and is linked only by the disposable init image.
+#[embassy_executor::task]`s -- see this module's doc comment for why
 /// that matters for RAM, confirmed on our own binary: two separate tasks
 /// reserved ~16.8 KiB combined (`config::run::POOL` + `api::run::POOL`,
 /// both permanently, since a `#[task]`'s `TaskStorage` exists in `.bss`

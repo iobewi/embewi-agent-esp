@@ -1527,7 +1527,8 @@ pub async fn on_boot(
             // it on failure) must not be overwritten below.
             finish_validation(ota_config, &staged).await;
             if agent::state() == agent::State::Degraded {
-                return;
+                disable_boot_watchdog();
+                return BootDisposition::Stable;
             }
         }
         // `Action` is `#[non_exhaustive]`: fibewi is not at a stable API

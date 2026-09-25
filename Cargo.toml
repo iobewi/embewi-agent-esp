@@ -15,14 +15,14 @@ path = "./src/bin/init.rs"
 [features]
 # TEST/DEBUG ONLY -- never enable in a production image. Makes the
 # pending_verify self-check reset the device right after it passes but
-# BEFORE confirming (`ota.rs`'s `selfcheck_task`), deterministically
+# BEFORE confirming (`ota.rs`'s `confirm_pending`), deterministically
 # exercising embewi-boot's `Pending -> Aborted -> fallback` rollback path
 # without needing to time a physical power-cut against a live self-check
 # window (which normally completes before Wi-Fi even reconnects).
 fault-injection = []
 # TEST/DEBUG ONLY -- never enable in a production image. A stronger variant
 # of `fault-injection`: instead of a clean `software_reset()` after the
-# self-check passes, spins forever right at the top of `selfcheck_task`,
+# self-check passes, spins forever right at the top of `confirm_pending`,
 # starving the whole (single-threaded) embassy executor before either the
 # self-check or its own software deadline ever gets polled again -- the one
 # failure a purely software timeout structurally cannot catch, since it
