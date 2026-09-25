@@ -1599,7 +1599,7 @@ dependencies = [
 [[package]]
 name = "espbewi-flash"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/espbewi?rev=213c44228c7e24ed62a20bbaab3a822c6cdf6506#213c44228c7e24ed62a20bbaab3a822c6cdf6506"
+source = "git+https://github.com/iobewi/espbewi?rev=0b11f035d1aed6d901adca2098c6efc29a2cee83#0b11f035d1aed6d901adca2098c6efc29a2cee83"
 dependencies = [
  "embassy-sync 0.8.0",
  "embedded-storage",
@@ -1612,7 +1612,7 @@ dependencies = [
 [[package]]
 name = "espbewi-nvs"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/espbewi?rev=213c44228c7e24ed62a20bbaab3a822c6cdf6506#213c44228c7e24ed62a20bbaab3a822c6cdf6506"
+source = "git+https://github.com/iobewi/espbewi?rev=0b11f035d1aed6d901adca2098c6efc29a2cee83#0b11f035d1aed6d901adca2098c6efc29a2cee83"
 dependencies = [
  "embedded-storage",
  "esp-nvs",
