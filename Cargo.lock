@@ -343,18 +343,16 @@ checksum = "bed69047ed42e52c7e38d6421eeb8ceefb4f2a2b52eed59137f7bad7908f6800"
 [[package]]
 name = "config-space-manager"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/config-space-manager?rev=23954ff#23954ff23d170e056156a31704baae08d4fd1533"
+source = "git+https://github.com/iobewi/config-space-manager?rev=8c11d83#8c11d838df7f2b04b2617d1381447c10eaa96387"
 
 [[package]]
 name = "config-space-manager-esp-nvs"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/config-space-manager?rev=23954ff#23954ff23d170e056156a31704baae08d4fd1533"
+source = "git+https://github.com/iobewi/config-space-manager?rev=8c11d83#8c11d838df7f2b04b2617d1381447c10eaa96387"
 dependencies = [
  "config-space-manager",
- "embedded-storage",
  "esp-flash-access",
  "esp-nvs",
- "esp-storage",
  "log",
 ]
 
@@ -1162,11 +1160,13 @@ dependencies = [
 [[package]]
 name = "esp-flash-access"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/esp-storage-manager?rev=b7fb2f6#b7fb2f6d40d3a99521edabf87e245ffb78c1889c"
+source = "git+https://github.com/iobewi/esp-storage-manager?rev=cb99450#cb99450b87187eb266fa2636a22d4c7562b20c7b"
 dependencies = [
  "embassy-sync 0.8.0",
  "embedded-storage",
+ "esp-bootloader-esp-idf",
  "esp-hal",
+ "esp-nvs",
  "esp-storage",
  "static_cell",
 ]
@@ -1618,7 +1618,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "fibewi"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/fibewi?rev=3a67e64#3a67e646bdf9e99f1dc6bc1e8f994fcf1a639fbf"
+source = "git+https://github.com/iobewi/fibewi?rev=b1daa6c#b1daa6cc4a1513cf2eb68a4b16b4ed9fb0ad5160"
 dependencies = [
  "sha2",
 ]
@@ -1626,10 +1626,11 @@ dependencies = [
 [[package]]
 name = "fibewi-esp"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/fibewi?rev=3a67e64#3a67e646bdf9e99f1dc6bc1e8f994fcf1a639fbf"
+source = "git+https://github.com/iobewi/fibewi?rev=b1daa6c#b1daa6cc4a1513cf2eb68a4b16b4ed9fb0ad5160"
 dependencies = [
  "embedded-storage",
  "esp-bootloader-esp-idf",
+ "esp-flash-access",
  "fibewi",
  "sha2",
 ]
