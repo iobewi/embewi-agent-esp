@@ -17,7 +17,7 @@ use serde::Serialize;
 use subtle::ConstantTimeEq;
 
 use config_space_manager_esp_nvs::NvsConfigBackend;
-use esp_flash_access::SharedFlash;
+use espbewi_flash::SharedFlash;
 
 /// Versions of the `/v1alpha1`-style protocol this agent answers, highest
 /// first (contrat §4, "Découverte de version d'API").
