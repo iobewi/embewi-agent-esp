@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "atomic-boot"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/atomic-boot?rev=0e05ac2#0e05ac2ba01a53470994e3c60b220b9d4a7bbb5d"
+source = "git+https://github.com/iobewi/atomic-boot?rev=d8c1af0#d8c1af036a56aa434a65c3675fd838ef36a7576f"
 dependencies = [
  "sha2",
 ]
