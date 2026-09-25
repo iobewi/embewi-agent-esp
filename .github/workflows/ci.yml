@@ -22,7 +22,7 @@ jobs:
         with:
           targets: riscv32imc-unknown-none-elf
           components: rust-src
-      - run: cargo check --manifest-path boot/Cargo.toml --locked --release
+      - run: scripts/build-fibewi-bootloader.sh >/dev/null
 
   check-esp32c3:
     runs-on: ubuntu-latest
