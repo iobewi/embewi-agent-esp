@@ -39,7 +39,7 @@ fibewi-esp = { git = "https://github.com/iobewi/fibewi", rev = "b1daa6c", packag
 # Pinned by commit while its API is still pre-stable.
 improv-serial = { git = "https://github.com/iobewi/improv-serial", rev = "8e9d2c4" }
 # One process-wide physical flash owner. No NVS or OTA semantics live here.
-esp-flash-access = { git = "https://github.com/iobewi/esp-storage-manager", rev = "cb99450", package = "esp-flash-access", features = ["esp32c3"] }
+esp-flash-access = { git = "https://github.com/iobewi/esp-storage-manager", rev = "cb99450b87187eb266fa2636a22d4c7562b20c7b", package = "esp-flash-access", features = ["esp32c3"] }
 # Reusable Wi-Fi station transport. Credential persistence and application
 # service supervision remain local to this firmware.
 esp-wifi-manager = { git = "https://github.com/iobewi/esp-wifi-manager", rev = "b322df0", features = ["esp32c3"] }
