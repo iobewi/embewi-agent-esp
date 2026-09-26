@@ -1631,11 +1631,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "espbewi-platform"
-version = "0.1.0"
-source = "git+https://github.com/iobewi/espbewi?rev=213c44228c7e24ed62a20bbaab3a822c6cdf6506#213c44228c7e24ed62a20bbaab3a822c6cdf6506"
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1657,7 +1652,6 @@ dependencies = [
  "embedded-storage",
  "esp-bootloader-esp-idf",
  "espbewi-partitions",
- "espbewi-platform",
  "fibewi",
  "sha2",
 ]
