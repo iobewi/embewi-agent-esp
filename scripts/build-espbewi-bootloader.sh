@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ESPBEWI_REV="6983199cb2185c78ea378808953e8d334b9874ca"
+ESPBEWI_REV="01c9265a10f89088d6bc2724185730ea97413228"
 CHECKOUT="$ROOT/target/espbewi-bootloader-src"
 TARGET=riscv32imc-unknown-none-elf
 
