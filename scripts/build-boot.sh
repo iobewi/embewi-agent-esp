@@ -15,7 +15,7 @@ AGENT_BIN="$OUT_DIR/agent.bin"
 APP_BIN="$OUT_DIR/app.bin"
 
 echo "== espbewi ESP bootloader"
-BOOT_ELF="$(scripts/build-espbewi-bootloader.sh)"
+BOOT_ELF="$(bash scripts/build-espbewi-bootloader.sh)"
 BOOT_BIN="target/espbewi-bootloader.bin"
 espflash save-image "${FLASH_ARGS[@]}" --ignore-app-descriptor \
     "$BOOT_ELF" "$BOOT_BIN"
