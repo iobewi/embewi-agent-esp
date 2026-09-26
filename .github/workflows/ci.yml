@@ -22,7 +22,7 @@ jobs:
         with:
           targets: riscv32imc-unknown-none-elf
           components: rust-src
-      - run: scripts/build-espbewi-bootloader.sh >/dev/null
+      - run: bash scripts/build-espbewi-bootloader.sh >/dev/null
 
   check-esp32c3:
     runs-on: ubuntu-latest
