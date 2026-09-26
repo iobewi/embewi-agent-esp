@@ -33,8 +33,8 @@ fault-injection-freeze = []
 
 [dependencies]
 # FiBeWI transactional firmware lifecycle core and ESP backend.
-fibewi = { git = "https://github.com/iobewi/fibewi", rev = "1820c8faeba8195775fe4593693cc1dacff46f74" }
-fibewi-esp = { git = "https://github.com/iobewi/fibewi", rev = "1820c8faeba8195775fe4593693cc1dacff46f74", package = "fibewi-esp", features = ["esp32c3"] }
+fibewi = { git = "https://github.com/iobewi/fibewi", rev = "9aef81db5148ebe06fa3db4adb3879e58e8cdc94" }
+fibewi-esp = { git = "https://github.com/iobewi/fibewi", rev = "9aef81db5148ebe06fa3db4adb3879e58e8cdc94", package = "fibewi-esp", features = ["esp32c3"] }
 # Transport-agnostic Improv Serial codec/parser extracted from this firmware.
 # Pinned by commit while its API is still pre-stable.
 improv-serial = { git = "https://github.com/iobewi/improv-serial", rev = "8e9d2c4" }
