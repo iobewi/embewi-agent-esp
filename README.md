@@ -21,10 +21,10 @@ _À définir — toolchain et structure du projet Rust en cours de mise en place
 
 ## OTA A/B et rollback anti-brick
 
-Full Rust, sans ESP-IDF : le second-stage bootloader appartient désormais à
-FiBeWI (`fibewi/bootloader/esp32c3`) et l'agent partage avec lui la même
-définition de l'état `otadata` via `fibewi-esp::boot`, testée sur l'hôte
-contre des coupures de courant sous un modèle adversarial. Un watchdog
+Full Rust, sans ESP-IDF : le second-stage bootloader matériel appartient à
+`espbewi` (`espbewi/bootloader/esp`). Il consomme `fibewi-esp::boot`
+pour la machine d'état EWBT/A-B/rollback, testée sur l'hôte contre des
+coupures de courant sous un modèle adversarial. Un watchdog
 matériel protège toute la fenêtre `pending_verify` ; les trois cas de la
 matrice de conformité (self-check normal, reset avant confirmation, gel pur
 sans aucun reset logiciel) sont validés sur ESP32-C3 réel.
