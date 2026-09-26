@@ -13,23 +13,25 @@ jobs:
         with:
           toolchain: "1.88.0"
       - run: bash -n scripts/test-api.sh
+      - run: bash -n scripts/build-boot.sh
+      - run: bash -n scripts/build-espbewi-bootloader.sh
 
-  check-bootloader:
+  check-bootloader-esp32s3:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install Rust for Xtensa
+        uses: esp-rs/xtensa-toolchain@v1.5
         with:
-          targets: riscv32imc-unknown-none-elf
-          components: rust-src
+          buildtargets: esp32s3
       - run: bash scripts/build-espbewi-bootloader.sh >/dev/null
 
-  check-esp32c3:
+  check-esp32s3:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install Rust for Xtensa
+        uses: esp-rs/xtensa-toolchain@v1.5
         with:
-          targets: riscv32imc-unknown-none-elf
-          components: rust-src
-      - run: cargo check --locked
+          buildtargets: esp32s3
+      - run: cargo +esp check --locked -Z build-std=core,alloc --target xtensa-esp32s3-none-elf

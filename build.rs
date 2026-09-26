@@ -63,8 +63,15 @@ fn linker_be_nice() {
         std::process::exit(0);
     }
 
-    println!(
-        "cargo:rustc-link-arg=--error-handling-script={}",
-        std::env::current_exe().unwrap().display()
-    );
+    // RISC-V links through rust-lld, which understands this flag for nicer
+    // undefined-symbol diagnostics. Xtensa links through the real GNU
+    // `xtensa-esp32s3-elf-gcc`/ld, which doesn't recognize it at all and
+    // fails the link outright -- this is diagnostic sugar, not something
+    // functionally required, so it's simplest to skip it there.
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("xtensa") {
+        println!(
+            "cargo:rustc-link-arg=--error-handling-script={}",
+            std::env::current_exe().unwrap().display()
+        );
+    }
 }

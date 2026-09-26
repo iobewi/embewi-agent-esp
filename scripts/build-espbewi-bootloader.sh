@@ -2,9 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ESPBEWI_REV="01c9265a10f89088d6bc2724185730ea97413228"
+ESPBEWI_REV="e5fa7fcd30ccf480d9c680328d3889abbd440dcc"
 CHECKOUT="$ROOT/target/espbewi-bootloader-src"
-TARGET=riscv32imc-unknown-none-elf
+CHIP=esp32s3
+TARGET=xtensa-esp32s3-none-elf
 
 if [[ ! -d "$CHECKOUT/.git" ]]; then
   rm -rf "$CHECKOUT"
@@ -14,5 +15,5 @@ git -C "$CHECKOUT" fetch --depth 1 origin "$ESPBEWI_REV"
 git -C "$CHECKOUT" checkout --detach --force "$ESPBEWI_REV" >/dev/null
 
 cd "$CHECKOUT/bootloader/esp"
-cargo build --release --locked --features esp32c3 --target "$TARGET"
+cargo +esp build --release --locked --features "$CHIP" -Z build-std=core,alloc --target "$TARGET"
 printf "%s\n" "$PWD/target/$TARGET/release/espbewi-bootloader"

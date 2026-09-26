@@ -17,7 +17,8 @@ use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::peripherals::LPWR;
 use esp_hal::rtc_cntl::{Rtc, RwdtStage, RwdtStageAction};
-use log::warn;
+use esp_hal_mbedtls::mbedtls_rs::SessionError;
+use log::{debug, warn};
 use picoserve::io::Socket;
 use picoserve::response::{ContentBody, ContentHeaders, Response, StatusCode};
 use picoserve::routing::PathRouter;
@@ -225,7 +226,15 @@ pub(super) async fn serve(
         match with_timeout(HANDSHAKE_TIMEOUT, session.connect()).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                warn!("HTTPS: handshake failed: {e}");
+                if is_peer_hangup(&e) {
+                    // Expected: e.g. a client's connection aborting mid-handshake
+                    // right as `reboot_after_delay`'s hardware reset fires (or any
+                    // client that simply drops the connection). Not a server
+                    // fault, so it stays out of `warn!`.
+                    debug!("HTTPS: handshake aborted by peer: {e}");
+                } else {
+                    warn!("HTTPS: handshake failed: {e}");
+                }
                 continue;
             }
             Err(_) => {
@@ -241,9 +250,28 @@ pub(super) async fn serve(
         )
         .await
         {
-            warn!("HTTPS: connection error: {e:?}");
+            let hangup = match &e {
+                picoserve::Error::Read(inner) | picoserve::Error::Write(inner) => is_peer_hangup(inner),
+                _ => false,
+            };
+            if hangup {
+                debug!("HTTPS: connection closed by peer: {e:?}");
+            } else {
+                warn!("HTTPS: connection error: {e:?}");
+            }
         }
     }
+}
+
+/// Whether `e` is the peer's TLS stack (or its abrupt disconnect, reported
+/// this way by mbedtls) sending a fatal alert -- a normal connection
+/// lifecycle event (e.g. a client dropping mid-handshake or mid-request
+/// right as `reboot_after_delay`'s hardware reset fires), not a defect on
+/// our side.
+fn is_peer_hangup(e: &SessionError) -> bool {
+    // MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE (mbedtls's `ssl.h`).
+    const FATAL_ALERT_MESSAGE: i32 = -0x7780;
+    matches!(e, SessionError::MbedTls(m) if m.code() == FATAL_ALERT_MESSAGE)
 }
 
 /// Serves one already-connected socket to completion. Generic over

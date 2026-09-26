@@ -1,6 +1,9 @@
 [target.riscv32imc-unknown-none-elf]
 runner = "espflash flash --monitor --chip esp32c3"
 
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor --chip esp32s3"
+
 [env]
 # "info" alone would apply to every crate, including smoltcp/embassy-net/
 # esp-radio, which are otherwise noisy at that level -- interleaved on the
@@ -17,7 +20,9 @@ rustflags = [
   "-C", "force-frame-pointers",
 ]
 
-target = "riscv32imc-unknown-none-elf"
+# TEMPORARY (feat/esp32s3-target branch): revert to
+# "riscv32imc-unknown-none-elf" if/when this branch goes back to ESP32-C3.
+target = "xtensa-esp32s3-none-elf"
 
 [unstable]
 build-std = ["alloc", "core"]

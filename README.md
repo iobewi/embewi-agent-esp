@@ -17,17 +17,20 @@ vérité Core ↔ Agent, inchangée par la migration de langage.
 
 ## Build
 
-_À définir — toolchain et structure du projet Rust en cours de mise en place._
+Le chemin matériel courant cible l'ESP32-S3-N16R8 avec la toolchain Xtensa
+`esp`. Le support ESP32-C3 reste présent dans les briques partagées et sert
+de cible de non-régression.
 
 ## OTA A/B et rollback anti-brick
 
 Full Rust, sans ESP-IDF : le second-stage bootloader matériel appartient à
-`espbewi` (`espbewi/bootloader/esp`). Il consomme `fibewi-esp::boot`
-pour la machine d'état EWBT/A-B/rollback, testée sur l'hôte contre des
-coupures de courant sous un modèle adversarial. Un watchdog
-matériel protège toute la fenêtre `pending_verify` ; les trois cas de la
-matrice de conformité (self-check normal, reset avant confirmation, gel pur
-sans aucun reset logiciel) sont validés sur ESP32-C3 réel.
+`espbewi` (`espbewi/bootloader/esp`). Il consomme les primitives et la
+machine de cycle de vie FiBeWI pour EWBT/A-B/rollback.
+
+Le chemin complet ROM → bootloader → `embewi-init` → agent, le cycle OTA
+positif, le rejet d'image invalide, le rollback et le watchdog matériel ont
+été validés sur ESP32-S3 réel. Le chemin ESP32-C3 reste la cible historique
+de référence.
 
 ## Installation firmware (ESP Web Tools)
 
@@ -39,6 +42,6 @@ client.
   le port `8080`, forwardé par le devcontainer sous le label
   "ESP Web Tools".
 - Les images flashables (`web/firmware/<chip>/firmware.bin`) ne sont pas
-  commitées : à régénérer après chaque build avec `scripts/save-image.sh`.
+  commitées : à régénérer après chaque build avec `scripts/build-boot.sh`.
 
 Détails dans [`web/README.md`](web/README.md).
