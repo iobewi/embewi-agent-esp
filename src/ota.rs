@@ -25,7 +25,7 @@
 //! ├── post-reboot reconciliation     (reconcile, driven from on_boot)
 //! └── streaming WriteSession         (digest-verified, resumable)
 //!
-//! fibewi_esp (external crate)
+//! espbewi_ota (external crate)
 //! ├── ota_0/ota_1 partition lookup
 //! └── sector-aware ESP ArtifactStorage backend
 //! ```
@@ -66,7 +66,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
-use fibewi_esp::boot as boot_core;
+use fibewi::boot as boot_core;
 use boot_core::Decoded;
 use esp_bootloader_esp_idf::partitions::{AppPartitionSubType, DataPartitionSubType, PARTITION_TABLE_MAX_LEN, PartitionType};
 use config_space_manager::{Budget, ConfigSpace};
@@ -76,7 +76,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::agent;
 use fibewi::{Action, BackendOutcome, TransactionState};
-use fibewi_esp::{AppPartition, AppSlot, EspArtifactStorage, erase_partition_range, find_app_partition};
+use espbewi_ota::{AppPartition, AppSlot, EspArtifactStorage, erase_partition_range, find_app_partition};
 
 use config_space_manager_esp_nvs::NvsConfigBackend;
 use espbewi_flash::{EspFlash, SharedFlash};
