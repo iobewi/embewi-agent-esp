@@ -1006,7 +1006,7 @@ dependencies = [
  "esp-wifi-manager",
  "espbewi-flash",
  "fibewi",
- "fibewi-esp",
+ "espbewi-ota",
  "heapless 0.9.3",
  "httparse",
  "improv-serial",
@@ -1663,19 +1663,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "espbewi-ota"
+version = "0.1.0"
+source = "git+https://github.com/iobewi/espbewi?rev=7a54f88ed334bcce6a43b0a8d7f1bd3eacd13360#7a54f88ed334bcce6a43b0a8d7f1bd3eacd13360"
+dependencies = [
+ "embedded-storage",
+ "esp-bootloader-esp-idf",
+ "espbewi-partitions",
+ "fibewi",
+]
+
+[[package]]
 name = "espbewi-partitions"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/espbewi?rev=213c44228c7e24ed62a20bbaab3a822c6cdf6506#213c44228c7e24ed62a20bbaab3a822c6cdf6506"
+source = "git+https://github.com/iobewi/espbewi?rev=7a54f88ed334bcce6a43b0a8d7f1bd3eacd13360#7a54f88ed334bcce6a43b0a8d7f1bd3eacd13360"
 dependencies = [
  "embedded-storage",
  "esp-bootloader-esp-idf",
  "esp-rom-sys",
 ]
-
-[[package]]
-name = "espbewi-platform"
-version = "0.1.0"
-source = "git+https://github.com/iobewi/espbewi?rev=213c44228c7e24ed62a20bbaab3a822c6cdf6506#213c44228c7e24ed62a20bbaab3a822c6cdf6506"
 
 [[package]]
 name = "fastrand"
@@ -1686,21 +1692,8 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "fibewi"
 version = "0.1.0"
-source = "git+https://github.com/iobewi/fibewi?rev=13af25256e4ce27cdb2ff43e19ed6e38b9a75c83#13af25256e4ce27cdb2ff43e19ed6e38b9a75c83"
+source = "git+https://github.com/iobewi/fibewi?rev=f1028b495edbdb28deac07f2eef42fd50d7ef997#f1028b495edbdb28deac07f2eef42fd50d7ef997"
 dependencies = [
- "sha2",
-]
-
-[[package]]
-name = "fibewi-esp"
-version = "0.1.0"
-source = "git+https://github.com/iobewi/fibewi?rev=13af25256e4ce27cdb2ff43e19ed6e38b9a75c83#13af25256e4ce27cdb2ff43e19ed6e38b9a75c83"
-dependencies = [
- "embedded-storage",
- "esp-bootloader-esp-idf",
- "espbewi-partitions",
- "espbewi-platform",
- "fibewi",
  "sha2",
 ]
 
