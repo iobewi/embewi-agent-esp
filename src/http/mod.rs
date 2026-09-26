@@ -17,7 +17,8 @@ use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::peripherals::LPWR;
 use esp_hal::rtc_cntl::{Rtc, RwdtStage, RwdtStageAction};
-use log::warn;
+use esp_hal_mbedtls::mbedtls_rs::SessionError;
+use log::{debug, warn};
 use picoserve::io::Socket;
 use picoserve::response::{ContentBody, ContentHeaders, Response, StatusCode};
 use picoserve::routing::PathRouter;
@@ -241,9 +242,30 @@ pub(super) async fn serve(
         )
         .await
         {
-            warn!("HTTPS: connection error: {e:?}");
+            if is_peer_hangup(&e) {
+                // Expected: e.g. `/ota/activate`'s confirmation page racing
+                // `reboot_after_delay`'s hardware reset, or any client that
+                // simply closes its side once it has what it needs. Not a
+                // server fault, so it stays out of `warn!`.
+                debug!("HTTPS: connection closed by peer: {e:?}");
+            } else {
+                warn!("HTTPS: connection error: {e:?}");
+            }
         }
     }
+}
+
+/// Whether `e` is the peer's TLS stack (or its abrupt disconnect, reported
+/// this way by mbedtls) sending a fatal alert while we were mid read/write --
+/// a normal connection-lifecycle event, not a defect on our side.
+fn is_peer_hangup(e: &picoserve::Error<SessionError>) -> bool {
+    // MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE (mbedtls's `ssl.h`).
+    const FATAL_ALERT_MESSAGE: i32 = -0x7780;
+    matches!(
+        e,
+        picoserve::Error::Read(SessionError::MbedTls(m)) | picoserve::Error::Write(SessionError::MbedTls(m))
+            if m.code() == FATAL_ALERT_MESSAGE
+    )
 }
 
 /// Serves one already-connected socket to completion. Generic over

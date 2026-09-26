@@ -6,7 +6,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FIBEWI_REV="8404218cdb2c69ae14180ac680d718cb6f1e23ed"
+FIBEWI_REV="56a8a66ed748276f5f392e9426605005e0548570"
 CHECKOUT="$ROOT/target/fibewi-bootloader-src"
 CHIP=esp32s3
 TARGET=xtensa-esp32s3-none-elf
