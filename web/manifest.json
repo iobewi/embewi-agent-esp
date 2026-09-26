@@ -31,6 +31,10 @@
                 {
                     "path": "firmware/esp32s3/firmware.bin",
                     "offset": 0
+                },
+                {
+                    "path": "firmware/esp32s3/agent.bin",
+                    "offset": 1703936
                 }
             ]
         }

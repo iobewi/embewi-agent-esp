@@ -34,27 +34,27 @@ fault-injection-freeze = []
 [dependencies]
 # FiBeWI transactional firmware lifecycle core and ESP backend.
 fibewi = { git = "https://github.com/iobewi/fibewi", rev = "13af25256e4ce27cdb2ff43e19ed6e38b9a75c83" }
-fibewi-esp = { git = "https://github.com/iobewi/fibewi", rev = "13af25256e4ce27cdb2ff43e19ed6e38b9a75c83", package = "fibewi-esp", features = ["esp32c3"] }
+fibewi-esp = { git = "https://github.com/iobewi/fibewi", rev = "13af25256e4ce27cdb2ff43e19ed6e38b9a75c83", package = "fibewi-esp", features = ["esp32s3"] }
 # Transport-agnostic Improv Serial codec/parser extracted from this firmware.
 # Pinned by commit while its API is still pre-stable.
 improv-serial = { git = "https://github.com/iobewi/improv-serial", rev = "8e9d2c4" }
 # One process-wide physical flash owner. No NVS or OTA semantics live here.
-espbewi-flash = { git = "https://github.com/iobewi/espbewi", rev = "0b11f035d1aed6d901adca2098c6efc29a2cee83", package = "espbewi-flash", features = ["esp32c3"] }
+espbewi-flash = { git = "https://github.com/iobewi/espbewi", rev = "0b11f035d1aed6d901adca2098c6efc29a2cee83", package = "espbewi-flash", features = ["esp32s3"] }
 # Reusable Wi-Fi station transport. Credential persistence and application
 # service supervision remain local to this firmware.
-esp-wifi-manager = { git = "https://github.com/iobewi/esp-wifi-manager", rev = "b322df0", features = ["esp32c3"] }
+esp-wifi-manager = { git = "https://github.com/iobewi/esp-wifi-manager", rev = "b322df0", features = ["esp32s3"] }
 
-esp-hal = { version = "~1.1.0", features = ["esp32c3", "log-04", "unstable"] }
+esp-hal = { version = "~1.1.0", features = ["esp32s3", "log-04", "unstable"] }
 
 esp-rtos = { version = "0.3.0", features = [
   "embassy",
   "esp-alloc",
   "esp-radio",
-  "esp32c3",
+  "esp32s3",
   "log-04",
 ] }
 
-esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32c3", "log-04"] }
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3", "log-04"] }
 log                    = "0.4.27"
 
 embassy-net = { version = "0.9.1", features = [
@@ -69,11 +69,11 @@ embedded-io = "0.7.1"
 embedded-io-async = "0.7.0"
 esp-alloc = "0.10.0"
 esp-backtrace = { version = "0.19.0", features = [
-  "esp32c3",
+  "esp32s3",
   "panic-handler",
   "println",
 ] }
-esp-println = { version = "0.17.0", features = ["esp32c3", "log-04"] }
+esp-println = { version = "0.17.0", features = ["esp32s3", "log-04"] }
 embassy-executor = { version = "0.10.0", features = ["log"] }
 embassy-time = { version = "0.5.0", features = ["log"] }
 esp-hal-smartled2 = "0.29.0"
@@ -142,12 +142,12 @@ embassy-futures = "0.1"
 sha2 = { version = "0.10", default-features = false }
 # Generic isolated configuration spaces and their ESP/NVS backend.
 config-space-manager = { git = "https://github.com/iobewi/config-space-manager", rev = "fc50b2ffef10d033d1169b80ab8358e780c67772" }
-config-space-manager-esp-nvs = { git = "https://github.com/iobewi/config-space-manager", rev = "fc50b2ffef10d033d1169b80ab8358e780c67772", package = "config-space-manager-esp-nvs", features = ["esp32c3"] }
+config-space-manager-esp-nvs = { git = "https://github.com/iobewi/config-space-manager", rev = "fc50b2ffef10d033d1169b80ab8358e780c67772", package = "config-space-manager-esp-nvs", features = ["esp32s3"] }
 # ESP HAL + MbedTLS integration extracted from this firmware. Owns the
 # hardware RNG adapter, time hooks, PEM validation/config construction,
 # Embassy client handshake and picoserve TLS socket. Application NVS/SNTP
 # policy remains in src/tls.rs.
-esp-hal-mbedtls = { git = "https://github.com/iobewi/esp-hal-mbedtls", rev = "c44de04", features = ["esp32c3", "picoserve"] }
+esp-hal-mbedtls = { git = "https://github.com/iobewi/esp-hal-mbedtls", rev = "fbe4a63", features = ["esp32s3", "picoserve"] }
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]

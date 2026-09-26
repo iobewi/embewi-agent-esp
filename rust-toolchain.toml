@@ -1,4 +1,9 @@
 [toolchain]
-channel    = "stable"
+# TEMPORARY (feat/esp32s3-target branch): the "esp" (Xtensa) toolchain fork,
+# not "stable" -- Xtensa codegen (xtensa-esp32s3-none-elf) needs it, and
+# `-Z build-std` (below) needs a nightly channel to accept the unstable flag
+# at all. Revert to "stable" + riscv32imc if/when this branch goes back to
+# targeting ESP32-C3.
+channel    = "esp"
 components = ["rust-src"]
-targets = ["riscv32imc-unknown-none-elf"]
+targets = ["xtensa-esp32s3-none-elf"]

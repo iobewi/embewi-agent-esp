@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# Build the ESP32-C3 factory image:
+# TEMPORARY (feat/esp32s3-target branch): builds the ESP32-S3-N16R8 factory
+# image instead of ESP32-C3's (16 MB flash; partitions.csv is unchanged and
+# only uses ~3.1 MB of it, so this is a validation build, not a repartition).
+# Revert TARGET/FLASH_ARGS/OUT_DIR below if/when this branch goes back to
+# targeting ESP32-C3.
+#
+# Build the factory image:
 #   ota_0 = disposable embewi-init
 #   ota_1 = preloaded embewi-agent
 # ESP Web Tools flashes both parts on a clean device. embewi-init verifies
@@ -7,9 +13,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TARGET=riscv32imc-unknown-none-elf
-FLASH_ARGS=(--chip esp32c3 --flash-mode dio --flash-size 4mb --flash-freq 40mhz)
-OUT_DIR=web/firmware/esp32c3
+TARGET=xtensa-esp32s3-none-elf
+FLASH_ARGS=(--chip esp32s3 --flash-mode dio --flash-size 16mb --flash-freq 40mhz)
+OUT_DIR=web/firmware/esp32s3
 FACTORY="$OUT_DIR/firmware.bin"
 AGENT_BIN="$OUT_DIR/agent.bin"
 APP_BIN="$OUT_DIR/app.bin"

@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
+# TEMPORARY (feat/esp32s3-target branch): builds the ESP32-S3 bootloader
+# instead of ESP32-C3's. Revert CHIP/TARGET/the cargo invocation below (drop
+# `+esp`/`-Z build-std`, which stable riscv32 doesn't need) if/when this
+# branch goes back to targeting ESP32-C3.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FIBEWI_REV="13af25256e4ce27cdb2ff43e19ed6e38b9a75c83"
+FIBEWI_REV="8404218cdb2c69ae14180ac680d718cb6f1e23ed"
 CHECKOUT="$ROOT/target/fibewi-bootloader-src"
-TARGET=riscv32imc-unknown-none-elf
+CHIP=esp32s3
+TARGET=xtensa-esp32s3-none-elf
 
 if [[ ! -d "$CHECKOUT/.git" ]]; then
   rm -rf "$CHECKOUT"
@@ -14,5 +19,5 @@ git -C "$CHECKOUT" fetch --depth 1 origin "$FIBEWI_REV"
 git -C "$CHECKOUT" checkout --detach --force "$FIBEWI_REV" >/dev/null
 
 cd "$CHECKOUT/bootloader/esp32c3"
-cargo build --release
+cargo +esp build --release --features "$CHIP" -Z build-std=core,alloc --target "$TARGET"
 printf "%s\n" "$PWD/target/$TARGET/release/fibewi-esp-bootloader"

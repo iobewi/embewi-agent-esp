@@ -50,7 +50,13 @@ pub fn paint() {
     let sp: usize;
     // SAFETY: reads the `sp` register into a local, no side effects.
     unsafe {
+        #[cfg(target_arch = "riscv32")]
         core::arch::asm!("mv {}, sp", out(reg) sp);
+        // Xtensa's assembler accepts the same "sp" alias for a1 that
+        // `xtensa-lx`'s own `get_stack_pointer()` reads this exact way; only
+        // the mnemonic differs from RISC-V's `mv`.
+        #[cfg(target_arch = "xtensa")]
+        core::arch::asm!("mov {}, sp", out(reg) sp, options(nostack));
     }
     let (end, _start) = bounds();
     if sp <= end {
